@@ -421,34 +421,8 @@ else
 fi
 echo
 
-
-# OLD #####################
-# if not already done, run dbsegment
-#if [ ! -d "$SUBJECTS_DIR/$SUBJECT/dbsegment" ]; then
-#        echo "Running dbSegment reconstruction..."
-#        mkdir -p "$TMP_DIR"/tmp_dbsegment
-#        mkdir -p "$TMP_DIR"/tmp_dbsegment_models
-#
-#	start=$(date +%s)
-#	docker run --rm $USE_GPU -v "$TMP_DIR"/input:/input -v "$TMP_DIR"/tmp_dbsegment:/output -v "$TMP_DIR"/tmp_dbsegment_models:/models imagingai/dbsegment:latest > "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/dbsegment.txt 2>&1
-#	check_step $? "dbSegment reconstruction" "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/dbsegment.txt
-#	end=$(date +%s)
-#
-#        # move output
-#        mv "$TMP_DIR"/tmp_dbsegment "$SUBJECTS_DIR"/"$SUBJECT"/dbsegment
-#
-#        duration=$(( end - start ))
-#        minutes=$(( duration / 60 ))
-#
-#        echo "dbSegment reconstruction completed in ${minutes} minutes." | tee -a "$LOG_FILE"
-#else
-#	echo "dbSegment reconstruction detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
-#fi
-#echo
-############################
-
 # start reconstruction in docker container
-docker run --rm $USE_GPU -v "$SUBJECTS_DIR":/SUBJECTS christianbuda/parrot_MRI_reconstruction:latest --subject "$SUBJECT" --T1 /SUBJECTS/"$SUBJECT"/raw/T1.nii.gz "${recon_args[@]}"
+docker run --rm $USE_GPU -v "$SUBJECTS_DIR":/SUBJECTS christianbuda/parrot_mri_reconstruction:latest --subject "$SUBJECT" --T1 /SUBJECTS/"$SUBJECT"/raw/T1.nii.gz "${recon_args[@]}"
 
 end_time=$(date +%s)
 

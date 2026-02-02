@@ -1,13 +1,10 @@
 #!/bin/bash
 
-# docker create -it --gpus all --name recon_pipe -v /srv/nfs-data/sisko/christian/SUBJECTS:/SUBJECTS --entrypoint /bin/bash christianbuda/recon_container:latest
-
-
 # List of images to download
 IMAGES=(
     "deepmi/fastsurfer:latest"
     "khanlab/hippunfold:latest"
-    "christianbuda/parrot_MRI_reconstruction:latest"
+    "christianbuda/parrot_mri_reconstruction:latest"
     "christianbuda/parrot_forward_model:latest"
 )
 
