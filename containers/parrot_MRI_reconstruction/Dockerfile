@@ -24,7 +24,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # install freesurfer
 RUN wget -qO /tmp/fs.deb https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/8.1.0/freesurfer_ubuntu22-8.1.0_amd64.deb \
-RUN --mount=type=bind,source=freesurfer_ubuntu22-8.1.0_amd64.deb,target=/tmp/fs.deb \
     apt-get update && \
     apt-get install -y /tmp/fs.deb \
     && rm -rf /var/lib/apt/lists/* \
@@ -53,7 +52,7 @@ ENV FREESURFER_HOME=/usr/local/freesurfer/8.1.0
 RUN bash -c "yes y | $FREESURFER_HOME/bin/fs_install_cuda"
 
 # install fsl
-RUN wget -qO /tmp/getfsl.sh https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/releases/getfsl.sh \
+RUN wget -qO /tmp/getfsl.sh https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/releases/getfsl.sh
 RUN bash /tmp/getfsl.sh /usr/local/fsl \
     && rm /tmp/getfsl.sh \
     && rm -rf /usr/local/fsl/pkgs \
