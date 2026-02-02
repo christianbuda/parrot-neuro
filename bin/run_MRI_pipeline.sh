@@ -448,12 +448,7 @@ echo
 ############################
 
 # start reconstruction in docker container
-#docker run --rm $USE_GPU -v "$SUBJECTS_DIR":/SUBJECTS christianbuda/recon_container:latest --subject "$SUBJECT" --T1 /SUBJECTS/"$SUBJECT"/raw/T1.nii.gz "${recon_args[@]}"
-
-RECONSTRUCTION_CONTAINER="recon_pipeline"
-docker start "$RECONSTRUCTION_CONTAINER" >/dev/null
-docker exec "$RECONSTRUCTION_CONTAINER" /scripts/run_pipeline.sh --subject "$SUBJECT" --T1 /SUBJECTS/"$SUBJECT"/raw/T1.nii.gz "${recon_args[@]}"
-docker stop "$RECONSTRUCTION_CONTAINER" >/dev/null
+docker run --rm $USE_GPU -v "$SUBJECTS_DIR":/SUBJECTS christianbuda/parrot_MRI_reconstruction:latest --subject "$SUBJECT" --T1 /SUBJECTS/"$SUBJECT"/raw/T1.nii.gz "${recon_args[@]}"
 
 end_time=$(date +%s)
 

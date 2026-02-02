@@ -7,8 +7,8 @@
 IMAGES=(
     "deepmi/fastsurfer:latest"
     "khanlab/hippunfold:latest"
-    "imagingai/dbsegment:latest"
-    "christianbuda/recon_container:latest"
+    "christianbuda/parrot_MRI_reconstruction:latest"
+    "christianbuda/parrot_forward_model:latest"
 )
 
 # Variable to accumulate the final clean report

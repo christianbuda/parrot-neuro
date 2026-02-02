@@ -100,7 +100,9 @@ ENV PATH="/opt/conda/envs/neuro/bin:$PATH"
 
 # copy essential files
 # wget cerebellum template
-ADD cerebellum_template.tar.gz /home
+RUN wget -qO /tmp/cerebellum.tar.gz "https://github.com/christianbuda/parrot-neuro/releases/download/cerebellum_template/cerebellum_template.tar.gz" \
+    && tar -xzf /tmp/cerebellum.tar.gz -C /home \
+    && rm /tmp/cerebellum.tar.gz
 COPY Schaefer2018_LocalGlobal /home/Schaefer2018_LocalGlobal
 COPY scripts /scripts
 
