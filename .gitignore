@@ -1,0 +1,61 @@
+# --- Python Standard ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.env
+
+# --- Distribution / Packaging ---
+dist/
+build/
+*.egg-info/
+
+# --- Jupyter Notebooks ---
+# Ignore checkpoint folders created by Jupyter
+.ipynb_checkpoints/
+
+# --- IDEs and Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Docker ---
+# If you have local overrides for docker-compose
+docker-compose.override.yml
+# Local build logs or temp files
+.docker/
+
+# --- PROJECT SPECIFIC: DATA & OUTPUTS ---
+# Critical: Do not upload large subject data or simulation results
+
+# Ignore a generic data folder if you put raw subjects there
+data/
+raw_data/
+subjects/
+
+# Ignore simulation outputs/results
+results/
+outputs/
+logs/
+
+# Common Neuro/Science large file formats (just in case they aren't in data/)
+# You don't want to accidentally push a 2GB MRI scan
+*.nii
+*.nii.gz
+*.dcm
+*.h5
+*.hdf5
+*.vtu
+*.msh
+*.dat
+*.bin
+
+# --- Temporary/Scratch ---
+tmp/
+temp/

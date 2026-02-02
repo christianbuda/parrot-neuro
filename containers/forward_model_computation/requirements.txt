@@ -1,0 +1,9 @@
+pygeodesic
+libigl
+scipy
+scikit-learn
+trimesh
+nibabel
+numpy
+git+https://github.com/christianbuda/mesh_poisson_disk_sampling
+git+https://github.com/christianbuda/electrodes_positions_utils
