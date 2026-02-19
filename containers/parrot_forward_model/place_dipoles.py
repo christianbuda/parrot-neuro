@@ -10,6 +10,7 @@ import os
 import glob
 import pathlib
 import argparse
+import json
 
 # estimated number of surface dipoles
 # HIGH RES: 2 mm spacing, 40000 triplets, 120000 dipoles
@@ -181,14 +182,17 @@ def sample_surface(mesh, min_dist, vertex_label, vertex_thickness = None, vertex
     all_normals = compute_vertex_normals(vertices, faces, normalized=False)
     dipole_normals = np.concatenate([scipy.sparse.coo_matrix((all_normals[:,0], (np.arange(len(best_idx)), best_idx)), shape = (len(best_idx), len(sampled_vertices))).sum(axis=0), scipy.sparse.coo_matrix((all_normals[:,1],( np.arange(len(best_idx)), best_idx)), shape = (len(best_idx), len(sampled_vertices))).sum(axis=0), scipy.sparse.coo_matrix((all_normals[:,2],( np.arange(len(best_idx)), best_idx)), shape = (len(best_idx), len(sampled_vertices))).sum(axis=0)]).T
     dipole_normals = np.array(dipole_normals/np.linalg.norm(dipole_normals, axis = 1, keepdims = True))
+    
+    # set orient_type to N (Normals)
+    orient_type = np.repeat('N', len(dipole_normals))
 
-    return sampled_vertices, vertices[sampled_vertices], dipole_labels, dipole_volume, dipole_normals
+    return sampled_vertices, vertices[sampled_vertices], dipole_labels, dipole_volume, dipole_normals, orient_type
 
 def sample_all_surfaces(all_meshes, dipole_spacing, generator = None, test_mode = False):
     surface_dipoles = []
     for mesh_dict in all_meshes:
         print(f'Sampling dipoles on mesh {mesh_dict["mesh"]}')
-        sampled_vertices, dipole_positions, dipole_labels, dipole_volume, dipole_normals = sample_surface(mesh = trimesh.load_mesh(mesh_dict['mesh']), min_dist = dipole_spacing, vertex_label = load_npy(mesh_dict['labels']), vertex_thickness = load_npy(mesh_dict['thickness']), vertex_volume = (load_npy(mesh_dict['volume']) if 'volume' in mesh_dict.keys() else None), generator = generator, test_mode = test_mode)
+        sampled_vertices, dipole_positions, dipole_labels, dipole_volume, dipole_normals, orient_type = sample_surface(mesh = trimesh.load_mesh(mesh_dict['mesh']), min_dist = dipole_spacing, vertex_label = load_npy(mesh_dict['labels']), vertex_thickness = load_npy(mesh_dict['thickness']), vertex_volume = (load_npy(mesh_dict['volume']) if 'volume' in mesh_dict.keys() else None), generator = generator, test_mode = test_mode)
         print('Done!\n')
         basename = pathlib.Path(mesh_dict['mesh']).stem
         output_dir = add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/surfaces/'+basename)
@@ -196,12 +200,14 @@ def sample_all_surfaces(all_meshes, dipole_spacing, generator = None, test_mode 
         output_dict = { 'sampled_vertices':os.path.join(output_dir, 'sampled_vertices.npy'),
                         'dipole_positions':os.path.join(output_dir, 'dipole_positions.npy'),
                         'dipole_volume':os.path.join(output_dir, 'dipole_volume.npy'),
-                        'dipole_directions':os.path.join(output_dir, 'dipole_normals.npy')}
+                        'dipole_directions':os.path.join(output_dir, 'dipole_normals.npy'),
+                        'orient_type':os.path.join(output_dir, 'orient_type.npy')}
 
         save_npy(output_dict['sampled_vertices'], sampled_vertices)
         save_npy(output_dict['dipole_positions'], dipole_positions)
         save_npy(output_dict['dipole_volume'], dipole_volume)
         save_npy(output_dict['dipole_directions'], dipole_normals)
+        save_npy(output_dict['orient_type'], orient_type)
         
         if isinstance(dipole_labels, list):
             output_dict['dipole_labels'] = {}
@@ -430,6 +436,7 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
 
     ################## compute preferential direction for each dipole #################
     dipole_preferential_direction = np.zeros_like(dipole_positions)
+    orient_type = np.repeat('U', len(dipole_preferential_direction))  # Unassigned
     
     ######## DIRECTION FROM GRADIENT
     for structure in gradient_as_normal:
@@ -451,6 +458,7 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
         orientations = vectors / norms
         
         dipole_preferential_direction[which_dipoles] = orientations
+        orient_type[which_dipoles] = 'G'  # gradient
     
     ######## DIRECTION FROM PRINCIPAL AXIS
     for i in range(len(principal_axis_left)):
@@ -470,6 +478,7 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
                 pca_left *= -1
             
             dipole_preferential_direction[dipole_labels == left] = pca_left
+            orient_type[dipole_labels == left] = 'P'  # Principal Axis
             
         if len(indices_right[0]) > 0:
             voxels = (affine@np.stack(list(indices_right)+[np.ones(len(indices_right[0]), dtype = int)]))[:-1]+voxel_size[:,np.newaxis]/2
@@ -481,6 +490,7 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
                 pca_right *= -1
             
             dipole_preferential_direction[dipole_labels == right] = pca_right
+            orient_type[dipole_labels == right] = 'P'  # Principal Axis
 
             if len(indices_left[0]) > 0:
                 # flip the right vector to mantain simmetry
@@ -546,6 +556,7 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
             final_orientations = vectors_sum / final_norms
 
         dipole_preferential_direction[which_dipoles] = final_orientations
+        orient_type[which_dipoles] = 'R'  # Random
     ######################################################################
     
     ############# save dipoles just sampled #######################
@@ -554,12 +565,14 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
     output_dict = { 'dipole_positions':os.path.join(output_dir, 'dipole_positions.npy'),
                     'dipole_volume':os.path.join(output_dir, 'dipole_volume.npy'),
                     'dipole_directions':os.path.join(output_dir, 'dipole_preferential_direction.npy'),
-                    'dipole_labels':os.path.join(output_dir, 'dipole_labels.npy')}
+                    'dipole_labels':os.path.join(output_dir, 'dipole_labels.npy'),
+                    'orient_type':os.path.join(output_dir, 'orient_type.npy')}
 
     save_npy(output_dict['dipole_positions'], dipole_positions)
     save_npy(output_dict['dipole_volume'], dipole_volume)
     save_npy(output_dict['dipole_directions'], dipole_preferential_direction)
     save_npy(output_dict['dipole_labels'], dipole_labels)
+    save_npy(output_dict['orient_type'], orient_type)
     
     return output_dict
 
@@ -658,3 +671,13 @@ if __name__ == "__main__":
         # save dipoles to disk
         all_arrays_dict = unify_attribute([volumetric_dipoles_dict] + surface_dipoles_dict, 'dipole_labels')
         aggregate_array_files(all_arrays_dict, add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/'))
+        
+        # create aggregated labels file for convenience, assumes that parcels 1000 is available
+        labels = np.load(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/1000Parcels_dipole_labels.npy'))
+        with open(add_subject_dir('atlas/atlas_to_aggregated.json'), 'r') as f:
+            atlas_to_aggregated = json.load(f)
+        
+        aggregated_labels = np.zeros_like(labels)
+        for idx, val in enumerate(atlas_to_aggregated):
+            aggregated_labels[np.isin(labels, val[0])] = idx
+        np.save(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/aggregated_dipole_labels.npy'), aggregated_labels)

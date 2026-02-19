@@ -4,6 +4,8 @@ import nibabel as nib
 import numpy as np
 import argparse
 import os
+import pymeshfix
+
 
 def read_vtk(input):
     with open(input, 'r') as f:
@@ -97,11 +99,37 @@ def read_vtk4(input):
     
     return(points,faces)
 
+def compute_face_normals(vertices, faces, return_area = False):
+    A = vertices[faces[:,0]]
+    B = vertices[faces[:,1]]
+    C = vertices[faces[:,2]]
+    
+    
+    if not return_area:
+        return np.cross(B-A, C-A)/np.linalg.norm(np.cross(B-A, C-A), axis = -1, keepdims=True)
+    else:
+        norms = np.linalg.norm(np.cross(B-A, C-A), axis = -1, keepdims=True)
+        return np.cross(B-A, C-A)/norms, norms[:,0]/2
+
+def compute_vertex_normals(vertices, faces, normalized = True):
+    face_normals, face_areas = compute_face_normals(vertices, faces, return_area = True)
+
+    face_weights = trimesh.Trimesh(vertices=vertices, faces=faces).faces_sparse.multiply(face_areas)
+
+    vertex_normals = np.array(np.concatenate([face_weights.multiply(face_normals[:,0]).sum(axis = 1),
+    face_weights.multiply(face_normals[:,1]).sum(axis = 1),
+    face_weights.multiply(face_normals[:,2]).sum(axis = 1)], axis = 1))
+
+    if normalized:
+        return vertex_normals/np.linalg.norm(vertex_normals, axis = 1, keepdims = True)
+    else:
+        return vertex_normals
+
 def surf_to_stl(mesh, output_path, process = True, **kwargs):
     """
     Reads a (vertices, faces) tuple and converts it to an STL mesh file.
     """
-    mesh = trimesh.Trimesh(vertices = mesh[0], faces = mesh[1], process = False, validate = False)
+    mesh = to_trimesh(mesh)
     
     for key, val in kwargs.items():
         assert len(mesh.vertices) == len(val), f"Vertex attributes don't match mesh size, check {key} attribute."
@@ -217,6 +245,61 @@ def fix_freesurfer_mesh(mesh):
     # this utils takes a freesurfer mesh and transforms it in nifti world space
     return apply_trans(mesh, fs_T1_affine@np.linalg.inv(vox2ras_tkr))
 
+def repair_mesh_topology(mesh):
+    # repair topology# in mne docs they say that scalp surfaces can have topological issues
+    # here we attempt repairing
+    mesh = pymeshfix.clean_from_arrays(np.array(mesh[0]), np.array(mesh[1]))
+    return mesh
+
+def to_trimesh(mesh):
+    # convert input to trimesh mesh object
+    
+    if isinstance(mesh, trimesh.Trimesh):
+        pass
+    elif isinstance(mesh, tuple):
+        assert len(mesh)==2, 'mesh tuple format must have two entries (vertices, faces)'
+        vertices, faces = mesh
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process = False, validate = False)
+    else:
+        raise ValueError('Mesh must be either a trimesh mesh, or a tuple mesh')
+    
+    return mesh
+
+def fix_intersection(fixed_mesh, moving_mesh, min_dist, step_size, dist_check = None):
+    # inflates moving mesh to make it so that it's at at least min_dist distance OUTSIDE fixed_mesh
+    # smoothing is applied at the end, so the min_dist requirement is not satisfied strictly
+    
+    if dist_check is None:
+        dist_check = min_dist*0.8
+    
+    test_points = np.copy(moving_mesh.vertices)
+    dists = trimesh.proximity.signed_distance(fixed_mesh, test_points)
+    
+    bad_points = dists>-min_dist
+    
+    if not np.any(bad_points):
+        return moving_mesh
+    
+    while np.any(bad_points):
+        outward_dir = compute_vertex_normals(fixed_mesh.vertices, fixed_mesh.faces)[bad_points]
+        test_points[bad_points] += outward_dir*step_size
+        
+        dists = trimesh.proximity.signed_distance(fixed_mesh, test_points)
+        bad_points = dists>-min_dist
+
+    output_mesh = trimesh.Trimesh(vertices=test_points, faces=moving_mesh.faces, process = False, validate = False)
+    output_mesh = trimesh.smoothing.filter_taubin(output_mesh, iterations=3)
+    
+    # check again for violations
+    dists = trimesh.proximity.signed_distance(fixed_mesh, output_mesh.vertices)
+    bad_points = dists>-dist_check  # we relax the constraint slightly
+    
+    if np.any(bad_points):
+        print('Smoothing created new intersections, attempting repair')
+        return fix_intersection(fixed_mesh, output_mesh, min_dist/0.8, step_size, dist_check=dist_check)
+    
+    return output_mesh
+
 def add_subject_dir(*paths):
     if len(paths)==1:
         return os.path.join(subject_dir, paths[0])
@@ -312,17 +395,33 @@ if __name__ == "__main__":
     
     
     # BEM surfaces
-    brain = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/bem/brain.surf")))
+    # watershed bem creates both brain and outer_skin from the MRI volume
+    # and then inflates the brain to obtain inner_skull
+    # and deflates the outer_skin to obtain outer_skull
+    # It seems that inner_skull is generally decent, while outer_scalp (and, consequently, outer_skull) can be pretty bad
+    # so we check for intersections and inflate outer_skull and outer_scalp having inner_skull as a reference
+    
+    # NOTE that this fix is not smart, it does not know where the anatomy is
+    # it just inflates enough to get numerical stability in the BEM solver, the surfaces will likely still be crooked
+    brain = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/bem/brain.surf"))))
     surf_to_stl(brain, add_subject_dir('surfaces/freesurfer_BEM_brain.stl'))
 
-    inner_skull = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/bem/inner_skull.surf")))
+    inner_skull = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/bem/inner_skull.surf"))))
     surf_to_stl(inner_skull, add_subject_dir('surfaces/freesurfer_BEM_inner_skull.stl'))
 
-    outer_skull = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/bem/outer_skull.surf")))
+    outer_skull = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/bem/outer_skull.surf"))))
+    outer_skull = fix_intersection(inner_skull, outer_skull, min_dist = 4, step_size = 0.1)
     surf_to_stl(outer_skull, add_subject_dir('surfaces/freesurfer_BEM_outer_skull.stl'))
 
-    outer_skin = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/bem/outer_skin.surf")))
+    outer_skin = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/bem/outer_skin.surf"))))
+    outer_skin = fix_intersection(outer_skull, outer_skin, min_dist = 3, step_size = 0.1)
     surf_to_stl(outer_skin, add_subject_dir('surfaces/freesurfer_BEM_outer_skin.stl'))
+    
+    # MNE scalp
+    scalp = (np.load(add_subject_dir("freesurfer/bem/vertices-scalp.npy")), np.load(add_subject_dir("freesurfer/bem/faces-scalp.npy")))
+    scalp = fix_freesurfer_mesh(scalp)
+    scalp = repair_mesh_topology(scalp)
+    surf_to_stl(scalp, add_subject_dir('surfaces/MNE_scalp.stl'))
 
 
     # charm surfaces

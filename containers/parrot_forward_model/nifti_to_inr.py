@@ -1,5 +1,8 @@
 import nibabel as nib
 import numpy as np
+from scipy.stats import mode
+import argparse
+
 
 def save_inr(vol, voxel_size: tuple[float, float, float], fname: str):
     """
@@ -75,7 +78,7 @@ if __name__ == "__main__":
     # read and convert file
     nii_file = nib.load(input)
 
-    label_field_data = nii_file.get_fdata()
+    label_field_data = nii_file.get_fdata().squeeze()
     label_field_data = label_field_data.astype(np.uint8)
 
     voxel_size = nii_file.header.get_zooms()

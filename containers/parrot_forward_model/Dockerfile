@@ -1,5 +1,5 @@
 # --- Builder Stage ---
-FROM debian:bookworm-slim AS builder
+FROM debian:trixie-slim AS builder
 
 # 1. Install system dependencies
 RUN apt-get update && apt-get install -y \
@@ -41,15 +41,16 @@ RUN apt-get update && apt-get install -y \
     libgmp10 \
     libmpfr6 \
     zlib1g \
-    libinsighttoolkit5-dev \
+    libinsighttoolkit5.4 \
     libtbb12 \
     && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /app/build/mesher /usr/local/bin/mesher
 
 # Now copy python requirements and install
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy python scripts
-COPY place_electrodes.py place_dipoles.py nifti_to_inr.py mesh_to_vtu.py ./
+# Copy python scripts and binaries
+COPY --from=builder /app/build/mesher /usr/local/bin/mesher
+COPY place_electrodes.py place_dipoles.py nifti_to_inr.py mesh_postprocessing.py ./
+
+CMD ["/bin/bash"]

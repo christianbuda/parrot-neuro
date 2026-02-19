@@ -141,20 +141,18 @@ if [ ! -d /SUBJECTS/"$subj"/freesurfer ]; then
 
         echo "Freesurfer reconstruction completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
 
-	echo "Running MNE bem surfaces reconstruction..."
+	echo "Running BEM surfaces reconstruction..."
 	# make bem surfaces
 	start=$(date +%s)
-	micromamba run -n neuro mne watershed_bem -s "$subj"  > /SUBJECTS/"$subj"/reconstruction_logs/mne.txt 2>&1
-        check_step $? "MNE watershed bem" "$subj"/reconstruction_logs/mne.txt
-	micromamba run -n neuro mne make_scalp_surfaces --force --overwrite --subject "$subj" >> /SUBJECTS/"$subj"/reconstruction_logs/mne.txt 2>&1
-        check_step $? "MNE make scalp surfaces" "$subj"/reconstruction_logs/mne.txt
+	micromamba run -n neuro python /scripts/make_bem_surfaces.py --subject "$subj" --subjects_dir "$SUBJECTS_DIR"  > /SUBJECTS/"$subj"/reconstruction_logs/mne.txt 2>&1
+        check_step $? "Make BEM surfaces" "$subj"/reconstruction_logs/bem.txt
 	end=$(date +%s)
 
         duration=$(( end - start ))
         minutes=$(( duration / 60 ))
         seconds=$(( duration % 60 ))
 
-        echo "MNE bem surfaces reconstruction completed in ${minutes} minutes and ${seconds} seconds." | tee -a "$LOG_FILE"
+        echo "BEM surfaces reconstruction completed in ${minutes} minutes and ${seconds} seconds." | tee -a "$LOG_FILE"
 
 	echo "Registering user to Schaefer atlases..."
 	start=$(date +%s)
@@ -345,6 +343,8 @@ echo
 if [ ! -d /SUBJECTS/"$subj"/tissue_labels/electrical ]; then
         echo "Making electrical label fields using simnibs reconstruction and Sim4Life (optional)..."
         mkdir -p /SUBJECTS/"$subj"/tissue_labels/electrical
+        cp /scripts/simnibs_mesher_parameters.txt /SUBJECTS/"$subj"/tissue_labels/electrical/
+        cp /scripts/sim4life_mesher_parameters.txt /SUBJECTS/"$subj"/tissue_labels/electrical/
 
         start=$(date +%s)
         micromamba run -n neuro python /scripts/gather_electrical_labelfields.py --subject_dir /SUBJECTS/"$subj"/ > /SUBJECTS/"$subj"/reconstruction_logs/electrical_labelfields.txt 2>&1

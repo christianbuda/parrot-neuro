@@ -418,3 +418,7 @@ if __name__ == "__main__":
             lab+=1
     atlas = nib.Nifti1Image(atlas, T1.affine, T1.header)
     nib.save(atlas, os.path.join(subj_dir,f'atlas/atlas_aggregated.nii.gz'))
+
+    import json
+    with open(os.path.join(subj_dir,f'atlas/atlas_to_aggregated.json'), 'w') as f:
+        json.dump(aggregated_labels, f)

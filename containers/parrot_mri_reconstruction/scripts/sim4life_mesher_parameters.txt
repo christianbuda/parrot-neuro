@@ -1,0 +1,24 @@
+# Default parameters for CGAL mesh generation
+ANGLE       27.0    # Facet Angle (degrees)
+DIST        2.0     # Approximation Error (mm) - Maximal distance of surface from real label
+DEF_SURF    2.0     # Max Surface Triangles Size (mm) - For unlisted tissues
+DEF_VOL     5.0     # Max Volume Tetrahedra Size (mm) - For unlisted tissues
+RATIO       3.0     # Cell Radius/Edge Ratio - Quality
+SIGMA       4.5     # Smoothing multiplier - Factor that multiplies the voxel size and determines smoothing weight
+OPT_TIME    3600    # Optimization Time Limit (seconds)
+
+# Overrides of Surface Triangles size and Volume Tetrahedra size for specific labels
+# Label  Surface(mm)  Volume(mm)
+
+1        1.0          3.0    # White Matter
+2        1.0          3.0    # Grey Matter
+7        1.0          1.0    # Blood
+10       1.0          1.0    # Mucous Membrane
+12       0.6          1.0    # Skull (Cortical)
+13       2.0          2.0    # CSF
+14       0.5          1.0    # Skin
+15       1.0          1.0    # Muscle
+16       1.0          1.0    # Tendon
+18       1.0          1.0    # Cartilage
+19       0.6          1.0    # Skull (Cancellous)
+20       0.5          1.0    # Dura

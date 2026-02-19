@@ -24,8 +24,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # install freesurfer
 RUN wget -qO /tmp/fs.deb https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/8.1.0/freesurfer_ubuntu22-8.1.0_amd64.deb \
-    apt-get update && \
-    apt-get install -y /tmp/fs.deb \
+    && apt-get update \
+    && apt-get install -y /tmp/fs.deb \
     && rm -rf /var/lib/apt/lists/* \
     && rm -rf /usr/local/freesurfer/8.1.0/subjects/fsaverage_sym \
     && rm -rf /usr/local/freesurfer/8.1.0/subjects/bert \
@@ -66,12 +66,11 @@ RUN bash /tmp/getfsl.sh /usr/local/fsl \
     && rm -f /usr/local/fsl/bin/bedpostx_gpu* \
     && echo "export FSLDIR=/usr/local/fsl" >> ~/.bashrc \
     && echo "source $FSLDIR/etc/fslconf/fsl.sh" >> ~/.bashrc \
-    && echo "export PATH=$FSLDIR/bin:$PATH" >> ~/.bashrc \
-    && rm /tmp/getfsl.sh
+    && echo "export PATH=$FSLDIR/bin:$PATH" >> ~/.bashrc
 
 # install simnibs
 RUN wget -qO /tmp/simnibs.tar.gz https://github.com/simnibs/simnibs/releases/download/v4.5.0/simnibs_installer_linux.tar.gz \
-    tar -xzf /tmp/simnibs.tar.gz -C /tmp \
+    && tar -xzf /tmp/simnibs.tar.gz -C /tmp \
     && /tmp/simnibs_installer/install -s \
     && rm -rf /tmp/simnibs_installer \
     && rm -rf /root/SimNIBS-4.5/documentation \
@@ -80,7 +79,7 @@ RUN wget -qO /tmp/simnibs.tar.gz https://github.com/simnibs/simnibs/releases/dow
     && rm /tmp/simnibs.tar.gz
 
 # install micromamba
-RUN curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj -C /tmp bin/micromamba \
+RUN curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -C /tmp -xvj bin/micromamba \
     && mv /tmp/bin/micromamba /usr/local/bin/micromamba \
     && rm -rf /tmp/bin
 ENV MAMBA_ROOT_PREFIX=/opt/conda
@@ -88,11 +87,14 @@ RUN micromamba create -y -n neuro -c conda-forge \
     --override-channels \
     python=3.12 \
     "mne>=1.7.0" \
+    pymeshfix \
     antspyx \
     trimesh \
     nibabel \
     scipy \
     numpy \
+    rtree \
+    pyembree \
     && micromamba clean --all --yes \
     && rm -rf /opt/conda/pkgs/*
 ENV PATH="/opt/conda/envs/neuro/bin:$PATH"
