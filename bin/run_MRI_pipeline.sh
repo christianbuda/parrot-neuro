@@ -4,10 +4,18 @@ check_step() {
     local exit_code=$1    # The exit code of the command you just ran
     local description=$2  # Text description
     local log_file=$3     # Where the logs are stored
+    local cleanup_path=$4 # Optional, path to remove if error is detected
 
     if [ "$exit_code" -ne 0 ]; then
         echo "[ERROR] $description failed! (Exit Code: $exit_code)"
         echo "Check log file for more info: $log_file"
+
+        # Check if the cleanup path was provided and if it actually exists
+        if [ -n "$cleanup_path" ] && [ -d "$cleanup_path" ]; then
+            echo "Cleaning up directory: $cleanup_path"
+            rm -rf "$cleanup_path"
+        fi
+
         echo
         exit 1
     fi
@@ -387,19 +395,19 @@ echo
 
 # if not already done, run hippunfold
 if [ ! -d "$SUBJECTS_DIR/$SUBJECT/hippunfold" ]; then
-        echo "Running HippUnfold reconstruction..."
-        mkdir -p "$TMP_DIR"/tmp_hippunfold
+    echo "Running HippUnfold reconstruction..."
+    mkdir -p "$TMP_DIR"/tmp_hippunfold
 
-	start=$(date +%s)
-	docker run -it --rm -v "$TMP_DIR":/data khanlab/hippunfold:latest /data/input /data/tmp_hippunfold participant --modality T1w --cores "$N_THREADS" --path_T1w /data/input/{subject}.nii.gz > "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/hippunfold.txt 2>&1
-	check_step $? "HippUnfold reconstruction" "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/hippunfold.txt
-	end=$(date +%s)
+    start=$(date +%s)
+    docker run -it --rm -v "$TMP_DIR":/data khanlab/hippunfold:latest /data/input /data/tmp_hippunfold participant --modality T1w --cores "$N_THREADS" --path_T1w /data/input/{subject}.nii.gz > "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/hippunfold.txt 2>&1
+    check_step $? "HippUnfold reconstruction" "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/hippunfold.txt
+    end=$(date +%s)
 
-        # move output
-        mv "$TMP_DIR"/tmp_hippunfold/hippunfold/sub-subject "$SUBJECTS_DIR"/"$SUBJECT"/hippunfold
+    # move output
+    mv "$TMP_DIR"/tmp_hippunfold/hippunfold/sub-subject "$SUBJECTS_DIR"/"$SUBJECT"/hippunfold
 
-        # make label file
-        cat <<EOL > "$SUBJECTS_DIR"/"$SUBJECT"/hippunfold/LABELS.txt
+    # make label file
+    cat <<EOL > "$SUBJECTS_DIR"/"$SUBJECT"/hippunfold/LABELS.txt
 index, name, abbreviation
 1, subiculum, Sub
 2, CA1, CA1
@@ -411,11 +419,11 @@ index, name, abbreviation
 8, cysts, Cyst
 EOL
 
-        duration=$(( end - start ))
-        hours=$(( duration / 3600 ))
-        minutes=$(( (duration % 3600) / 60 ))
+    duration=$(( end - start ))
+    hours=$(( duration / 3600 ))
+    minutes=$(( (duration % 3600) / 60 ))
 
-        echo "HippUnfold reconstruction completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
+    echo "HippUnfold reconstruction completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
 else
         echo "HippUnfold reconstruction detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi

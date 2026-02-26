@@ -27,14 +27,14 @@ def read_medit(input_path):
     triangles = mesh[7+nvertices:7+nvertices+ntriangles]
     triangles = np.array(list(map(lambda x: x.split(' '), triangles))).astype(int)
     triangle_labels = triangles[:,-1]
-    triangles = triangles[:,:-1]-1
+    triangles = triangles[:,:-1]
 
     assert mesh[7+nvertices+ntriangles] == 'Tetrahedra', 'Mesh file header not as expected, check pls.'
     ntetrahedra = int(mesh[8+nvertices+ntriangles])
     tetrahedra = mesh[9+nvertices+ntriangles:9+nvertices+ntriangles+ntetrahedra]
     tetrahedra = np.array(list(map(lambda x: x.split(' '), tetrahedra))).astype(int)
     tetrahedron_labels = tetrahedra[:,-1]
-    tetrahedra = tetrahedra[:,:-1]-1
+    tetrahedra = tetrahedra[:,:-1]
 
     assert mesh[9+nvertices+ntriangles+ntetrahedra] == 'End', 'Mesh file header not as expected, check pls.'
     
@@ -48,8 +48,8 @@ def write_medit(output_path, vertices, vertex_labels, triangles, triangle_labels
         f.write('Dimension 3\n')
         f.write('# CGAL::Mesh_complex_3_in_triangulation_3\n')
 
-        triangles = np.concatenate([triangles, triangle_labels[:,np.newaxis]], axis = -1)
-        tetrahedra = np.concatenate([tetrahedra, tetrahedron_labels[:,np.newaxis]], axis = -1)
+        triangles = np.concatenate([triangles+1, triangle_labels[:,np.newaxis]], axis = -1)
+        tetrahedra = np.concatenate([tetrahedra+1, tetrahedron_labels[:,np.newaxis]], axis = -1)
         
         f.write('Vertices\n')
         f.write(str(len(vertices))+'\n')

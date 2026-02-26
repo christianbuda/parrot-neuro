@@ -4,10 +4,18 @@ check_step() {
     local exit_code=$1    # The exit code of the command you just ran
     local description=$2  # Text description
     local log_file=$3     # Where the logs are stored
+    local cleanup_path=$4 # Optional, path to remove if error is detected
 
     if [ "$exit_code" -ne 0 ]; then
         echo "[ERROR] $description failed! (Exit Code: $exit_code)"
         echo "Check log file for more info: $log_file"
+
+        # Check if the cleanup path was provided and if it actually exists
+        if [ -n "$cleanup_path" ] && [ -d "$cleanup_path" ]; then
+            echo "Cleaning up directory: $cleanup_path"
+            rm -rf "$cleanup_path"
+        fi
+
         echo
         exit 1
     fi
@@ -39,7 +47,7 @@ usage() {
     echo "Pipeline Options:"
     echo "  --spacing           Array of spacings (in mm) between the dipoles (Default: 4, 3, 2)"
     echo "                      NOTE: The script automatically uses all three default spacings for computation, if you change this, make sure to adapt the rest of the script to accomodate for this change."
-    echo "  --threads           Number of threads (Default: 8)"
+    echo "  --threads           Number of threads, you can go up to about 30 without having diminishing returns (Default: 8)"
     exit 1
 }
 
@@ -158,7 +166,7 @@ if [ ! -d "$SUBJECTS_DIR/$SUBJECT/electrodes" ]; then
 
 	start=$(date +%s)
     docker run --rm -v $SUBJECTS_DIR/$SUBJECT:/subject parrot_forward_model python place_electrodes.py > "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/electrodes.txt 2>&1
-	check_step $? "Electrodes computation" "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/electrodes.txt
+	check_step $? "Electrodes computation" "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/electrodes.txt "$SUBJECTS_DIR"/"$SUBJECT"/electrodes
 	end=$(date +%s)
 	# move output
 
@@ -190,7 +198,7 @@ for s in "${SPACING_LIST[@]}"; do
 
         start=$(date +%s)
         docker run --rm -v $SUBJECTS_DIR/$SUBJECT:/subject parrot_forward_model python place_dipoles.py --dipole_spacing $spacing > "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/dipoles"$spacing"mm.txt 2>&1
-        check_step $? "Dipole placing at $spacing mm spacing" "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/dipoles"$spacing"mm.txt
+        check_step $? "Dipole placing at $spacing mm spacing" "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/dipoles"$spacing"mm.txt "$SUBJECTS_DIR"/"$SUBJECT"/dipoles/spacing"$spacing"mm
         end=$(date +%s)
 
 

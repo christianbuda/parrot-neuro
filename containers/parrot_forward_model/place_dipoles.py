@@ -631,7 +631,7 @@ if __name__ == "__main__":
         formatter_class=argparse.RawTextHelpFormatter
     )
 
-    # 1. Define the Subject Folder Argument
+    # Define the Subject Folder Argument
     parser.add_argument(
         '--subject_dir',
         type=str,
@@ -640,7 +640,6 @@ if __name__ == "__main__":
         help='Path to the subject folder (e.g., /SUBJECTS/<subjectname>/)'
     )
     
-    # 1. Define the Subject Folder Argument
     parser.add_argument(
         '--dipole_spacing',
         type=float,

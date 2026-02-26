@@ -5,10 +5,18 @@ check_step() {
     local exit_code=$1    # The exit code of the command you just ran
     local description=$2  # Text description
     local log_file=$3     # Where the logs are stored
+    local cleanup_path=$4 # Optional, path to remove if error is detected
 
     if [ "$exit_code" -ne 0 ]; then
         echo "[ERROR] $description failed! (Exit Code: $exit_code)"
         echo "Check log file for more info: $log_file"
+
+        # Check if the cleanup path was provided and if it actually exists
+        if [ -n "$cleanup_path" ] && [ -d "$cleanup_path" ]; then
+            echo "Cleaning up directory: $cleanup_path"
+            rm -rf "$cleanup_path"
+        fi
+
         echo
         exit 1
     fi
@@ -213,6 +221,7 @@ if [ ! -d /SUBJECTS/"$subj"/simnibs_charm ]; then
 	cd /
 	/root/SimNIBS-4.5/bin/simnibs_python /scripts/extract_charm_surf.py --charm_dir "/home/simnibs_reconstructions/m2m_subject/" >> /SUBJECTS/"$subj"/reconstruction_logs/simnibs_charm.txt 2>&1
 	check_step $? "Simnibs charm surface extraction" "$subj"/reconstruction_logs/simnibs_charm.txt
+        cp /scripts/simnibs_conductivities.txt /home/simnibs_reconstructions/m2m_subject/conductivities.txt
 	mv /home/simnibs_reconstructions/m2m_subject /SUBJECTS/"$subj"/simnibs_charm
 	end=$(date +%s)
 
@@ -236,9 +245,9 @@ if [ ! -d /SUBJECTS/"$subj"/fsl_first ]; then
 	start=$(date +%s)
 	# bias field correct image before running first
 	micromamba run -n neuro python /scripts/bias_correct.py "$T1_file" /SUBJECTS/"$subj"/fsl_first/T1.nii.gz > /SUBJECTS/"$subj"/reconstruction_logs/fsl_first.txt 2>&1
-	check_step $? "N4 bias correction" "$subj"/reconstruction_logs/fsl_first.txt
+	check_step $? "N4 bias correction" "$subj"/reconstruction_logs/fsl_first.txt /SUBJECTS/"$subj"/fsl_first
 	/scripts/run_first_all_sequential -i /SUBJECTS/"$subj"/fsl_first/T1.nii.gz -o /SUBJECTS/"$subj"/fsl_first/FSL -v >> /SUBJECTS/"$subj"/reconstruction_logs/fsl_first.txt 2>&1
-	check_step $? "FSL first reconstruction" "$subj"/reconstruction_logs/fsl_first.txt
+	check_step $? "FSL first reconstruction" "$subj"/reconstruction_logs/fsl_first.txt /SUBJECTS/"$subj"/fsl_first
         end=$(date +%s)
 
         duration=$(( end - start ))
@@ -263,9 +272,9 @@ if [ ! -d /SUBJECTS/"$subj"/synthstrip ]; then
 
 	start=$(date +%s)
 	mri_synthstrip -i "$T1_file" -o /SUBJECTS/"$subj"/synthstrip/T1_stripped.nii.gz -m /SUBJECTS/"$subj"/synthstrip/T1_stripped_mask.nii.gz "${synt_flag[@]}" > /SUBJECTS/"$subj"/reconstruction_logs/synthstrip.txt 2>&1
-	check_step $? "SynthStrip reconstruction" "$subj"/reconstruction_logs/synthstrip.txt
+	check_step $? "SynthStrip reconstruction" "$subj"/reconstruction_logs/synthstrip.txt /SUBJECTS/"$subj"/synthstrip
 	mri_synthstrip -i "$T1_file" -o /SUBJECTS/"$subj"/synthstrip/T1_noCSF_stripped.nii.gz -m /SUBJECTS/"$subj"/synthstrip/T1_noCSF_stripped_mask.nii.gz "${synt_flag[@]}" --no-csf >> /SUBJECTS/"$subj"/reconstruction_logs/synthstrip.txt 2>&1
-	check_step $? "SynthStrip no-CSF reconstruction" "$subj"/reconstruction_logs/synthstrip.txt
+	check_step $? "SynthStrip no-CSF reconstruction" "$subj"/reconstruction_logs/synthstrip.txt /SUBJECTS/"$subj"/synthstrip
         end=$(date +%s)
 
         duration=$(( end - start ))
@@ -286,7 +295,7 @@ if [ ! -d /SUBJECTS/"$subj"/cerebellum ]; then
 
 	start=$(date +%s)
 	micromamba run -n neuro python /scripts/run_cereb_pipeline.py --subject_dir /SUBJECTS/"$subj"/ --template_dir "/home/cerebellum_template/" --threads "$N_THREADS" > /SUBJECTS/"$subj"/reconstruction_logs/cerebellum.txt 2>&1
-	check_step $? "Cerebellum reconstruction" "$subj"/reconstruction_logs/cerebellum.txt
+	check_step $? "Cerebellum reconstruction" "$subj"/reconstruction_logs/cerebellum.txt /SUBJECTS/"$subj"/cerebellum
 	end=$(date +%s)
 
         duration=$(( end - start ))
@@ -306,7 +315,7 @@ if [ ! -d /SUBJECTS/"$subj"/surfaces ]; then
 
 	start=$(date +%s)
 	micromamba run -n neuro python /scripts/gather_surfaces.py --subject_dir /SUBJECTS/"$subj"/ > /SUBJECTS/"$subj"/reconstruction_logs/surfaces.txt 2>&1
-	check_step $? "Surfaces gathering" "$subj"/reconstruction_logs/surfaces.txt
+	check_step $? "Surfaces gathering" "$subj"/reconstruction_logs/surfaces.txt /SUBJECTS/"$subj"/surfaces
 	end=$(date +%s)
 
 	duration=$(( end - start ))
@@ -326,7 +335,7 @@ if [ ! -d /SUBJECTS/"$subj"/atlas ]; then
 
         start=$(date +%s)
         micromamba run -n neuro python /scripts/make_atlas.py --subject_dir /SUBJECTS/"$subj"/ > /SUBJECTS/"$subj"/reconstruction_logs/atlas.txt 2>&1
-	check_step $? "Atlas generation" "$subj"/reconstruction_logs/atlas.txt
+	check_step $? "Atlas generation" "$subj"/reconstruction_logs/atlas.txt /SUBJECTS/"$subj"/atlas
         end=$(date +%s)
 
         duration=$(( end - start ))
@@ -348,7 +357,7 @@ if [ ! -d /SUBJECTS/"$subj"/tissue_labels/electrical ]; then
 
         start=$(date +%s)
         micromamba run -n neuro python /scripts/gather_electrical_labelfields.py --subject_dir /SUBJECTS/"$subj"/ > /SUBJECTS/"$subj"/reconstruction_logs/electrical_labelfields.txt 2>&1
-        check_step $? "Electrical label fields generation" "$subj"/reconstruction_logs/electrical_labelfields.txt
+        check_step $? "Electrical label fields generation" "$subj"/reconstruction_logs/electrical_labelfields.txt /SUBJECTS/"$subj"/tissue_labels/electrical
         end=$(date +%s)
 
         duration=$(( end - start ))
@@ -366,7 +375,7 @@ if [ ! -d /SUBJECTS/"$subj"/tissue_labels/acoustic ]; then
 
         start=$(date +%s)
         micromamba run -n neuro python /scripts/gather_acoustic_labelfields.py --subject_dir /SUBJECTS/"$subj"/ > /SUBJECTS/"$subj"/reconstruction_logs/acoustic_labelfields.txt
-        check_step $? "Acoustic label fields generation" "$subj"/reconstruction_logs/acoustic_labelfields.txt
+        check_step $? "Acoustic label fields generation" "$subj"/reconstruction_logs/acoustic_labelfields.txt /SUBJECTS/"$subj"/tissue_labels/acoustic
         end=$(date +%s)
 
         duration=$(( end - start ))
