@@ -262,7 +262,37 @@ else
 fi
 echo
 
+# if not already done, solve the forward problem
+if [ ! -d "$SUBJECTS_DIR/$SUBJECT/forward_solvers" ]; then
+    mkdir -p "$SUBJECTS_DIR/$SUBJECT/forward_solvers"
 
+    start=$(date +%s)
+    
+	spacing=$(printf "%.1f" "${SPACING_LIST[0]}")
+    echo "Solving forward problem with OpenMEEG at $spacing mm dipole spacing"
+    docker run --rm -v $DATA/SUBJECTS/mni_nlin_asym_09b:/subject parrot_forward_solvers /scripts/make_leadfield_openmeeg.py --dipole_spacing "$spacing" >> "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/forward_solvers.txt 2>&1
+	check_step $? "OpenMEEG $spacing mm" "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/forward_solvers.txt "$SUBJECTS_DIR/$SUBJECT/forward_solvers"
+
+    spacing=$(printf "%.1f" "${SPACING_LIST[1]}")
+    echo "Solving forward problem with DUNEuro using SimNIBS charm mesh, at $spacing mm dipole spacing"
+    docker run --rm -v $DATA/SUBJECTS/mni_nlin_asym_09b:/subject parrot_forward_solvers /scripts/make_leadfield_duneuro.py --dipole_spacing "$spacing" --mesh_path simnibs_charm/subject.msh --tissue_names simnibs_charm/labels.txt --conductivities_path simnibs_charm/conductivities.txt --label simnibs --valid_tissues "Gray-Matter" >> "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/forward_solvers.txt 2>&1
+	check_step $? "DUNEuro SimNIBS $spacing mm" "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/forward_solvers.txt "$SUBJECTS_DIR/$SUBJECT/forward_solvers"
+
+    spacing=$(printf "%.1f" "${SPACING_LIST[2]}")
+    echo "Solving forward problem with DUNEuro using CGAL mesh, at $spacing mm dipole spacing"
+    docker run --rm -v $DATA/SUBJECTS/mni_nlin_asym_09b:/subject parrot_forward_solvers /scripts/make_leadfield_duneuro.py --dipole_spacing "$spacing" --mesh_path tetmesh/tetrahedral_mesh.mesh --tissue_names tetmesh/labels.txt --conductivities_path tetmesh/conductivities.txt --label CGAL --valid_tissues "Brain (Grey Matter)" Thalamus Hippocampus >> "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/forward_solvers.txt 2>&1
+	check_step $? "DUNEuro CGAL $spacing mm" "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/forward_solvers.txt "$SUBJECTS_DIR/$SUBJECT/forward_solvers"
+	end=$(date +%s)
+	
+    duration=$(( end - start ))
+    hours=$(( duration / 3600 ))
+    minutes=$(( (duration % 3600) / 60 ))
+
+	echo "All three forward solvers run in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
+else
+    echo "Forward solvers folder detected, skipping step..." | tee -a "$LOG_FILE"
+fi
+echo
 
 end_time=$(date +%s)
 

@@ -1,0 +1,7 @@
+# Properties Description 1.0 (Conductivities)
+
+BRAIN	0.33
+CSF	1.79
+SKULL	0.0041
+SCALP	0.33
+AIR	0.0
