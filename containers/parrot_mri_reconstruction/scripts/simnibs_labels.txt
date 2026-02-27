@@ -1,0 +1,11 @@
+0,Background
+1,White-Matter
+2,Gray-Matter
+3,CSF
+4,Bone
+5,Scalp
+6,Eye_balls
+7,Compact_bone
+8,Spongy_bone
+9,Blood
+10,Muscle

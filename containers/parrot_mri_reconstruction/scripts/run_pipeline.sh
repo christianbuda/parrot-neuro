@@ -222,6 +222,7 @@ if [ ! -d /SUBJECTS/"$subj"/simnibs_charm ]; then
 	/root/SimNIBS-4.5/bin/simnibs_python /scripts/extract_charm_surf.py --charm_dir "/home/simnibs_reconstructions/m2m_subject/" >> /SUBJECTS/"$subj"/reconstruction_logs/simnibs_charm.txt 2>&1
 	check_step $? "Simnibs charm surface extraction" "$subj"/reconstruction_logs/simnibs_charm.txt
         cp /scripts/simnibs_conductivities.txt /home/simnibs_reconstructions/m2m_subject/conductivities.txt
+        cp /scripts/simnibs_labels.txt /home/simnibs_reconstructions/m2m_subject/labels.txt
 	mv /home/simnibs_reconstructions/m2m_subject /SUBJECTS/"$subj"/simnibs_charm
 	end=$(date +%s)
 
