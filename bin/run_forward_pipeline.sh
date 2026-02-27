@@ -175,7 +175,7 @@ if [ ! -d "$SUBJECTS_DIR/$SUBJECT/electrodes" ]; then
 
 	echo "Electrodes computation completed in ${minutes} minutes." | tee -a "$LOG_FILE"
 else
-        echo "Electrodes positions detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+    echo "Electrodes positions detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 
@@ -258,7 +258,7 @@ if [ ! -d "$SUBJECTS_DIR/$SUBJECT/tetmesh" ]; then
 
 	echo "Tetrahedral meshing completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
 else
-        echo "Tetrahedral mesh detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+    echo "Tetrahedral mesh detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 

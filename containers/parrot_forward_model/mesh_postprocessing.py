@@ -38,6 +38,10 @@ def read_medit(input_path):
 
     assert mesh[9+nvertices+ntriangles+ntetrahedra] == 'End', 'Mesh file header not as expected, check pls.'
     
+    # medit files start counting from 1
+    triangles -= 1
+    tetrahedra -= 1
+    
     return vertices, vertex_labels, triangles, triangle_labels, tetrahedra, tetrahedron_labels
 
 def write_medit(output_path, vertices, vertex_labels, triangles, triangle_labels, tetrahedra, tetrahedron_labels):
@@ -48,8 +52,12 @@ def write_medit(output_path, vertices, vertex_labels, triangles, triangle_labels
         f.write('Dimension 3\n')
         f.write('# CGAL::Mesh_complex_3_in_triangulation_3\n')
 
-        triangles = np.concatenate([triangles+1, triangle_labels[:,np.newaxis]], axis = -1)
-        tetrahedra = np.concatenate([tetrahedra+1, tetrahedron_labels[:,np.newaxis]], axis = -1)
+        # medit files start counting from 1
+        triangles = triangles+1
+        tetrahedra = tetrahedra+1
+
+        triangles = np.concatenate([triangles, triangle_labels[:,np.newaxis]], axis = -1)
+        tetrahedra = np.concatenate([tetrahedra, tetrahedron_labels[:,np.newaxis]], axis = -1)
         
         f.write('Vertices\n')
         f.write(str(len(vertices))+'\n')
