@@ -357,7 +357,7 @@ cp "$DEST_T1" "$TMP_DIR/input/subject.nii.gz"
 mkdir -p "${SUBJECTS_DIR}/${SUBJECT}/reconstruction_logs"
 
 # reconstruction log file
-LOG_FILE="$SUBJECTS_DIR/$SUBJECT/reconstruction_logs/reconstruction_log.txt"
+LOG_FILE="$SUBJECTS_DIR/$SUBJECT/reconstruction_logs/MRI_pipeline_log.txt"
 
 ############################ run reconstruction ###################################
 echo "----------------------------------------------------------------------------------------" >> "$LOG_FILE"
