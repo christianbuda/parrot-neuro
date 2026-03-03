@@ -171,9 +171,8 @@ if [ ! -d "$SUBJECTS_DIR/$SUBJECT/electrodes" ]; then
 	# move output
 
 	duration=$(( end - start ))
-	minutes=$(( duration / 60 ))
 
-	echo "Electrodes computation completed in ${minutes} minutes." | tee -a "$LOG_FILE"
+	echo "Electrodes computation completed in ${duration} seconds." | tee -a "$LOG_FILE"
 else
     echo "Electrodes positions detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
@@ -270,7 +269,7 @@ if [ ! -d "$SUBJECTS_DIR/$SUBJECT/forward_solvers" ]; then
     
 	spacing=$(printf "%.1f" "${SPACING_LIST[0]}")
     echo "Solving forward problem with OpenMEEG at $spacing mm dipole spacing"
-    docker run --rm -v $DATA/SUBJECTS/mni_nlin_asym_09b:/subject parrot_forward_solvers /scripts/make_leadfield_openmeeg.py --dipole_spacing "$spacing" >> "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/forward_solvers.txt 2>&1
+    docker run --rm -v $DATA/SUBJECTS/mni_nlin_asym_09b:/subject parrot_forward_solvers /scripts/make_leadfield_openmeeg.py --dipole_spacing "$spacing" > "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/forward_solvers.txt 2>&1
 	check_step $? "OpenMEEG $spacing mm" "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/forward_solvers.txt "$SUBJECTS_DIR/$SUBJECT/forward_solvers"
 
     spacing=$(printf "%.1f" "${SPACING_LIST[1]}")

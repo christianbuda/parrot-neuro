@@ -31,7 +31,7 @@ if __name__ == "__main__":
     # make output directory if needed
     os.makedirs(os.path.join(subject_dir, 'electrodes/'), exist_ok=True)
     
-    mesh = trimesh.load(os.path.join(subject_dir, 'surfaces/charm_scalp.stl'))
+    mesh = trimesh.load(os.path.join(subject_dir, 'surfaces/charm_scalp.ply'))
     vertices = np.array(mesh.vertices)
     faces = np.array(mesh.faces)
     

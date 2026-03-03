@@ -152,10 +152,10 @@ if __name__ == "__main__":
     
     
     # load BEM meshes
-    brain = trimesh.load(add_subject_dir('surfaces/freesurfer_BEM_brain.stl'))
-    inner_skull = trimesh.load(add_subject_dir('surfaces/freesurfer_BEM_inner_skull.stl'))
-    outer_skull = trimesh.load(add_subject_dir('surfaces/freesurfer_BEM_outer_skull.stl'))
-    outer_skin = trimesh.load(add_subject_dir('surfaces/freesurfer_BEM_outer_skin.stl'))
+    brain = trimesh.load(add_subject_dir('surfaces/freesurfer_BEM_brain.ply'))
+    inner_skull = trimesh.load(add_subject_dir('surfaces/freesurfer_BEM_inner_skull.ply'))
+    outer_skull = trimesh.load(add_subject_dir('surfaces/freesurfer_BEM_outer_skull.ply'))
+    outer_skin = trimesh.load(add_subject_dir('surfaces/freesurfer_BEM_outer_skin.ply'))
     
     # convert meshes to meters
     brain.vertices = brain.vertices/1000

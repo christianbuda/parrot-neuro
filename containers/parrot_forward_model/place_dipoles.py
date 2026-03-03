@@ -51,6 +51,29 @@ def save_npy(filename, arr):
     np.save(filename, arr)
     return
 
+def compute_neural_density(dipole_labels, atlas_path, staining_path):
+    atlas = nib.load(atlas_path).get_fdata().astype(int)
+    density = nib.load(staining_path).get_fdata()
+
+    # remove background labels
+    density = density[atlas>0]
+    atlas = atlas[atlas>0]
+
+    # normalize by maximum 16bit integer and flip intensity
+    # this is actually the gray level index, not the density
+    # we use it as a proxy
+    density = 1-density/(2**16-1)
+
+    val, counts = np.unique(atlas, return_counts = True)
+    number_voxels = np.ones(atlas.max()+1, dtype = int)
+    number_voxels[val] = counts
+
+    # average gray level index for each label
+    # full of zeros, since atlas probably does not cover all possible integers
+    labels_GLI = np.array(scipy.sparse.coo_matrix((density,( np.arange(len(density)), atlas)), shape = (len(density), atlas.max()+1)).sum(axis=0)).squeeze()/number_voxels
+
+    return labels_GLI[dipole_labels]
+
 def compute_face_normals(vertices, faces, return_area = False):
     A = vertices[faces[:,0]]
     B = vertices[faces[:,1]]
@@ -188,11 +211,32 @@ def sample_surface(mesh, min_dist, vertex_label, vertex_thickness = None, vertex
 
     return sampled_vertices, vertices[sampled_vertices], dipole_labels, dipole_volume, dipole_normals, orient_type
 
-def sample_all_surfaces(all_meshes, dipole_spacing, generator = None, test_mode = False):
+def sample_all_surfaces(all_meshes, dipole_spacing, generator = None, prune_bad_dipoles = True, test_mode = False):
     surface_dipoles = []
     for mesh_dict in all_meshes:
         print(f'Sampling dipoles on mesh {mesh_dict["mesh"]}')
         sampled_vertices, dipole_positions, dipole_labels, dipole_volume, dipole_normals, orient_type = sample_surface(mesh = trimesh.load_mesh(mesh_dict['mesh']), min_dist = dipole_spacing, vertex_label = load_npy(mesh_dict['labels']), vertex_thickness = load_npy(mesh_dict['thickness']), vertex_volume = (load_npy(mesh_dict['volume']) if 'volume' in mesh_dict.keys() else None), generator = generator, test_mode = test_mode)
+        
+        # remove dipole with label equal to zero (usually not interesting)
+        if prune_bad_dipoles:
+            if isinstance(dipole_labels, list):
+                # check that all labels have the same zeros
+                zero_lab = list(map(lambda x: x!=0, dipole_labels))
+                zero_lab = np.stack(zero_lab, axis = 0)
+                assert np.all(np.all(zero_lab, axis = 0) == np.any(zero_lab, axis = 0)), f'Label 0 does not coincide across all labels for mesh {mesh_dict["mesh"]}, cannot proceed with removing dipoles with 0 label.'
+                
+                # pick the first (they are all the same)
+                zero_lab = zero_lab[0]
+            else:
+                zero_lab = (dipole_labels!=0)
+            
+            sampled_vertices = sampled_vertices[zero_lab]
+            dipole_positions = dipole_positions[zero_lab]
+            dipole_labels = dipole_labels[zero_lab]
+            dipole_volume = dipole_volume[zero_lab]
+            dipole_normals = dipole_normals[zero_lab]
+            orient_type = orient_type[zero_lab]
+            
         print('Done!\n')
         basename = pathlib.Path(mesh_dict['mesh']).stem
         output_dir = add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/surfaces/'+basename)
@@ -334,13 +378,13 @@ def get_instruction_files(kind):
         
         return labels_to_exclude, gradient_as_normal, principal_axis_left, principal_axis_right, random_orientations
     elif kind == 'surfaces':
-        all_meshes = [  {'mesh':add_subject_dir('surfaces/freesurfer_lh_middle.stl'), 'thickness':add_subject_dir('surfaces/freesurfer_lh_middle_thickness.npy'), 'labels':glob.glob(add_subject_dir('atlas/freesurfer_surf/lh.*Parcels_labels.npy')), 'volume':add_subject_dir('surfaces/freesurfer_lh_middle_volume.npy')},
-                        {'mesh':add_subject_dir('surfaces/freesurfer_rh_middle.stl'), 'thickness':add_subject_dir('surfaces/freesurfer_rh_middle_thickness.npy'), 'labels':glob.glob(add_subject_dir('atlas/freesurfer_surf/rh.*Parcels_labels.npy')), 'volume':add_subject_dir('surfaces/freesurfer_rh_middle_volume.npy')},
-                        {'mesh':add_subject_dir('surfaces/cereb_inner.stl'), 'thickness':add_subject_dir('surfaces/cereb_inner_thickness.npy'), 'labels':add_subject_dir('atlas/cerebellum_surf/cereb_labels.npy')},
-                        {'mesh':add_subject_dir('surfaces/hippunfold_L_dentate_middle.stl'), 'thickness':add_subject_dir('surfaces/hippunfold_L_dentate_middle_thickness.npy'), 'labels':add_subject_dir('atlas/hippunfold_surf/L_dent_labels.npy')},
-                        {'mesh':add_subject_dir('surfaces/hippunfold_R_dentate_middle.stl'), 'thickness':add_subject_dir('surfaces/hippunfold_R_dentate_middle_thickness.npy'), 'labels':add_subject_dir('atlas/hippunfold_surf/R_dent_labels.npy')},
-                        {'mesh':add_subject_dir('surfaces/hippunfold_L_hipp_middle.stl'), 'thickness':add_subject_dir('surfaces/hippunfold_L_hipp_middle_thickness.npy'), 'labels':add_subject_dir('atlas/hippunfold_surf/L_hipp_labels.npy')},
-                        {'mesh':add_subject_dir('surfaces/hippunfold_R_hipp_middle.stl'), 'thickness':add_subject_dir('surfaces/hippunfold_R_hipp_middle_thickness.npy'), 'labels':add_subject_dir('atlas/hippunfold_surf/R_hipp_labels.npy')}]
+        all_meshes = [  {'mesh':add_subject_dir('surfaces/freesurfer_lh_middle.ply'), 'thickness':add_subject_dir('surfaces/freesurfer_lh_middle_thickness.npy'), 'labels':glob.glob(add_subject_dir('atlas/freesurfer_surf/lh.*Parcels_labels.npy')), 'volume':add_subject_dir('surfaces/freesurfer_lh_middle_volume.npy')},
+                        {'mesh':add_subject_dir('surfaces/freesurfer_rh_middle.ply'), 'thickness':add_subject_dir('surfaces/freesurfer_rh_middle_thickness.npy'), 'labels':glob.glob(add_subject_dir('atlas/freesurfer_surf/rh.*Parcels_labels.npy')), 'volume':add_subject_dir('surfaces/freesurfer_rh_middle_volume.npy')},
+                        {'mesh':add_subject_dir('surfaces/cereb_inner_processed.ply'), 'thickness':add_subject_dir('surfaces/cereb_inner_thickness.npy'), 'labels':add_subject_dir('atlas/cerebellum_surf/cereb_labels.npy')},
+                        {'mesh':add_subject_dir('surfaces/hippunfold_L_dentate_middle.ply'), 'thickness':add_subject_dir('surfaces/hippunfold_L_dentate_middle_thickness.npy'), 'labels':add_subject_dir('atlas/hippunfold_surf/L_dent_labels.npy')},
+                        {'mesh':add_subject_dir('surfaces/hippunfold_R_dentate_middle.ply'), 'thickness':add_subject_dir('surfaces/hippunfold_R_dentate_middle_thickness.npy'), 'labels':add_subject_dir('atlas/hippunfold_surf/R_dent_labels.npy')},
+                        {'mesh':add_subject_dir('surfaces/hippunfold_L_hipp_middle.ply'), 'thickness':add_subject_dir('surfaces/hippunfold_L_hipp_middle_thickness.npy'), 'labels':add_subject_dir('atlas/hippunfold_surf/L_hipp_labels.npy')},
+                        {'mesh':add_subject_dir('surfaces/hippunfold_R_hipp_middle.ply'), 'thickness':add_subject_dir('surfaces/hippunfold_R_hipp_middle_thickness.npy'), 'labels':add_subject_dir('atlas/hippunfold_surf/R_hipp_labels.npy')}]
         return all_meshes
     else:
         raise ValueError('kind must be one of ["volume", "surfaces"]')
@@ -658,7 +702,7 @@ if __name__ == "__main__":
     os.makedirs(add_subject_dir(f'dipoles/'), exist_ok=True)
     
     if os.path.isdir(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/')):
-        print(f'WARNING: Dipoles at {dipole_spacing} mm spacing already detected in subject folder, skipping computation.')
+        print(f'WARNING: Dipoles at {dipole_spacing} mm spacing already detected in subject folder, skipped computation.')
     else:
         # load random number generator
         generator = np.random.default_rng()
@@ -670,12 +714,16 @@ if __name__ == "__main__":
         # save dipoles to disk
         all_arrays_dict = unify_attribute([volumetric_dipoles_dict] + surface_dipoles_dict, 'dipole_labels')
         aggregate_array_files(all_arrays_dict, add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/'))
-        
-        # create aggregated labels file for convenience, assumes that parcels 1000 is available
+
+        # create aggregated labels file for convenience and neural density files, assumes that parcels 1000 is available
         labels = np.load(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/1000Parcels_dipole_labels.npy'))
+
+        density = compute_neural_density(labels, add_subject_dir('atlas/atlas1000.nii.gz'), add_subject_dir('bigbrain/subject_full16_100um_2009b_sym.nii.gz'))
+        np.save(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/dipole_neural_density.npy'), density)
+
         with open(add_subject_dir('atlas/atlas_to_aggregated.json'), 'r') as f:
             atlas_to_aggregated = json.load(f)
-        
+
         aggregated_labels = np.zeros_like(labels)
         for idx, val in enumerate(atlas_to_aggregated):
             aggregated_labels[np.isin(labels, val[0])] = idx

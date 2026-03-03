@@ -2,6 +2,7 @@ import copy
 import numpy as np
 import ants
 import os
+import trimesh
 import argparse
 import nibabel as nib
 
@@ -108,7 +109,7 @@ if __name__ == "__main__":
         os.mkdir(os.path.join(subj_dir, 'atlas/freesurfer_surf'))
         os.mkdir(os.path.join(subj_dir, 'atlas/cerebellum_surf'))
     except FileExistsError:
-        print('Atlases already detected in subject folder, you should delete the atlas folder before running this module!')
+        raise RuntimeError('Atlases already detected in subject folder, you should delete the atlas folder before running this module!')
 
     T1 = nib.load(os.path.join(subj_dir, 'raw/T1.nii.gz'))
     fsLUT = get_freesurfer_LUT(subj_dir)[1]
@@ -136,11 +137,9 @@ if __name__ == "__main__":
             newLUT[key]['name'] = val
 
         # create label file for surface
-        if not os.path.exists(os.path.join(subj_dir, 'atlas/cerebellum_surf/cereb_labels.npy')):
-            GM_lab = np.load(os.path.join(subj_dir, 'surfaces/cereb_inner_original_labels.npy'))
-
-            GM_lab = relabel_vector(GM_lab, dict(zip(*old_labels)), cereb_labels)
-            np.save(os.path.join(subj_dir, 'atlas/cerebellum_surf/cereb_labels.npy'), GM_lab)
+        GM_lab = np.load(os.path.join(subj_dir, 'surfaces/cereb_inner_processed_original_labels.npy'))
+        GM_lab = relabel_vector(GM_lab, dict(zip(*old_labels)), cereb_labels)
+        np.save(os.path.join(subj_dir, 'atlas/cerebellum_surf/cereb_labels.npy'), GM_lab)
         
         cerebellum = relabel_image(cerebellum, list(old_labels[0]), list(range(601, 625)))
 
@@ -302,15 +301,13 @@ if __name__ == "__main__":
             newLUT[key]['name'] = val
         
         # create label file for surfaces
-        if not os.path.exists(os.path.join(subj_dir, 'atlas/hippunfold_surf/L_hipp_labels.npy')):
-            surf_lab = np.load(os.path.join(subj_dir, 'surfaces/hippunfold_L_hipp_middle_original_labels.npy'))
-            surf_lab = relabel_vector(surf_lab, dict(zip(*old_labels)), hipp_labels)
-            np.save(os.path.join(subj_dir, 'atlas/hippunfold_surf/L_hipp_labels.npy'), surf_lab)
+        surf_lab = np.load(os.path.join(subj_dir, 'surfaces/hippunfold_L_hipp_middle_original_labels.npy'))
+        surf_lab = relabel_vector(surf_lab, dict(zip(*old_labels)), hipp_labels)
+        np.save(os.path.join(subj_dir, 'atlas/hippunfold_surf/L_hipp_labels.npy'), surf_lab)
         
-        if not os.path.exists(os.path.join(subj_dir, 'atlas/hippunfold_surf/L_dent_labels.npy')):
-            surf_lab = np.load(os.path.join(subj_dir, 'surfaces/hippunfold_L_dentate_middle_original_labels.npy'))
-            surf_lab = relabel_vector(surf_lab, dict(zip(*old_labels)), hipp_labels)
-            np.save(os.path.join(subj_dir, 'atlas/hippunfold_surf/L_dent_labels.npy'), surf_lab)
+        surf_lab = np.load(os.path.join(subj_dir, 'surfaces/hippunfold_L_dentate_middle_original_labels.npy'))
+        surf_lab = relabel_vector(surf_lab, dict(zip(*old_labels)), hipp_labels)
+        np.save(os.path.join(subj_dir, 'atlas/hippunfold_surf/L_dent_labels.npy'), surf_lab)
 
         Lhipp = relabel_image(Lhipp, list(old_labels[0]), list(range(193, 193+len(old_labels[0]))))
 
@@ -329,15 +326,13 @@ if __name__ == "__main__":
             newLUT[key]['name'] = val
         
         
-        if not os.path.exists(os.path.join(subj_dir, 'atlas/hippunfold_surf/R_hipp_labels.npy')):
-            surf_lab = np.load(os.path.join(subj_dir, 'surfaces/hippunfold_R_hipp_middle_original_labels.npy'))
-            surf_lab = relabel_vector(surf_lab, dict(zip(*old_labels)), hipp_labels)
-            np.save(os.path.join(subj_dir, 'atlas/hippunfold_surf/R_hipp_labels.npy'), surf_lab)
+        surf_lab = np.load(os.path.join(subj_dir, 'surfaces/hippunfold_R_hipp_middle_original_labels.npy'))
+        surf_lab = relabel_vector(surf_lab, dict(zip(*old_labels)), hipp_labels)
+        np.save(os.path.join(subj_dir, 'atlas/hippunfold_surf/R_hipp_labels.npy'), surf_lab)
         
-        if not os.path.exists(os.path.join(subj_dir, 'atlas/hippunfold_surf/R_dent_labels.npy')):
-            surf_lab = np.load(os.path.join(subj_dir, 'surfaces/hippunfold_R_dentate_middle_original_labels.npy'))
-            surf_lab = relabel_vector(surf_lab, dict(zip(*old_labels)), hipp_labels)
-            np.save(os.path.join(subj_dir, 'atlas/hippunfold_surf/R_dent_labels.npy'), surf_lab)
+        surf_lab = np.load(os.path.join(subj_dir, 'surfaces/hippunfold_R_dentate_middle_original_labels.npy'))
+        surf_lab = relabel_vector(surf_lab, dict(zip(*old_labels)), hipp_labels)
+        np.save(os.path.join(subj_dir, 'atlas/hippunfold_surf/R_dent_labels.npy'), surf_lab)
 
         Rhipp = relabel_image(Rhipp, list(old_labels[0]), list(range(193+len(old_labels[0]), 193+2*len(old_labels[0]))))
 
@@ -378,7 +373,7 @@ if __name__ == "__main__":
                     f.write('\n# Amygdala region (from Freesurfer hippoamygdala stream)\n')
                 if key == thalamusflag:
                     f.write('\n# Thalamus region (from Freesurfer thalamic stream)\n')
-                f.write(f'{key}\t{val['name']}\t{val['R']}\t{val['G']}\t{val['B']}\t{val['A']}\n')
+                f.write(f"{key}\t{val['name']}\t{val['R']}\t{val['G']}\t{val['B']}\t{val['A']}\n")
     
     # easy to read labels
     aggregated_labels = [   ([0,28,60,170,171,172,173,174,175,177,178,179,250,251,252,253,254,255,961,962,964,965,967,968,969,970,971,972,973,974,975],'Unknown'),
