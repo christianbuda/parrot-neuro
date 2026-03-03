@@ -309,6 +309,26 @@ else
 fi
 echo
 
+# if not already done, run ANTs registration to align bigbrain scans
+if [ ! -d /SUBJECTS/"$subj"/bigbrain ]; then
+	echo "Running bigbrain registration..."
+        mkdir /SUBJECTS/"$subj"/bigbrain
+
+	start=$(date +%s)
+	micromamba run -n neuro python /scripts/run_bigbrain_pipeline.py --subject_dir /SUBJECTS/"$subj"/ --template_dir "/home/bigbrain_scans/" --threads "$N_THREADS" > /SUBJECTS/"$subj"/reconstruction_logs/bigbrain.txt 2>&1
+	check_step $? "BigBrain registration" "$subj"/reconstruction_logs/bigbrain.txt /SUBJECTS/"$subj"/bigbrain
+	end=$(date +%s)
+
+        duration=$(( end - start ))
+        hours=$(( duration / 3600 ))
+        minutes=$(( (duration % 3600) / 60 ))
+
+        echo "BigBrain registration completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
+else
+	echo "BigBrain registration detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+fi
+echo
+
 # convert all relevant meshes to world space and gather them in one place
 if [ ! -d /SUBJECTS/"$subj"/surfaces ]; then
 	echo "Converting all relevant meshes to world space and gathering them in one place..."
