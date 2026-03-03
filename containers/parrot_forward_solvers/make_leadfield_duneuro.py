@@ -143,7 +143,7 @@ def read_conductivities(filename):
 def read_tissues(filename):
     with open(filename, 'r') as f:
         names = f.readlines()
-    names = list(map(lambda x: float(x.split(',')[-1]), names))
+    names = list(map(lambda x: x.split(',')[-1].strip().lower(), names))
     return(names)
 
 def read_electrodes(filename):
@@ -171,7 +171,7 @@ def convert_dipoles(dipoles):
 def get_dipoles(dipoles_path, nodes, tetrahedra, tissue_label, tissue_names, valid_tissues_names):
     # convert names to labels
     valid_tissues = []
-    for name in valid_tissues_names:
+    for name in [n.lower() for n in valid_tissues_names]:
         try:
             valid_tissues.append(tissue_names.index(name))
         except ValueError:
