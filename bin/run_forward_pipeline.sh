@@ -264,6 +264,7 @@ echo
 # if not already done, solve the forward problem
 if [ ! -d "$SUBJECTS_DIR/$SUBJECT/forward_solvers" ]; then
     mkdir -p "$SUBJECTS_DIR/$SUBJECT/forward_solvers"
+    mkdir -p "$SUBJECTS_DIR/$SUBJECT/leadfields"
 
     start=$(date +%s)
     

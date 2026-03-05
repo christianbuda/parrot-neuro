@@ -58,6 +58,6 @@ COPY make_leadfield_openmeeg.py make_leadfield_duneuro.py /scripts/
 
 WORKDIR /pipeline
 
-COPY geometry.geom conductivities.cond .
+COPY geometry.geom conductivities.cond neuronal_strength_dict.json .
 
 ENTRYPOINT ["python3"]

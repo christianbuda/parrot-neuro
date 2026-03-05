@@ -6,6 +6,7 @@ import os
 from scipy.spatial import cKDTree
 from mpi4py import MPI
 import sys
+import json
 
 # Force line buffering for standard output
 sys.stdout.reconfigure(line_buffering=True)
@@ -204,6 +205,40 @@ def get_dipoles(dipoles_path, nodes, tetrahedra, tissue_label, tissue_names, val
     
     return dipoles
 
+def avg_ref(mat):
+    # manually average reference forward solution
+    nEl = mat.shape[0]
+    avg_ref_op = -np.ones((nEl,nEl))/nEl
+    avg_ref_op[np.diag_indices_from(avg_ref_op)] = 1-1/nEl
+
+    return np.dot(avg_ref_op, mat)
+
+def process_leadfield(leadfield, adjust_volume = True, adjust_density = True, neuronal_strength_dict = None, rereference = True):
+    if adjust_volume:
+        volume = np.load(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/dipole_volume.npy'))/1e9 # convert from mm3 to m3, not needed though
+        volume = np.repeat(volume, 3)
+        leadfield = leadfield*volume
+        
+    if adjust_density:
+        neuron_density = np.load(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/dipole_neural_density.npy'))
+        neuron_density = np.repeat(neuron_density, 3)
+        leadfield = leadfield*neuron_density
+        
+    if neuronal_strength_dict is not None:
+        orient_type = np.load(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/orient_type.npy'))
+        orient_type = np.repeat(orient_type, 3)
+        assert not np.any(np.isin('U', orient_type)), 'ERROR: some orientation type are Unassigned, something went wrong during dipole generation.'
+
+        labels_to_strength = np.vectorize(neuronal_strength_dict.get)
+        dipole_strength = labels_to_strength(orient_type).astype(float)
+
+        leadfield = leadfield*dipole_strength
+    
+    if rereference:
+        leadfield = avg_ref(leadfield)
+    
+    return leadfield
+
 if __name__ == "__main__":
     ################ input parsing ##############
     parser = argparse.ArgumentParser(
@@ -264,6 +299,14 @@ if __name__ == "__main__":
         help='Name of the tissues that can contain electrical generators (typically just the gray matter). This must be a list of integer separated by a space (e.g. "--valid_tissues Gray_matter White_matter").'
     )
     
+    parser.add_argument(
+        '--neuronal_strength_dict',
+        type=str,
+        required=False,
+        default='./neuronal_strength_dict.json',
+        help="Dictionary that maps dipole orientation type ('N', 'G', 'P', 'R') to base strength. Default values are an heuristics from Murakami and Okada (2006)."
+    )
+    
     # Parse the arguments from the command line
     args = parser.parse_args()
 
@@ -275,6 +318,7 @@ if __name__ == "__main__":
     cond_path = args.conductivities_path
     outlabel = args.label
     valid_tissues = args.valid_tissues
+    neuronal_strength_dict = args.neuronal_strength_dict
     
     nodes, tetrahedra, tissue_label = read_mesh(add_subject_dir(mesh_path))
     tissue_names = read_tissues(add_subject_dir(tissue_names))
@@ -331,4 +375,11 @@ if __name__ == "__main__":
     print('Computing leadfield...')
     leadfield, info = driver.applyEEGTransfer(np.array(transfer_matrix), dipoles, source_model_config)
     
-    np.save(add_subject_dir(f'forward_solvers/duneuro{outlabel}-{dipole_spacing}mm-leadfield.npy'), np.array(leadfield).T)
+    np.save(add_subject_dir(f'forward_solvers/raw_duneuro{outlabel}-{dipole_spacing}mm-leadfield.npy'), np.array(leadfield).T)
+    
+    print('Processing leadfield...')
+    with open(neuronal_strength_dict,'r') as f:
+        neuronal_strength_dict = json.load(f)
+    
+    leadfield = process_leadfield(leadfield, adjust_volume = True, adjust_density = True, neuronal_strength_dict = neuronal_strength_dict, rereference = True)
+    np.save(add_subject_dir(f'leadfields/processed_duneuro{outlabel}-{dipole_spacing}mm-leadfield.npy'), np.array(leadfield).T)

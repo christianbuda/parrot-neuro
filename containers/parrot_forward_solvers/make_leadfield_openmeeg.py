@@ -7,6 +7,7 @@ import h5py
 import subprocess
 import pymeshlab
 import sys
+import json
 
 # Force line buffering for standard output
 sys.stdout.reconfigure(line_buffering=True)
@@ -16,7 +17,7 @@ def add_subject_dir(*paths):
         return os.path.join(subject_dir, paths[0])
     return tuple([add_subject_dir(x) for x in paths])
 
-def dump_gain(input, output, is_inside = None):
+def convert_gain(input, is_inside = None):
     with h5py.File(input, 'r') as f:
         # Load openmeeg leadfield (assuming the key is 'linop')
         # Note: MATLAB saves matrices transposed compared to Python/C order,
@@ -29,8 +30,7 @@ def dump_gain(input, output, is_inside = None):
         complete_leadfield[:,is_inside] = leadfield
         leadfield = complete_leadfield
     
-    np.save(output, leadfield)
-    return   
+    return leadfield
 
 def write_electrodes(filename, electrodes, names):
     with open(filename, 'w') as f:
@@ -119,7 +119,41 @@ def run_openmeeg_pipeline():
             sys.exit(1)
             
     print("OpenMEEG pipeline completed successfully!")
+
+def avg_ref(mat):
+    # manually average reference forward solution
+    nEl = mat.shape[0]
+    avg_ref_op = -np.ones((nEl,nEl))/nEl
+    avg_ref_op[np.diag_indices_from(avg_ref_op)] = 1-1/nEl
+
+    return np.dot(avg_ref_op, mat)
+
+def process_leadfield(leadfield, adjust_volume = True, adjust_density = True, neuronal_strength_dict = None, rereference = True):
+    if adjust_volume:
+        volume = np.load(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/dipole_volume.npy'))/1e9 # convert from mm3 to m3, not needed though
+        volume = np.repeat(volume, 3)
+        leadfield = leadfield*volume
+        
+    if adjust_density:
+        neuron_density = np.load(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/dipole_neural_density.npy'))
+        neuron_density = np.repeat(neuron_density, 3)
+        leadfield = leadfield*neuron_density
+        
+    if neuronal_strength_dict is not None:
+        orient_type = np.load(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/orient_type.npy'))
+        orient_type = np.repeat(orient_type, 3)
+        assert not np.any(np.isin('U', orient_type)), 'ERROR: some orientation type are Unassigned, something went wrong during dipole generation.'
+
+        labels_to_strength = np.vectorize(neuronal_strength_dict.get)
+        dipole_strength = labels_to_strength(orient_type).astype(float)
+
+        leadfield = leadfield*dipole_strength
     
+    if rereference:
+        leadfield = avg_ref(leadfield)
+    
+    return leadfield
+
 if __name__ == "__main__":
     ################ input parsing ##############
     parser = argparse.ArgumentParser(
@@ -143,12 +177,22 @@ if __name__ == "__main__":
         help='Spacing between dipoles, in mm (typical values range from 1 to 10). Dipoles are not sampled here, this script expects that results are available in subject folder for specified spacing.'
     )
     
+    
+    parser.add_argument(
+        '--neuronal_strength_dict',
+        type=str,
+        required=False,
+        default='./neuronal_strength_dict.json',
+        help="Dictionary that maps dipole orientation type ('N', 'G', 'P', 'R') to base strength. Default values are an heuristics from Murakami and Okada (2006)."
+    )
+    
     # Parse the arguments from the command line
     args = parser.parse_args()
 
     # Get the base directory from the command line
     subject_dir = args.subject_dir
     dipole_spacing = args.dipole_spacing
+    neuronal_strength_dict = args.neuronal_strength_dict
     
     
     # load BEM meshes
@@ -215,4 +259,12 @@ if __name__ == "__main__":
     # AIR     0.0
     run_openmeeg_pipeline()
 
-    dump_gain('head.gain', add_subject_dir(f'forward_solvers/openmeeg-{dipole_spacing}mm-leadfield.npy'), is_inside=is_inside)
+    leadfield = convert_gain('head.gain', is_inside=is_inside)
+    np.save(add_subject_dir(f'forward_solvers/raw_openmeeg-{dipole_spacing}mm-leadfield.npy'), leadfield)
+    
+    print('Processing leadfield...')
+    with open(neuronal_strength_dict,'r') as f:
+        neuronal_strength_dict = json.load(f)
+    
+    leadfield = process_leadfield(leadfield, adjust_volume = True, adjust_density = True, neuronal_strength_dict = neuronal_strength_dict, rereference = True)
+    np.save(add_subject_dir(f'leadfields/processed_openmeeg-{dipole_spacing}mm-leadfield.npy'), leadfield)
