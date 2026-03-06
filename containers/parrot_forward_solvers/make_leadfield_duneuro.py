@@ -375,11 +375,14 @@ if __name__ == "__main__":
     print('Computing leadfield...')
     leadfield, info = driver.applyEEGTransfer(np.array(transfer_matrix), dipoles, source_model_config)
     
-    np.save(add_subject_dir(f'forward_solvers/raw_duneuro{outlabel}-{dipole_spacing}mm-leadfield.npy'), np.array(leadfield).T)
+    # transpose to make it (number_electrodes, number_dipoles)
+    leadfield = np.array(leadfield).T
+    
+    np.save(add_subject_dir(f'forward_solvers/raw_duneuro{outlabel}-{dipole_spacing}mm-leadfield.npy'), leadfield)
     
     print('Processing leadfield...')
     with open(neuronal_strength_dict,'r') as f:
         neuronal_strength_dict = json.load(f)
     
     leadfield = process_leadfield(leadfield, adjust_volume = True, adjust_density = True, neuronal_strength_dict = neuronal_strength_dict, rereference = True)
-    np.save(add_subject_dir(f'leadfields/processed_duneuro{outlabel}-{dipole_spacing}mm-leadfield.npy'), np.array(leadfield).T)
+    np.save(add_subject_dir(f'leadfields/processed_duneuro{outlabel}-{dipole_spacing}mm-leadfield.npy'), leadfield)
