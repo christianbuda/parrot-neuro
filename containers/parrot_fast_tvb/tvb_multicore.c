@@ -119,7 +119,7 @@ int load_stimuli(const char *fname, int nodes, int time_steps,
     if (!stim) {
         printf("ERROR: Out of memory while loading stimuli.\n");
         fclose(f);
-        exit(1);
+        exit(EXIT_FAILURE);
     }
 
     for (int i = 0; i < n; i++) {
@@ -129,13 +129,13 @@ int load_stimuli(const char *fname, int nodes, int time_steps,
             printf("ERROR: Bad line in stimulus file %s (line %d)\n", fname, i + 2);
             fclose(f);
             free(stim);
-            exit(1);
+            exit(EXIT_FAILURE);
         }
         if (node < 0 || node >= nodes) {
             printf("ERROR: Stimulus node %d out of range [0,%d)\n", node, nodes);
             fclose(f);
             free(stim);
-            exit(1);
+            exit(EXIT_FAILURE);
         }
 
         // ts increments in ms, BOLD_TR is in ms, so treat times as ms
@@ -170,7 +170,7 @@ int importGlobalConnectivity(char *SC_cap_filename, char *SC_dist_filename, char
 
     FILE *file_cap=fopen(SC_cap_filename,"r");
     FILE *file_dist=fopen(SC_dist_filename,"r");
-    if (!file_cap || !file_dist){ printf("\nERROR: Could not open SC files. Terminating...\n\n"); exit(0); }
+    if (!file_cap || !file_dist){ printf("\nERROR: Could not open SC files. Terminating...\n\n"); exit(EXIT_FAILURE); }
 
     *SC_rowsums   = (float *)_mm_malloc(regions*sizeof(float),16);
     *n_conn_table = (int   *)_mm_malloc(regions*sizeof(int),16);
@@ -196,7 +196,7 @@ int importGlobalConnectivity(char *SC_cap_filename, char *SC_dist_filename, char
             curr_row++;
         }
     }
-    if (n_entries < regions*regions){ printf("ERROR: SC file too short.\n"); exit(0); }
+    if (n_entries < regions*regions){ printf("ERROR: SC file too short.\n"); exit(EXIT_FAILURE); }
     rewind(file_dist); rewind(file_cap);
 
     maxdelay = (int)(((tmp_max/global_trans_v)*10)+0.5);
@@ -227,7 +227,7 @@ int importGlobalConnectivity(char *SC_cap_filename, char *SC_dist_filename, char
                 if (fscanf(file_cap,"%lf",&tmp)!=EOF && fscanf(file_dist,"%lf",&tmp2)!=EOF){
                     if (tmp>0.0){
                         tmpint = (int)(((tmp2/global_trans_v)*10)+0.5);
-                        if (tmpint<0 || tmpint>maxdelay){ printf("\nERROR: Bad delay %d -> %d. Terminating...\n\n",i,j); exit(0); }
+                        if (tmpint<0 || tmpint>maxdelay){ printf("\nERROR: Bad delay %d -> %d. Terminating...\n\n",i,j); exit(EXIT_FAILURE); }
                         if (tmpint<=0) tmpint=1;
 
                         SC_capp[i].cap[curr_row_nonzero] = (float)tmp * G_J_NMDA;
@@ -244,10 +244,10 @@ int importGlobalConnectivity(char *SC_cap_filename, char *SC_dist_filename, char
                     }
                 }else{
                     printf("\nERROR: Unexpected end-of-file in SC files. Terminating...\n\n");
-                    exit(0);
+                    exit(EXIT_FAILURE);
                 }
             }
-            if (sum_caps <= 0){ printf("\nERROR: Sum of caps <= 0 for node %d.\n",i); exit(0); }
+            if (sum_caps <= 0){ printf("\nERROR: Sum of caps <= 0 for node %d.\n",i); exit(EXIT_FAILURE); }
             (*SC_rowsums)[i] = sum_caps;
         }
     }
@@ -373,7 +373,7 @@ void *run_simulation(void *arg)
 
     if (nodes_vec_mt <= 1){
         printf("Ineffective splitting. Terminating.\n");
-        exit(0);
+        exit(EXIT_FAILURE);
     }
 
     if (t_id == 0) initialize_thread_barriers(n_threads);
@@ -393,7 +393,7 @@ void *run_simulation(void *arg)
     float *stim_E           = (float *)_mm_malloc(nodes_mt*sizeof(float),16);   // NEW
 
     if(!meanFR || !meanFR_INH || !global_input || !global_input_FFI || !S_i_E || !S_i_I || !J_i_local || !stim_E){
-        printf("ERROR: Running out of memory. Aborting...\n"); exit(0);
+        printf("ERROR: Running out of memory. Aborting...\n"); exit(EXIT_FAILURE);
     }
 
     __m128 *_meanFR         = (__m128*)meanFR;
@@ -416,11 +416,11 @@ void *run_simulation(void *arg)
     float *bw_f_ex  = (float *)_mm_malloc(nodes_mt * sizeof(float),16);
     float *bw_nu_ex = (float *)_mm_malloc(nodes_mt * sizeof(float),16);
     float *bw_q_ex  = (float *)_mm_malloc(nodes_mt * sizeof(float),16);
-    if(!BOLD || !CBV || !bw_x_ex || !bw_f_ex || !bw_nu_ex || !bw_q_ex){ printf("ERROR: Running out of memory. Aborting...\n"); exit(0); }
+    if(!BOLD || !CBV || !bw_x_ex || !bw_f_ex || !bw_nu_ex || !bw_q_ex){ printf("ERROR: Running out of memory. Aborting...\n"); exit(EXIT_FAILURE); }
 
     // Electrical streaming temp file
     FILE *ELEC_BIN = fopen(tmp_elec_file, "wb");
-    if (!ELEC_BIN){ printf("ERROR: Could not open temporary electrical file %s\n", tmp_elec_file); exit(0); }
+    if (!ELEC_BIN){ printf("ERROR: Could not open temporary electrical file %s\n", tmp_elec_file); exit(EXIT_FAILURE); }
 
     // reset arrays
     ring_buf_pos = 0;
@@ -545,7 +545,7 @@ void *run_simulation(void *arg)
             if ((ring_buf_pos + start_nodes_mt + nodes_real) > reg_act_size){
                 fprintf(stderr,"ERROR: ring buffer overflow (thread %d): rb=%d start=%d real=%d cap=%d\n",
                         t_id, ring_buf_pos, start_nodes_mt, nodes_real, reg_act_size);
-                exit(1);
+                exit(EXIT_FAILURE);
             }
             memcpy(&region_activity[ring_buf_pos + start_nodes_mt], S_i_E, (size_t)nodes_real * sizeof(float));
 
@@ -579,7 +579,7 @@ void *run_simulation(void *arg)
             if (wr != (size_t)nodes_mt){
                 printf("ERROR: Electrical fwrite failed in thread %d at sample %d\n", t_id, ts_elec_i);
                 fclose(ELEC_BIN);
-                exit(0);
+                exit(EXIT_FAILURE);
             }
             ts_elec_i++;
         }
@@ -592,31 +592,52 @@ void *run_simulation(void *arg)
     pthread_barrier_wait(&mybarrier3);
 
     if (t_id==0){
-        FILE *FCout = fopen(thr_data->output_file, "w");
-        if (!FCout){ printf("ERROR: Could not open BOLD output file.\n"); }
+        FILE *FCout_BOLD = fopen(thr_data->output_file, "w");
+        if (!FCout_BOLD){ printf("ERROR: Could not open BOLD output file.\n"); }
         else{
             for (j=0;j<nodes;j++){
                 for (k=0;k<ts_bold_i;k++){
-                    fprintf(FCout, "%.5f ", BOLD_ex[j*BOLD_ts_len + k]);
+                    fprintf(FCout_BOLD, "%.5f ", BOLD_ex[j*BOLD_ts_len + k]);
                 }
-                fprintf(FCout, "\n");
+                fprintf(FCout_BOLD, "\n");
             }
-            fclose(FCout);
+            fclose(FCout_BOLD);
         }
         // NEW: CBV
-        FILE *FCout_CB = fopen(thr_data->output_file_cbv, "w");
-        if (!FCout_CB){
+        FILE *FCout_CBV = fopen(thr_data->output_file_cbv, "w");
+        if (!FCout_CBV){
             printf("ERROR: Could not open CBV output file.\n");
         } else {
             for (j=0;j<nodes;j++){
                 for (k=0;k<ts_bold_i;k++){
-                    fprintf(FCout_CB, "%.5f ", CBV_ex[j*BOLD_ts_len + k]);
+                    fprintf(FCout_CBV, "%.5f ", CBV_ex[j*BOLD_ts_len + k]);
                 }
-                fprintf(FCout_CB, "\n");
+                fprintf(FCout_CBV, "\n");
             }
-            fclose(FCout_CB);
+            fclose(FCout_CBV);
         }
     }
+
+    // --- MEMORY CLEANUP ---
+    _mm_free(meanFR);
+    _mm_free(meanFR_INH);
+    _mm_free(global_input);
+    _mm_free(global_input_FFI);
+    _mm_free(S_i_E);
+    _mm_free(S_i_I);
+    _mm_free(J_i_local);
+    _mm_free(stim_E);
+    _mm_free(BOLD);
+    _mm_free(CBV);
+    _mm_free(bw_x_ex);
+    _mm_free(bw_f_ex);
+    _mm_free(bw_nu_ex);
+    _mm_free(bw_q_ex);
+
+    fclose(ELEC_BIN);
+    gsl_rng_free(r);
+    pthread_exit(NULL);
+}
 
     fclose(ELEC_BIN);
     gsl_rng_free(r);
@@ -631,7 +652,7 @@ int main(int argc, char *argv[])
     if (argc != 5 || atoi(argv[3]) <= 0){
         printf("\nERROR: Invalid arguments.\n\nUsage: tvbii <paramset_file> <sub_id> <#threads> <base_dir>\n\n");
         for (int i=0;i<argc;i++) printf("%s\n", argv[i]);
-        exit(0);
+        exit(EXIT_FAILURE);
     }
 
     time_t start = time(NULL);
@@ -664,12 +685,12 @@ int main(int argc, char *argv[])
     char param_file[300]; memset(param_file,0,sizeof(param_file));
     snprintf(param_file, sizeof(param_file), "%s/input/%s", argv[4], argv[1]);
     file=fopen(param_file,"r");
-    if (!file){ printf("\nERROR: Could not open file %s.\n", param_file); exit(0); }
+    if (!file){ printf("\nERROR: Could not open file %s.\n", param_file); exit(EXIT_FAILURE); }
     if(!(fscanf(file,"%d",&nodes)!=EOF && fscanf(file,"%f",&G)!=EOF && fscanf(file,"%f",&J_NMDA)!=EOF &&
          fscanf(file,"%f",&w_plus)!=EOF && fscanf(file,"%f",&tmpJi)!=EOF && fscanf(file,"%f",&sigma)!=EOF &&
          fscanf(file,"%d",&time_steps)!=EOF && fscanf(file,"%d",&BOLD_TR)!=EOF && fscanf(file,"%f",&global_trans_v)!=EOF &&
          fscanf(file,"%d",&rand_num_seed)!=EOF)){
-        printf("\nERROR: Unexpected end-of-file in %s\n", param_file); exit(0);
+        printf("\nERROR: Unexpected end-of-file in %s\n", param_file); exit(EXIT_FAILURE);
     }
     fclose(file);
 
@@ -748,7 +769,7 @@ int main(int argc, char *argv[])
             if (J_i)    _mm_free(J_i);
             if (BOLD_ex)_mm_free(BOLD_ex);
             if (CBV_ex) _mm_free(CBV_ex);   // NEW
-            return 1;
+            return EXIT_FAILURE;
         }  
     for (j=0;j<fake_nodes;j++) J_i[j]=tmpJi;
 
