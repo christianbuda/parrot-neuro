@@ -235,18 +235,19 @@ typedef struct _thread_data_t {
     struct Xi_p *reg_globinp_p;
     int     *n_conn_table;
     float   *BOLD_ex;
-    char    *output_file;
+    char    *output_BOLD_file;
+    float   *CBV_ex;
+    char    *output_CBV_file;
 
     // electrical streaming
     int     ELEC_TR;
     int     ELEC_ts_len;
     char    tmp_elec_file[300]; // per-thread temp file
+    int     num_elec_samples;
+
     // NEW: stimuli (shared read-only across threads)
     Stim_t *stimuli;
     int     n_stimuli;
-    // NEW: CBV storage
-    float   *CBV_ex;            // global CBV array (all nodes)
-    char    *output_file_cbv;   // CBV output file name
 } thread_data_t;
 
 void *run_simulation(void *arg)
@@ -544,6 +545,8 @@ void *run_simulation(void *arg)
         }
     }
 
+    thr_data->num_elec_samples = ts_elec_i;
+
     // Copy BOLD back only for real nodes
     memcpy(&BOLD_ex[start_nodes_mt * BOLD_ts_len], BOLD, (size_t)nodes_real * BOLD_ts_len * sizeof(float));
     memcpy(&CBV_ex[start_nodes_mt * BOLD_ts_len],  CBV,  (size_t)nodes_real * BOLD_ts_len * sizeof(float)); // NEW
@@ -551,7 +554,7 @@ void *run_simulation(void *arg)
     pthread_barrier_wait(&mybarrier3);
 
     if (t_id==0){
-        FILE *FCout_BOLD = fopen(thr_data->output_file, "w");
+        FILE *FCout_BOLD = fopen(thr_data->output_BOLD_file, "w");
         if (!FCout_BOLD){ printf("ERROR: Could not open BOLD output file.\n"); }
         else{
             for (j=0;j<nodes;j++){
@@ -563,7 +566,7 @@ void *run_simulation(void *arg)
             fclose(FCout_BOLD);
         }
         // NEW: CBV
-        FILE *FCout_CBV = fopen(thr_data->output_file_cbv, "w");
+        FILE *FCout_CBV = fopen(thr_data->output_CBV_file, "w");
         if (!FCout_CBV){
             printf("ERROR: Could not open CBV output file.\n");
         } else {
@@ -603,23 +606,23 @@ void *run_simulation(void *arg)
 */
 int main(int argc, char *argv[])
 {
-    if (argc != 5 || atoi(argv[3]) <= 0){
-        printf("\nERROR: Invalid arguments.\n\nUsage: tvbii <paramset_file> <sub_id> <#threads> <base_dir>\n\n");
+    if (argc != 2 || atoi(argv[1]) <= 0){
+        printf("\nERROR: Invalid arguments.\n\nUsage: tvbii <#threads>\n\n");
         for (int i=0;i<argc;i++) printf("%s\n", argv[i]);
         exit(EXIT_FAILURE);
     }
 
-    time_t start = time(NULL);
+    clock_t start_clk = clock();
     int i,j,t;
-    int n_threads = atoi(argv[3]);
+    int n_threads = atoi(argv[1]);
 
     const float dt = 0.1f;
     const float sqrt_dt = sqrtf(dt);
     const float model_dt = 0.001f;
     const int vectorization_grade = 4;
     int   time_steps     = (int)(667*1.94*1000);
-    int   nodes          = 84;
-    int   fake_nodes     = 84;
+    int   nodes          = 0;
+    int   fake_nodes     = 0;
     float global_trans_v = 1.0f;
     float G              = 0.5f;
     int   BOLD_TR        = 1940;
@@ -634,10 +637,19 @@ int main(int argc, char *argv[])
     const float I_0=0.182f, w_E=1.0f, w_I=0.7f, gamma_I=1.0f/1000.0f;
     float tmpJi=1.0f;
 
+    // input and output filenames
+    const char *param_file = "/input/param_set.txt";
+    const char *stim_file = "/input/stimulus.txt";
+    const char *cap_file = "/input/SC_weights.txt";
+    const char *dist_file = "/input/SC_distances.txt";
+    const char *reg_file = "/input/SC_regionids.txt";
+    const char *output_BOLD_file = "/output/BOLD.txt";
+    const char *output_CBV_file = "/output/CBV.txt";
+    const char *output_ELEC_file = "/output/ELEC.txt";
+
+
     // read params
     FILE *file;
-    char param_file[300]; memset(param_file,0,sizeof(param_file));
-    snprintf(param_file, sizeof(param_file), "%s/input/%s", argv[4], argv[1]);
     file=fopen(param_file,"r");
     if (!file){ printf("\nERROR: Could not open file %s.\n", param_file); exit(EXIT_FAILURE); }
     if(!(fscanf(file,"%d",&nodes)!=EOF && fscanf(file,"%f",&G)!=EOF && fscanf(file,"%f",&J_NMDA)!=EOF &&
@@ -647,16 +659,6 @@ int main(int argc, char *argv[])
         printf("\nERROR: Unexpected end-of-file in %s\n", param_file); exit(EXIT_FAILURE);
     }
     fclose(file);
-
-    char output_file[300]; memset(output_file,0,sizeof(output_file));
-    snprintf(output_file, sizeof(output_file), "%s/output/%s_%s_fMRI.txt", argv[4], argv[2], argv[1]);
-
-    char output_file_elec[300]; memset(output_file_elec,0,sizeof(output_file_elec));
-    snprintf(output_file_elec, sizeof(output_file_elec), "%s/output/%s_%s_elec.txt", argv[4], argv[2], argv[1]);
-    
-    // NEW: CBV filename
-    char output_file_cbv[300]; memset(output_file_cbv,0,sizeof(output_file_cbv));
-    snprintf(output_file_cbv, sizeof(output_file_cbv), "%s/output/%s_%s_cbv.txt", argv[4], argv[2], argv[1]);
     
     if (nodes % vectorization_grade != 0){
         printf("\nWarning: nodes (%d) not multiple of SIMD width (%d). Adding fake nodes...\n\n", nodes, vectorization_grade);
@@ -689,8 +691,6 @@ int main(int argc, char *argv[])
     // NEW: load optional stimuli
     Stim_t *stimuli = NULL;
     int     n_stimuli = 0;
-    char stim_file[300]; memset(stim_file,0,sizeof(stim_file));
-    snprintf(stim_file, sizeof(stim_file), "%s/input/%s_stim.txt", argv[4], argv[2]);
     load_stimuli(stim_file, nodes, time_steps, &stimuli, &n_stimuli);
     if (n_stimuli > 0) {
         printf("Loaded %d stimuli from %s\n", n_stimuli, stim_file);
@@ -701,13 +701,6 @@ int main(int argc, char *argv[])
     struct Xi_p *reg_globinp_p;
     struct SC_capS    *SC_cap;
     struct SC_inpregS *SC_inpreg;
-
-    char cap_file[300];  memset(cap_file,0,sizeof(cap_file));
-    char dist_file[300]; memset(dist_file,0,sizeof(dist_file));
-    char reg_file[300];  memset(reg_file,0,sizeof(reg_file));
-    snprintf(cap_file,  sizeof(cap_file),  "%s/input/%s_SC_weights.txt",   argv[4], argv[2]);
-    snprintf(dist_file, sizeof(dist_file), "%s/input/%s_SC_distances.txt", argv[4], argv[2]);
-    snprintf(reg_file,  sizeof(reg_file),  "%s/input/%s_SC_regionids.txt", argv[4], argv[2]);
 
     int maxdelay = importGlobalConnectivity(cap_file, dist_file, reg_file, nodes,
                                             &region_activity, &reg_globinp_p, global_trans_v,
@@ -792,9 +785,11 @@ int main(int argc, char *argv[])
         thr_data[i].BOLD_ex             = BOLD_ex;
         thr_data[i].rand_num_seed       = rand_num_seed;
         thr_data[i].BOLD_ts_len         = BOLD_ts_len;
-        thr_data[i].output_file         = output_file;
+        thr_data[i].output_BOLD_file         = output_BOLD_file;
+        thr_data[i].CBV_ex              = CBV_ex;
+        thr_data[i].output_CBV_file     = output_CBV_file;
 
-        // NEW: stimuli (same pointer for all threads, read-only)
+        // stimuli (same pointer for all threads, read-only)
         thr_data[i].stimuli             = stimuli;
         thr_data[i].n_stimuli           = n_stimuli;
 
@@ -802,9 +797,7 @@ int main(int argc, char *argv[])
         thr_data[i].ELEC_TR             = ELEC_TR;
         thr_data[i].ELEC_ts_len         = ELEC_ts_len;
         snprintf(thr_data[i].tmp_elec_file, sizeof(thr_data[i].tmp_elec_file),
-                 "%s/output/.elec_%s_%s_tid%03d.bin",argv[4],  argv[2], argv[1], i);
-        thr_data[i].CBV_ex              = CBV_ex;          // NEW
-        thr_data[i].output_file_cbv     = output_file_cbv; // NEW
+                 "/output/.elec_tid%03d.bin", i);
 
         rc = pthread_create(&thr[i], NULL, run_simulation, &thr_data[i]);
         if (rc){ fprintf(stderr,"error: pthread_create, rc: %d\n", rc); return EXIT_FAILURE; }
@@ -814,9 +807,10 @@ int main(int argc, char *argv[])
     printf("Threads finished. Back to main thread.\n");
 
     // ---- Merge electrical temp binaries into final text file ----
-    FILE *EOUT = fopen(output_file_elec, "w");
+    FILE *EOUT = fopen(output_ELEC_file, "w");
+    int final_elec_count = thr_data[0].num_elec_samples;
     if (!EOUT){
-        printf("ERROR: Could not open electrical output file %s for writing.\n", output_file_elec);
+        printf("ERROR: Could not open electrical output file %s for writing.\n", output_ELEC_file);
     }else{
         FILE **tmp_files = (FILE**)calloc((size_t)n_threads, sizeof(FILE*));
         if (!tmp_files){
@@ -825,7 +819,7 @@ int main(int argc, char *argv[])
         }else{
             for (t=0;t<n_threads;t++){
                 char tmpname[300];
-                snprintf(tmpname,sizeof(tmpname),"%s/output/.elec_%s_%s_tid%03d.bin", argv[4], argv[2], argv[1], t);
+                snprintf(tmpname,sizeof(tmpname),"/output/.elec_tid%03d.bin", t);
                 tmp_files[t] = fopen(tmpname, "rb");
                 if (!tmp_files[t]) printf("ERROR: Could not open temp electrical file %s\n", tmpname);
             }
@@ -865,7 +859,7 @@ int main(int argc, char *argv[])
 
                 int local_idx = node - owner_start;
                 float val;
-                for (int s=0; s<ELEC_ts_len; s++){
+                for (int s=0; s<final_elec_count; s++){
                     long long offset = (long long)s * (long long)owner_nodes_mt + (long long)local_idx;
                     offset *= (long long)sizeof(float);
                     if (fseek(tmp_files[owner_t], offset, SEEK_SET)!=0){ printf("ERROR: fseek failed node %d sample %d\n", node, s); break; }
@@ -880,7 +874,7 @@ int main(int argc, char *argv[])
                 if (tmp_files[t]){
                     fclose(tmp_files[t]);
                     char tmpname[300];
-                    snprintf(tmpname,sizeof(tmpname),"%s/output/.elec_%s_%s_tid%03d.bin", argv[4], argv[2], argv[1], t);
+                    snprintf(tmpname,sizeof(tmpname),"/output/.elec_tid%03d.bin", t);
                     remove(tmpname);
                 }
             }
@@ -889,7 +883,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    printf("MT-TVBii finished. Execution took %.2f s for %d nodes. Goodbye!\n", (float)(time(NULL) - start), nodes);
+    clock_t end_clk = clock();
+    double cpu_time_used = ((double) (end_clk - start_clk)) / CLOCKS_PER_SEC;
+    printf("Simulation finished. Execution took %.3f s for %d nodes. Goodbye!\n", cpu_time_used, nodes);
 
     _mm_free(BOLD_ex);
     _mm_free(J_i);
