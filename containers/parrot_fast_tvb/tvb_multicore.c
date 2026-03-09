@@ -33,15 +33,13 @@ struct Xi_p { float **Xi_elems; };
 struct SC_capS { float *cap; };
 struct SC_inpregS { int *inpreg; };
 
-// NEW: stimulus description
+// stimulus description
 typedef struct {
     int   node;       // global node index [0..nodes-1]
     int   start_ts;   // start time, in simulation time steps (ms)
     int   end_ts;     // end time (exclusive), in simulation time steps (ms)
     float amplitude;  // stimulus amplitude
 } Stim_t;
-
-#define REAL float
 
 static inline int divRoundUp(const int x, const int y){ return (x + y - 1) / y; }
 
@@ -54,7 +52,7 @@ static float corr(float *x, float *y, int n){
     return sxy / (sqrtf(sxsq)*sqrtf(sysq));
 }
 
-// NEW: load optional stimulus file
+// load optional stimulus file
 int load_stimuli(const char *fname, int nodes, int time_steps,
                  Stim_t **stimuli_out, int *n_stimuli_out)
 {
@@ -242,7 +240,8 @@ typedef struct _thread_data_t {
     // electrical streaming
     int     ELEC_TR;
     int     ELEC_ts_len;
-    char    tmp_elec_file[300]; // per-thread temp file
+    float   *ELEC_ex;
+    char    *output_ELEC_file;
     int     num_elec_samples;
 
     // NEW: stimuli (shared read-only across threads)
@@ -303,9 +302,9 @@ void *run_simulation(void *arg)
     // electrical
     int ELEC_TR    = thr_data->ELEC_TR;
     int ELEC_ts_len= thr_data->ELEC_ts_len;
-    char *tmp_elec_file = thr_data->tmp_elec_file;
+    float *ELEC_ex = thr_data->ELEC_ex;
     
-    // NEW: stimuli
+    // stimuli
     Stim_t *stimuli  = thr_data->stimuli;
     int     n_stimuli = thr_data->n_stimuli;
     
@@ -350,7 +349,7 @@ void *run_simulation(void *arg)
     float *S_i_E            = (float *)_mm_malloc(nodes_mt*sizeof(float),16);
     float *S_i_I            = (float *)_mm_malloc(nodes_mt*sizeof(float),16);
     float *J_i_local        = (float *)_mm_malloc(nodes_mt*sizeof(float),16);
-    float *stim_E           = (float *)_mm_malloc(nodes_mt*sizeof(float),16);   // NEW
+    float *stim_E           = (float *)_mm_malloc(nodes_mt*sizeof(float),16);
 
     if(!meanFR || !meanFR_INH || !global_input || !global_input_FFI || !S_i_E || !S_i_I || !J_i_local || !stim_E){
         printf("ERROR: Running out of memory. Aborting...\n"); exit(EXIT_FAILURE);
@@ -363,24 +362,21 @@ void *run_simulation(void *arg)
     __m128 *_S_i_E          = (__m128*)S_i_E;
     __m128 *_S_i_I          = (__m128*)S_i_I;
     __m128 *_J_i_local      = (__m128*)J_i_local;
-    __m128 *_stim_E         = (__m128*)stim_E;   // NEW
+    __m128 *_stim_E         = (__m128*)stim_E;
 
     // Balloon-Windkessel
     float rho=0.34f, alpha=0.32f, tau=0.98f, y=1.0f/0.41f, kappa=1.0f/0.65f;
     float V_0=0.02f, k1=7*rho, k2=2.0f, k3=2*rho-0.2f, ialpha=1.0f/alpha, itau=1.0f/tau, oneminrho=(1.0f - rho);
     float f_tmp;
     float *BOLD     = (float *)_mm_malloc(nodes_mt * BOLD_ts_len * sizeof(float),16);
-    float *CBV      = (float *)_mm_malloc(nodes_mt * BOLD_ts_len * sizeof(float),16);   // NEW
+    float *CBV      = (float *)_mm_malloc(nodes_mt * BOLD_ts_len * sizeof(float),16);
+    float *ELEC     = (float *)_mm_malloc(nodes_mt * ELEC_ts_len * sizeof(float),16);
 
     float *bw_x_ex  = (float *)_mm_malloc(nodes_mt * sizeof(float),16);
     float *bw_f_ex  = (float *)_mm_malloc(nodes_mt * sizeof(float),16);
     float *bw_nu_ex = (float *)_mm_malloc(nodes_mt * sizeof(float),16);
     float *bw_q_ex  = (float *)_mm_malloc(nodes_mt * sizeof(float),16);
-    if(!BOLD || !CBV || !bw_x_ex || !bw_f_ex || !bw_nu_ex || !bw_q_ex){ printf("ERROR: Running out of memory. Aborting...\n"); exit(EXIT_FAILURE); }
-
-    // Electrical streaming temp file
-    FILE *ELEC_BIN = fopen(tmp_elec_file, "wb");
-    if (!ELEC_BIN){ printf("ERROR: Could not open temporary electrical file %s\n", tmp_elec_file); exit(EXIT_FAILURE); }
+    if(!BOLD || !CBV || !ELEC || !bw_x_ex || !bw_f_ex || !bw_nu_ex || !bw_q_ex){ printf("ERROR: Running out of memory. Aborting...\n"); exit(EXIT_FAILURE); }
 
     // reset arrays
     ring_buf_pos = 0;
@@ -407,7 +403,8 @@ void *run_simulation(void *arg)
 
     for (ts=0; ts<time_steps; ts++){
         if (t_id==0) printf("%.1f %% \r", ((float)ts / (float)time_steps) * 100.0f );
-        // NEW: build external excitatory stimulus for this time step
+        
+        // build external excitatory stimulus for this time step
         for (j = 0; j < nodes_mt; j++) stim_E[j] = 0.0f;
 
         for (int s = 0; s < n_stimuli; s++) {
@@ -440,7 +437,7 @@ void *run_simulation(void *arg)
             // vectorized local dynamics
             i_node_vec_local = 0;
             for (i_node_vec=start_nodes_vec_mt; i_node_vec<end_nodes_vec_mt; i_node_vec++){
-                __m128 _stim_vec = _stim_E[i_node_vec_local];  // NEW
+                __m128 _stim_vec = _stim_E[i_node_vec_local];
 
                 _tmp_I_E = _mm_sub_ps(
                     _mm_mul_ps(
@@ -448,11 +445,12 @@ void *run_simulation(void *arg)
                         _mm_add_ps(
                             _mm_add_ps(_w_E__I_0,
                                        _mm_mul_ps(_w_plus_J_NMDA, _S_i_E[i_node_vec_local])),
-                            // global input + external stimulus - inhibitory feedback
+                            
+                                       // global input + external stimulus - inhibitory feedback
                             _mm_add_ps(
                                 _mm_sub_ps(_global_input[i_node_vec_local],
                                            _mm_mul_ps(_J_i_local[i_node_vec_local], _S_i_I[i_node_vec_local])),
-                                _stim_vec   // NEW
+                                _stim_vec
                             )
                         )
                     ),
@@ -528,18 +526,16 @@ void *run_simulation(void *arg)
                 int idx = ts_bold_i + j * BOLD_ts_len;
                 BOLD[idx] = 100.0f / rho * V_0 *
                     (k1 * (1.0f - bw_q_ex[j]) + k2 * (1.0f - bw_q_ex[j]/bw_nu_ex[j]) + k3 * (1.0f - bw_nu_ex[j]));
-                CBV[idx]  = bw_nu_ex[j];   // NEW: cerebral blood volume (normalized)
+                CBV[idx]  = bw_nu_ex[j];
             }
             ts_bold_i++;
         }
 
         // Electrical sample -> stream thread block (includes padding width nodes_mt by design)
+        // Electrical sample -> store in memory
         if (ts % ELEC_TR == 0){
-            size_t wr = fwrite(S_i_E, sizeof(float), (size_t)nodes_mt, ELEC_BIN);
-            if (wr != (size_t)nodes_mt){
-                printf("ERROR: Electrical fwrite failed in thread %d at sample %d\n", t_id, ts_elec_i);
-                fclose(ELEC_BIN);
-                exit(EXIT_FAILURE);
+            for (j = 0; j < nodes_real; j++) {
+                ELEC[ts_elec_i + j * ELEC_ts_len] = S_i_E[j];
             }
             ts_elec_i++;
         }
@@ -549,7 +545,8 @@ void *run_simulation(void *arg)
 
     // Copy BOLD back only for real nodes
     memcpy(&BOLD_ex[start_nodes_mt * BOLD_ts_len], BOLD, (size_t)nodes_real * BOLD_ts_len * sizeof(float));
-    memcpy(&CBV_ex[start_nodes_mt * BOLD_ts_len],  CBV,  (size_t)nodes_real * BOLD_ts_len * sizeof(float)); // NEW
+    memcpy(&CBV_ex[start_nodes_mt * BOLD_ts_len],  CBV,  (size_t)nodes_real * BOLD_ts_len * sizeof(float));
+    memcpy(&ELEC_ex[start_nodes_mt * ELEC_ts_len], ELEC, (size_t)nodes_real * ELEC_ts_len * sizeof(float));
 
     pthread_barrier_wait(&mybarrier3);
 
@@ -565,7 +562,6 @@ void *run_simulation(void *arg)
             }
             fclose(FCout_BOLD);
         }
-        // NEW: CBV
         FILE *FCout_CBV = fopen(thr_data->output_CBV_file, "w");
         if (!FCout_CBV){
             printf("ERROR: Could not open CBV output file.\n");
@@ -577,6 +573,18 @@ void *run_simulation(void *arg)
                 fprintf(FCout_CBV, "\n");
             }
             fclose(FCout_CBV);
+        }
+        FILE *FCout_ELEC = fopen(thr_data->output_ELEC_file, "w");
+        if (!FCout_ELEC){
+            printf("ERROR: Could not open Electrical output file.\n");
+        } else {
+            for (j=0; j<nodes; j++){
+                for (k=0; k<ts_elec_i; k++){
+                    fprintf(FCout_ELEC, "%.5f ", ELEC_ex[j*ELEC_ts_len + k]);
+                }
+                fprintf(FCout_ELEC, "\n");
+            }
+            fclose(FCout_ELEC);
         }
     }
 
@@ -591,18 +599,18 @@ void *run_simulation(void *arg)
     _mm_free(stim_E);
     _mm_free(BOLD);
     _mm_free(CBV);
+    _mm_free(ELEC);
     _mm_free(bw_x_ex);
     _mm_free(bw_f_ex);
     _mm_free(bw_nu_ex);
     _mm_free(bw_q_ex);
 
-    fclose(ELEC_BIN);
     gsl_rng_free(r);
     pthread_exit(NULL);
 }
 
 /*
- Usage: tvbii <paramfile> <subject_id> <#threads>
+ Usage: tvb <#threads>
 */
 int main(int argc, char *argv[])
 {
@@ -616,26 +624,30 @@ int main(int argc, char *argv[])
     int i,j,t;
     int n_threads = atoi(argv[1]);
 
+    // fixed values
     const float dt = 0.1f;
     const float sqrt_dt = sqrtf(dt);
     const float model_dt = 0.001f;
     const int vectorization_grade = 4;
+
+    // these values are just a reference, the ones used in the simulation are always read from the disk
     int   time_steps     = (int)(667*1.94*1000);
-    int   nodes          = 0;
-    int   fake_nodes     = 0;
+    int   nodes          = 84;
+    int   fake_nodes     = 84;
     float global_trans_v = 1.0f;
     float G              = 0.5f;
     int   BOLD_TR        = 1940;
     int   rand_num_seed  = 1403;
-
     float w_plus=1.4f, J_NMDA=0.15f;
+    float tmpJi=1.0f;
+
+    // nmm parameters
     const float a_E=310.0f, b_E=125.0f, d_E=0.16f;
     const float a_I=615.0f, b_I=177.0f, d_I=0.087f;
     const float gamma=0.641f/1000.0f;
     const float tau_E=100.0f, tau_I=10.0f;
     float sigma=0.00316228f;
     const float I_0=0.182f, w_E=1.0f, w_I=0.7f, gamma_I=1.0f/1000.0f;
-    float tmpJi=1.0f;
 
     // input and output filenames
     const char *param_file = "/input/param_set.txt";
@@ -685,10 +697,10 @@ int main(int argc, char *argv[])
           int   BOLD_ts_len   = (int)(time_steps / (TR / model_dt) + 1);
 
     // electrical downsampling (ms)
-    int ELEC_TR = 10; // adjust if needed
+    int ELEC_TR = 1; // adjust if needed
     int ELEC_ts_len = time_steps / ELEC_TR + 1;
 
-    // NEW: load optional stimuli
+    // load optional stimuli
     Stim_t *stimuli = NULL;
     int     n_stimuli = 0;
     load_stimuli(stim_file, nodes, time_steps, &stimuli, &n_stimuli);
@@ -709,7 +721,8 @@ int main(int argc, char *argv[])
 
     float *J_i     = (float *)_mm_malloc(fake_nodes * sizeof(float),16);
     float *BOLD_ex = (float *)_mm_malloc(nodes * BOLD_ts_len * sizeof(float),16);
-    float *CBV_ex  = (float *)_mm_malloc(nodes * BOLD_ts_len * sizeof(float),16);   // NEW
+    float *CBV_ex  = (float *)_mm_malloc(nodes * BOLD_ts_len * sizeof(float),16);
+    float *ELEC_ex = (float *)_mm_malloc(nodes * ELEC_ts_len * sizeof(float),16);
 
     if(!J_i || !BOLD_ex || !CBV_ex){
             printf("ERROR: Running out of memory.\n");
@@ -796,8 +809,8 @@ int main(int argc, char *argv[])
         // electrical streaming
         thr_data[i].ELEC_TR             = ELEC_TR;
         thr_data[i].ELEC_ts_len         = ELEC_ts_len;
-        snprintf(thr_data[i].tmp_elec_file, sizeof(thr_data[i].tmp_elec_file),
-                 "/output/.elec_tid%03d.bin", i);
+        thr_data[i].ELEC_ex = ELEC_ex;
+        thr_data[i].output_ELEC_file    = output_ELEC_file;
 
         rc = pthread_create(&thr[i], NULL, run_simulation, &thr_data[i]);
         if (rc){ fprintf(stderr,"error: pthread_create, rc: %d\n", rc); return EXIT_FAILURE; }
@@ -806,83 +819,6 @@ int main(int argc, char *argv[])
     for (i=0;i<n_threads;i++) pthread_join(thr[i], NULL);
     printf("Threads finished. Back to main thread.\n");
 
-    // ---- Merge electrical temp binaries into final text file ----
-    FILE *EOUT = fopen(output_ELEC_file, "w");
-    int final_elec_count = thr_data[0].num_elec_samples;
-    if (!EOUT){
-        printf("ERROR: Could not open electrical output file %s for writing.\n", output_ELEC_file);
-    }else{
-        FILE **tmp_files = (FILE**)calloc((size_t)n_threads, sizeof(FILE*));
-        if (!tmp_files){
-            printf("ERROR: Out of memory allocating tmp file array.\n");
-            fclose(EOUT); EOUT=NULL;
-        }else{
-            for (t=0;t<n_threads;t++){
-                char tmpname[300];
-                snprintf(tmpname,sizeof(tmpname),"/output/.elec_tid%03d.bin", t);
-                tmp_files[t] = fopen(tmpname, "rb");
-                if (!tmp_files[t]) printf("ERROR: Could not open temp electrical file %s\n", tmpname);
-            }
-
-            for (int node=0; node<nodes; node++){
-                int owner_t=-1, owner_start=-1, owner_nodes_mt=-1;
-
-                // recompute splitting to find owner thread
-                for (t=0; t<n_threads; t++){
-                    int nodes_vec_mt  = divRoundUp(nodes_vec, n_threads);
-                    int nodes_mt_t    = nodes_vec_mt * vectorization_grade;
-                    int start_vec     = t * nodes_vec_mt;
-                    int start_mt      = t * nodes_mt_t;
-                    int end_vec       = (t+1) * nodes_vec_mt;
-                    int end_mt        = (t+1) * nodes_mt_t;
-                    int end_glob      = end_mt;
-                    if (end_mt > nodes){
-                        end_vec   = nodes_vec;
-                        end_mt    = fake_nodes;
-                        end_glob  = nodes;
-                        nodes_mt_t   = end_mt - start_mt;
-                        nodes_vec_mt = end_vec - start_vec;
-                    }
-                    if (node >= start_mt && node < end_glob){
-                        owner_t = t;
-                        owner_start = start_mt;
-                        owner_nodes_mt = nodes_mt_t;
-                        break;
-                    }
-                }
-
-                if (owner_t < 0 || owner_nodes_mt <= 0 || !tmp_files[owner_t]){
-                    printf("ERROR: Merge mapping failed for node %d\n", node);
-                    if (EOUT){ fclose(EOUT); EOUT=NULL; }
-                    break;
-                }
-
-                int local_idx = node - owner_start;
-                float val;
-                for (int s=0; s<final_elec_count; s++){
-                    long long offset = (long long)s * (long long)owner_nodes_mt + (long long)local_idx;
-                    offset *= (long long)sizeof(float);
-                    if (fseek(tmp_files[owner_t], offset, SEEK_SET)!=0){ printf("ERROR: fseek failed node %d sample %d\n", node, s); break; }
-                    size_t rd = fread(&val, sizeof(float), 1, tmp_files[owner_t]);
-                    if (rd!=1){ printf("ERROR: fread failed node %d sample %d\n", node, s); break; }
-                    fprintf(EOUT, "%.6f ", val);
-                }
-                fprintf(EOUT, "\n");
-            }
-
-            for (t=0;t<n_threads;t++){
-                if (tmp_files[t]){
-                    fclose(tmp_files[t]);
-                    char tmpname[300];
-                    snprintf(tmpname,sizeof(tmpname),"/output/.elec_tid%03d.bin", t);
-                    remove(tmpname);
-                }
-            }
-            free(tmp_files);
-            if (EOUT) fclose(EOUT);
-        }
-    }
-
     clock_t end_clk = clock();
     double cpu_time_used = ((double) (end_clk - start_clk)) / CLOCKS_PER_SEC;
     printf("Simulation finished. Execution took %.3f s for %d nodes. Goodbye!\n", cpu_time_used, nodes);
@@ -890,7 +826,8 @@ int main(int argc, char *argv[])
     _mm_free(BOLD_ex);
     _mm_free(J_i);
     _mm_free(CBV_ex);
-    if (stimuli) free(stimuli);   // NEW
+    _mm_free(ELEC_ex);
+    if (stimuli) free(stimuli);
 
     return 0;
 }
