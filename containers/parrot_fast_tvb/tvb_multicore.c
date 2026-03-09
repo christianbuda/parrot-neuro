@@ -639,11 +639,6 @@ void *run_simulation(void *arg)
     pthread_exit(NULL);
 }
 
-    fclose(ELEC_BIN);
-    gsl_rng_free(r);
-    pthread_exit(NULL);
-}
-
 /*
  Usage: tvbii <paramfile> <subject_id> <#threads>
 */
