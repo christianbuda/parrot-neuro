@@ -10,7 +10,7 @@ WORKDIR /build
 COPY tvb_multicore.c .
 
 # Compile the C code directly inside the builder stage
-RUN gcc -Wall -pedantic -Wextra -std=c99 -msse2 -O3 -ftree-vectorize -ffast-math -funroll-loops -fomit-frame-pointer -m64 tvb_multicore.c -o tvb -lgsl -lgslcblas -lm -lpthread
+RUN gcc -Wall -pedantic -Wextra -std=gnu99 -msse2 -O3 -ftree-vectorize -ffast-math -funroll-loops -fomit-frame-pointer -m64 tvb_multicore.c -o tvb -lgsl -lgslcblas -lm -lpthread
 
 # ==========================================
 # STAGE 2: Runner
