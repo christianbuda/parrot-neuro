@@ -43,15 +43,6 @@ typedef struct {
 
 static inline int divRoundUp(const int x, const int y){ return (x + y - 1) / y; }
 
-static float corr(float *x, float *y, int n){
-    int i; float mx=0, my=0;
-    for (i=0;i<n;i++){ mx+=x[i]; my+=y[i]; }
-    mx/=n; my/=n;
-    float sxy=0,sxsq=0,sysq=0, tx,ty;
-    for (i=0;i<n;i++){ tx=x[i]-mx; ty=y[i]-my; sxy+=tx*ty; sxsq+=tx*tx; sysq+=ty*ty; }
-    return sxy / (sqrtf(sxsq)*sqrtf(sysq));
-}
-
 // load optional stimulus file
 int load_stimuli(const char *fname, int nodes, int time_steps,
                  Stim_t **stimuli_out, int *n_stimuli_out)
@@ -113,7 +104,7 @@ int load_stimuli(const char *fname, int nodes, int time_steps,
     return 1;
 }
 
-int importGlobalConnectivity(char *SC_cap_filename, char *SC_dist_filename, char *SC_inputreg_filename, int regions,
+int importGlobalConnectivity(const char *SC_cap_filename, const char *SC_dist_filename, const char *SC_inputreg_filename, int regions,
                              float **region_activity, struct Xi_p **reg_globinp_p, float global_trans_v,
                              int **n_conn_table, float G_J_NMDA, struct SC_capS **SC_cap, float **SC_rowsums, struct SC_inpregS **SC_inpreg)
 {
@@ -233,15 +224,15 @@ typedef struct _thread_data_t {
     struct Xi_p *reg_globinp_p;
     int     *n_conn_table;
     float   *BOLD_ex;
-    char    *output_BOLD_file;
+    const char    *output_BOLD_file;
     float   *CBV_ex;
-    char    *output_CBV_file;
+    const char    *output_CBV_file;
 
     // electrical streaming
     int     ELEC_TR;
     int     ELEC_ts_len;
     float   *ELEC_ex;
-    char    *output_ELEC_file;
+    const char    *output_ELEC_file;
     int     num_elec_samples;
 
     // NEW: stimuli (shared read-only across threads)
@@ -252,14 +243,12 @@ typedef struct _thread_data_t {
 void *run_simulation(void *arg)
 {
     int j, i_node_vec, i_node_vec_local, k, int_i, ts;
-    float tmpglobinput, tmpglobinput_FFI;
+    float tmpglobinput;
     __m128 _tmp_H_E, _tmp_H_I, _tmp_I_I, _tmp_I_E;
     float tmp_exp_E[4] __attribute__((aligned(16)));
     float tmp_exp_I[4] __attribute__((aligned(16)));
     __m128 *_tmp_exp_E = (__m128*)tmp_exp_E;
     __m128 *_tmp_exp_I = (__m128*)tmp_exp_I;
-    float rand_number[4] __attribute__((aligned(16)));
-    __m128 *_rand_number = (__m128*)rand_number;
     int ring_buf_pos = 0;
 
     thread_data_t *thr_data = (thread_data_t *)arg;
@@ -280,20 +269,16 @@ void *run_simulation(void *arg)
     const __m128 _imintau_E     = thr_data->_imintau_E;
     const __m128 _dt            = thr_data->_dt;
     const __m128 _sigma_sqrt_dt = thr_data->_sigma_sqrt_dt;
-    const __m128 _gamma_I       = thr_data->_gamma_I;
     const __m128 _imintau_I     = thr_data->_imintau_I;
     const __m128 _min_d_I       = thr_data->_min_d_I;
     const __m128 _b_I           = thr_data->_b_I;
     const __m128 _J_NMDA        = thr_data->_J_NMDA;
     const __m128 _w_I__I_0      = thr_data->_w_I__I_0;
-    const __m128 _a_I           = thr_data->_a_I;
     const __m128 _min_d_E       = thr_data->_min_d_E;
     const __m128 _b_E           = thr_data->_b_E;
-    const __m128 _a_E           = thr_data->_a_E;
     const __m128 _w_plus_J_NMDA = thr_data->_w_plus_J_NMDA;
     const __m128 _w_E__I_0      = thr_data->_w_E__I_0;
     struct SC_capS *SC_cap      = thr_data->SC_cap;
-    struct Xi_p *reg_globinp_p  = thr_data->reg_globinp_p;
     int time_steps              = thr_data->time_steps;
     int BOLD_TR                 = thr_data->BOLD_TR;
     float model_dt              = thr_data->model_dt;
@@ -327,6 +312,15 @@ void *run_simulation(void *arg)
     }
 
     const int nodes_real = end_nodes_mt_glob - start_nodes_mt; // real nodes owned by this thread
+
+    // Allocate an aligned buffer for our random numbers
+    int rand_buf_size = 10 * nodes_vec_mt * 8;
+    float *rand_buf = (float *)_mm_malloc(rand_buf_size * sizeof(float), 16);
+    
+    if (!rand_buf) {
+        printf("ERROR: Out of memory allocating random buffer.\n"); 
+        exit(1); 
+    }
 
     printf("thread %d: start: %d end: %d size: %d\n", t_id, start_nodes_mt, end_nodes_mt, nodes_mt);
 
@@ -366,7 +360,7 @@ void *run_simulation(void *arg)
 
     // Balloon-Windkessel
     float rho=0.34f, alpha=0.32f, tau=0.98f, y=1.0f/0.41f, kappa=1.0f/0.65f;
-    float V_0=0.02f, k1=7*rho, k2=2.0f, k3=2*rho-0.2f, ialpha=1.0f/alpha, itau=1.0f/tau, oneminrho=(1.0f - rho);
+    float V_0=0.02f, k1=7*rho, k2=2.0f, k3=2*rho-0.2f, oneminrho=(1.0f - rho);
     float f_tmp;
     float *BOLD     = (float *)_mm_malloc(nodes_mt * BOLD_ts_len * sizeof(float),16);
     float *CBV      = (float *)_mm_malloc(nodes_mt * BOLD_ts_len * sizeof(float),16);
@@ -418,6 +412,14 @@ void *run_simulation(void *arg)
                 }
             }
         }
+
+        // Pre-generate all random numbers for this entire 1 ms step
+        for (int i_rnd = 0; i_rnd < rand_buf_size; i_rnd++) {
+            rand_buf[i_rnd] = (float)gsl_ran_gaussian(r, 1.0);
+        }
+        
+        int rand_idx = 0; // Pointer to track where we are in the buffer
+
         // 10 sub-steps per ms (dt=0.1 ms)
         for (int_i=0; int_i<10; int_i++){
             pthread_barrier_wait(&mybarrier2);
@@ -425,7 +427,7 @@ void *run_simulation(void *arg)
             // global coupling
             i_node_vec_local = 0;
             for (j=start_nodes_mt; j<end_nodes_mt_glob; j++){
-                tmpglobinput=0.0f; tmpglobinput_FFI=0.0f;
+                tmpglobinput=0.0f;
                 for (k=0;k<n_conn_table[j];k++){
                     tmpglobinput += *thr_data->reg_globinp_p[j+ring_buf_pos].Xi_elems[k] * SC_cap[j].cap[k];
                 }
@@ -474,19 +476,15 @@ void *run_simulation(void *arg)
                 _tmp_H_I = _mm_div_ps(_tmp_I_I, _mm_sub_ps(_one, *_tmp_exp_I));
                 _meanFR_INH[i_node_vec_local] = _mm_add_ps(_meanFR_INH[i_node_vec_local], _tmp_H_I);
 
-                rand_number[0]=(float)gsl_ran_gaussian(r,1.0);
-                rand_number[1]=(float)gsl_ran_gaussian(r,1.0);
-                rand_number[2]=(float)gsl_ran_gaussian(r,1.0);
-                rand_number[3]=(float)gsl_ran_gaussian(r,1.0);
-                _S_i_I[i_node_vec_local] = _mm_add_ps(_mm_add_ps(_mm_mul_ps(_sigma_sqrt_dt, *_rand_number), _S_i_I[i_node_vec_local]),
+                __m128 _rand_I = _mm_load_ps(&rand_buf[rand_idx]);
+                rand_idx += 4;
+                _S_i_I[i_node_vec_local] = _mm_add_ps(_mm_add_ps(_mm_mul_ps(_sigma_sqrt_dt, _rand_I), _S_i_I[i_node_vec_local]),
                                                       _mm_mul_ps(_dt, _mm_add_ps(_mm_mul_ps(_imintau_I, _S_i_I[i_node_vec_local]),
                                                                                  _mm_mul_ps(_tmp_H_I, thr_data->_gamma_I))));
 
-                rand_number[0]=(float)gsl_ran_gaussian(r,1.0);
-                rand_number[1]=(float)gsl_ran_gaussian(r,1.0);
-                rand_number[2]=(float)gsl_ran_gaussian(r,1.0);
-                rand_number[3]=(float)gsl_ran_gaussian(r,1.0);
-                _S_i_E[i_node_vec_local] = _mm_add_ps(_mm_add_ps(_mm_mul_ps(_sigma_sqrt_dt, *_rand_number), _S_i_E[i_node_vec_local]),
+                __m128 _rand_E = _mm_load_ps(&rand_buf[rand_idx]);
+                rand_idx += 4;
+                _S_i_E[i_node_vec_local] = _mm_add_ps(_mm_add_ps(_mm_mul_ps(_sigma_sqrt_dt, _rand_E), _S_i_E[i_node_vec_local]),
                                                       _mm_mul_ps(_dt, _mm_add_ps(_mm_mul_ps(_imintau_E, _S_i_E[i_node_vec_local]),
                                                                                  _mm_mul_ps(_mm_mul_ps(_mm_sub_ps(_one,_S_i_E[i_node_vec_local]), _gamma),
                                                                                             _tmp_H_E))));
@@ -605,6 +603,7 @@ void *run_simulation(void *arg)
     _mm_free(bw_nu_ex);
     _mm_free(bw_q_ex);
 
+    _mm_free(rand_buf);
     gsl_rng_free(r);
     pthread_exit(NULL);
 }
@@ -620,8 +619,9 @@ int main(int argc, char *argv[])
         exit(EXIT_FAILURE);
     }
 
-    clock_t start_clk = clock();
-    int i,j,t;
+    struct timespec start_time, end_time;
+    clock_gettime(CLOCK_MONOTONIC, &start_time);
+    int i,j;
     int n_threads = atoi(argv[1]);
 
     // fixed values
@@ -755,8 +755,14 @@ int main(int argc, char *argv[])
 
     // threading
     pthread_barrier_init(&mybarrier_base, NULL, n_threads);
-    pthread_t       thr[n_threads];
-    thread_data_t   thr_data[n_threads];
+
+    pthread_t *thr = (pthread_t *)malloc((size_t)n_threads * sizeof(pthread_t));
+    thread_data_t *thr_data = (thread_data_t *)malloc((size_t)n_threads * sizeof(thread_data_t));
+    if (!thr || !thr_data) {
+        printf("ERROR: Out of memory allocating thread arrays.\n");
+        exit(1); // Remember our new exit codes!
+    }
+    
     int rc;
 
     for (i=0;i<n_threads;i++){
@@ -819,15 +825,39 @@ int main(int argc, char *argv[])
     for (i=0;i<n_threads;i++) pthread_join(thr[i], NULL);
     printf("Threads finished. Back to main thread.\n");
 
-    clock_t end_clk = clock();
-    double cpu_time_used = ((double) (end_clk - start_clk)) / CLOCKS_PER_SEC;
-    printf("Simulation finished. Execution took %.3f s for %d nodes. Goodbye!\n", cpu_time_used, nodes);
+    clock_gettime(CLOCK_MONOTONIC, &end_time);
+    double wall_time_used = (end_time.tv_sec - start_time.tv_sec) + 
+                            (end_time.tv_nsec - start_time.tv_nsec) / 1e9;
+    printf("Simulation finished. Execution took %.3f s for %d nodes. Goodbye!\n", wall_time_used, nodes);
 
     _mm_free(BOLD_ex);
     _mm_free(J_i);
     _mm_free(CBV_ex);
     _mm_free(ELEC_ex);
     if (stimuli) free(stimuli);
+    free(thr);
+    free(thr_data);
+
+    // --- FINAL CLEANUP OF GLOBAL CONNECTIVITY ---
+    for (i = 0; i < nodes; i++) {
+        if (n_conn_table[i] > 0) {
+            // Free the inner arrays for this node
+            _mm_free(SC_cap[i].cap);
+            _mm_free(SC_inpreg[i].inpreg);
+            
+            // Free the delay pointers
+            for (j = 0; j < maxdelay; j++) {
+                _mm_free(reg_globinp_p[i + j * nodes].Xi_elems);
+            }
+        }
+    }
+    // Free the outer arrays 
+    _mm_free(SC_cap);
+    _mm_free(SC_inpreg);
+    _mm_free(n_conn_table);
+    _mm_free(SC_rowsums);
+    _mm_free(reg_globinp_p);
+    _mm_free(region_activity);
 
     return 0;
 }
