@@ -330,7 +330,6 @@ void *run_simulation(void *arg)
 
     gsl_rng *r = gsl_rng_alloc (gsl_rng_mt19937);
     gsl_rng_set (r, (t_id + thr_data->rand_num_seed));
-    srand((unsigned)(t_id + thr_data->rand_num_seed));
 
     float *meanFR           = (float *)_mm_malloc(nodes_mt*sizeof(float),32);
     float *meanFR_INH       = (float *)_mm_malloc(nodes_mt*sizeof(float),32);
@@ -388,39 +387,29 @@ void *run_simulation(void *arg)
     }
     pthread_barrier_wait(&mybarrier1);
 
-    // --- PRE-COMPUTE STIMULUS SCHEDULE ---
-    // Allocate a contiguous array for the stimuli per node owned by the thread
-    // Size is nodes_mt (to cover fake/padding nodes) * time_steps
-    float *thread_stim_schedule = (float *)_mm_malloc((size_t)time_steps * nodes_mt * sizeof(float), 32);
-    for (size_t idx = 0; idx < (size_t)time_steps * nodes_mt; idx++) {
-        thread_stim_schedule[idx] = 0.0f;
-    }
-
-    // Populate the schedule with the stimulus amplitudes
-    for (int s = 0; s < n_stimuli; s++) {
-        int node = stimuli[s].node;
-        // Check if this thread owns this real node
-        if (node >= start_nodes_mt && node < end_nodes_mt_glob) {
-            int local = node - start_nodes_mt; 
-            for (int t = stimuli[s].start_ts; t < stimuli[s].end_ts; t++) {
-                if (t < time_steps) {
-                    thread_stim_schedule[t * nodes_mt + local] += stimuli[s].amplitude;
-                }
-            }
-        }
-    }
-    // ------------------------------------------
-
     int ts_bold_i = 0;
     int ts_elec_i = 0;
 
     for (ts=0; ts<time_steps; ts++){
         if (t_id==0) printf("%.1f %% \r", ((float)ts / (float)time_steps) * 100.0f );
         
+        // 1. Reset the stimulus array for this specific millisecond
         for (j = 0; j < nodes_mt; j++) {
-            stim_E[j] = thread_stim_schedule[ts * nodes_mt + j];
+            stim_E[j] = 0.0f; 
         }
 
+        // 2. Apply any active stimuli on-the-fly
+        for (int s = 0; s < n_stimuli; s++) {
+            // Check if current time falls within the stimulus window
+            if (ts >= stimuli[s].start_ts && ts < stimuli[s].end_ts) {
+                int node = stimuli[s].node;
+                // Check if this thread owns the stimulated node
+                if (node >= start_nodes_mt && node < end_nodes_mt_glob) {
+                    int local_idx = node - start_nodes_mt;
+                    stim_E[local_idx] += stimuli[s].amplitude;
+                }
+            }
+        }
 
         // Pre-generate all random numbers for this entire 1 ms step
         for (int i_rnd = 0; i_rnd < rand_buf_size; i_rnd++) {
@@ -611,7 +600,6 @@ void *run_simulation(void *arg)
     _mm_free(bw_f_ex);
     _mm_free(bw_nu_ex);
     _mm_free(bw_q_ex);
-    _mm_free(thread_stim_schedule);
 
     _mm_free(rand_buf);
     gsl_rng_free(r);
@@ -689,8 +677,6 @@ int main(int argc, char *argv[])
     }else{
         fake_nodes = nodes;
     }
-
-    srand((unsigned)rand_num_seed);
 
     const float sigma_sqrt_dt = sqrt_dt * sigma;
     const int   nodes_vec     = fake_nodes / vectorization_grade;
