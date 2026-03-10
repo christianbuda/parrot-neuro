@@ -16,8 +16,8 @@
 
 
 #include <stdio.h>
-#include <xmmintrin.h>
-#include <emmintrin.h>
+#include <immintrin.h>
+#include "avx_mathfun.h"
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
@@ -27,7 +27,7 @@
 #include <gsl/gsl_randist.h>
 
 pthread_mutex_t mutex_thrcount;
-pthread_barrier_t mybarrier_base, mybarrier1, mybarrier2, mybarrier3;
+pthread_barrier_t mybarrier1, mybarrier2, mybarrier3;
 
 struct Xi_p { float **Xi_elems; };
 struct SC_capS { float *cap; };
@@ -116,14 +116,19 @@ int importGlobalConnectivity(const char *SC_cap_filename, const char *SC_dist_fi
     struct SC_capS *SC_capp;
     struct SC_inpregS *SC_inpregp;
 
-    FILE *file_cap=fopen(SC_cap_filename,"r");
-    FILE *file_dist=fopen(SC_dist_filename,"r");
-    if (!file_cap || !file_dist){ printf("\nERROR: Could not open SC files. Terminating...\n\n"); exit(EXIT_FAILURE); }
+    FILE *file_cap = fopen(SC_cap_filename,"r");
+    FILE *file_dist = fopen(SC_dist_filename,"r");
+    if (!file_cap || !file_dist) { 
+        printf("\nERROR: Could not open SC files. Terminating...\n\n"); 
+        if (file_cap) fclose(file_cap);
+        if (file_dist) fclose(file_dist);
+        exit(EXIT_FAILURE); 
+    }
 
-    *SC_rowsums   = (float *)_mm_malloc(regions*sizeof(float),16);
-    *n_conn_table = (int   *)_mm_malloc(regions*sizeof(int),16);
-    *SC_cap       = (struct SC_capS *)_mm_malloc(regions*sizeof(struct SC_capS),16);
-    *SC_inpreg    = (struct SC_inpregS *)_mm_malloc(regions*sizeof(struct SC_inpregS),16);
+    *SC_rowsums   = (float *)_mm_malloc(regions*sizeof(float),32);
+    *n_conn_table = (int   *)_mm_malloc(regions*sizeof(int),32);
+    *SC_cap       = (struct SC_capS *)_mm_malloc(regions*sizeof(struct SC_capS),32);
+    *SC_inpreg    = (struct SC_inpregS *)_mm_malloc(regions*sizeof(struct SC_inpregS),32);
     SC_capp    = *SC_cap;
     SC_inpregp = *SC_inpreg;
     if(!*n_conn_table || !SC_capp || !*SC_rowsums || !SC_inpregp){
@@ -150,9 +155,9 @@ int importGlobalConnectivity(const char *SC_cap_filename, const char *SC_dist_fi
     maxdelay = (int)(((tmp_max/global_trans_v)*10)+0.5);
     if(maxdelay<1) maxdelay=1;
 
-    *region_activity = (float *)_mm_malloc(maxdelay*regions*sizeof(float),16);
+    *region_activity = (float *)_mm_malloc(maxdelay*regions*sizeof(float),32);
     region_activity_p = *region_activity;
-    *reg_globinp_p = (struct Xi_p *)_mm_malloc(maxdelay*regions*sizeof(struct Xi_p),16);
+    *reg_globinp_p = (struct Xi_p *)_mm_malloc(maxdelay*regions*sizeof(struct Xi_p),32);
     reg_globinp_pp = *reg_globinp_p;
     if(!region_activity_p || !reg_globinp_p){ printf("Running out of memory. Terminating.\n"); fclose(file_dist); exit(2); }
     for (j=0;j<maxdelay*regions;j++) region_activity_p[j]=0.001f;
@@ -160,12 +165,12 @@ int importGlobalConnectivity(const char *SC_cap_filename, const char *SC_dist_fi
     int ring_buff_position;
     for (i=0;i<regions;i++){
         if((*n_conn_table)[i] > 0){
-            SC_capp[i].cap       = (float*)_mm_malloc(((*n_conn_table)[i])*sizeof(float),16);
-            SC_inpregp[i].inpreg = (int  *)_mm_malloc(((*n_conn_table)[i])*sizeof(int)  ,16);
+            SC_capp[i].cap       = (float*)_mm_malloc(((*n_conn_table)[i])*sizeof(float),32);
+            SC_inpregp[i].inpreg = (int  *)_mm_malloc(((*n_conn_table)[i])*sizeof(int)  ,32);
             if(!SC_capp[i].cap || !SC_inpregp[i].inpreg){ printf("Running out of memory. Terminating.\n"); exit(2); }
 
             for (j=0;j<maxdelay;j++){
-                reg_globinp_pp[i+j*regions].Xi_elems = (float **)_mm_malloc(((*n_conn_table)[i])*sizeof(float *),16);
+                reg_globinp_pp[i+j*regions].Xi_elems = (float **)_mm_malloc(((*n_conn_table)[i])*sizeof(float *),32);
                 if(!reg_globinp_pp[i+j*regions].Xi_elems){ printf("Running out of memory. Terminating.\n"); exit(2); }
             }
 
@@ -218,7 +223,9 @@ typedef struct _thread_data_t {
     int     reg_act_size;
     float   *region_activity;
     float   model_dt;
-    __m128  _gamma,_one,_imintau_E,_dt,_sigma_sqrt_dt,_sigma,_gamma_I,_imintau_I,_min_d_I,_b_I,_J_NMDA,_w_I__I_0,_a_I,_min_d_E,_b_E,_a_E,_w_plus_J_NMDA,_w_E__I_0;
+    __m256  _gamma,_one,_imintau_E,_dt,_sigma_sqrt_dt,_sigma,_gamma_I,_imintau_I,_min_d_I,_b_I,_J_NMDA,_w_I__I_0,_a_I,_min_d_E,_b_E,_a_E,_w_plus_J_NMDA,_w_E__I_0;
+    __m256  _limit_E;
+    __m256  _limit_I;
     struct SC_capS *SC_cap;
     struct SC_inpregS *SC_inpreg;
     struct Xi_p *reg_globinp_p;
@@ -235,7 +242,7 @@ typedef struct _thread_data_t {
     const char    *output_ELEC_file;
     int     num_elec_samples;
 
-    // NEW: stimuli (shared read-only across threads)
+    // stimuli (shared read-only across threads)
     Stim_t *stimuli;
     int     n_stimuli;
 } thread_data_t;
@@ -244,11 +251,7 @@ void *run_simulation(void *arg)
 {
     int j, i_node_vec, i_node_vec_local, k, int_i, ts;
     float tmpglobinput;
-    __m128 _tmp_H_E, _tmp_H_I, _tmp_I_I, _tmp_I_E;
-    float tmp_exp_E[4] __attribute__((aligned(16)));
-    float tmp_exp_I[4] __attribute__((aligned(16)));
-    __m128 *_tmp_exp_E = (__m128*)tmp_exp_E;
-    __m128 *_tmp_exp_I = (__m128*)tmp_exp_I;
+    __m256 _tmp_H_E, _tmp_H_I, _tmp_I_I, _tmp_I_E;
     int ring_buf_pos = 0;
 
     thread_data_t *thr_data = (thread_data_t *)arg;
@@ -264,20 +267,20 @@ void *run_simulation(void *arg)
     float *region_activity = thr_data->region_activity;
     float *BOLD_ex = thr_data->BOLD_ex;
     float *CBV_ex = thr_data->CBV_ex;
-    const __m128 _gamma         = thr_data->_gamma;
-    const __m128 _one           = thr_data->_one;
-    const __m128 _imintau_E     = thr_data->_imintau_E;
-    const __m128 _dt            = thr_data->_dt;
-    const __m128 _sigma_sqrt_dt = thr_data->_sigma_sqrt_dt;
-    const __m128 _imintau_I     = thr_data->_imintau_I;
-    const __m128 _min_d_I       = thr_data->_min_d_I;
-    const __m128 _b_I           = thr_data->_b_I;
-    const __m128 _J_NMDA        = thr_data->_J_NMDA;
-    const __m128 _w_I__I_0      = thr_data->_w_I__I_0;
-    const __m128 _min_d_E       = thr_data->_min_d_E;
-    const __m128 _b_E           = thr_data->_b_E;
-    const __m128 _w_plus_J_NMDA = thr_data->_w_plus_J_NMDA;
-    const __m128 _w_E__I_0      = thr_data->_w_E__I_0;
+    const __m256 _gamma         = thr_data->_gamma;
+    const __m256 _one           = thr_data->_one;
+    const __m256 _imintau_E     = thr_data->_imintau_E;
+    const __m256 _dt            = thr_data->_dt;
+    const __m256 _sigma_sqrt_dt = thr_data->_sigma_sqrt_dt;
+    const __m256 _imintau_I     = thr_data->_imintau_I;
+    const __m256 _min_d_I       = thr_data->_min_d_I;
+    const __m256 _b_I           = thr_data->_b_I;
+    const __m256 _J_NMDA        = thr_data->_J_NMDA;
+    const __m256 _w_I__I_0      = thr_data->_w_I__I_0;
+    const __m256 _min_d_E       = thr_data->_min_d_E;
+    const __m256 _b_E           = thr_data->_b_E;
+    const __m256 _w_plus_J_NMDA = thr_data->_w_plus_J_NMDA;
+    const __m256 _w_E__I_0      = thr_data->_w_E__I_0;
     struct SC_capS *SC_cap      = thr_data->SC_cap;
     int time_steps              = thr_data->time_steps;
     int BOLD_TR                 = thr_data->BOLD_TR;
@@ -314,8 +317,9 @@ void *run_simulation(void *arg)
     const int nodes_real = end_nodes_mt_glob - start_nodes_mt; // real nodes owned by this thread
 
     // Allocate an aligned buffer for our random numbers
-    int rand_buf_size = 10 * nodes_vec_mt * 8;
-    float *rand_buf = (float *)_mm_malloc(rand_buf_size * sizeof(float), 16);
+        // Multiply by 16 because AVX consumes 8 for I and 8 for E
+    int rand_buf_size = 10 * nodes_vec_mt * 16;
+    float *rand_buf = (float *)_mm_malloc(rand_buf_size * sizeof(float), 32);
     
     if (!rand_buf) {
         printf("ERROR: Out of memory allocating random buffer.\n"); 
@@ -324,52 +328,44 @@ void *run_simulation(void *arg)
 
     printf("thread %d: start: %d end: %d size: %d\n", t_id, start_nodes_mt, end_nodes_mt, nodes_mt);
 
-    if (nodes_vec_mt <= 1){
-        printf("Ineffective splitting. Terminating.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    if (t_id == 0) initialize_thread_barriers(n_threads);
-    pthread_barrier_wait(&mybarrier_base);
-
     gsl_rng *r = gsl_rng_alloc (gsl_rng_mt19937);
     gsl_rng_set (r, (t_id + thr_data->rand_num_seed));
     srand((unsigned)(t_id + thr_data->rand_num_seed));
 
-    float *meanFR           = (float *)_mm_malloc(nodes_mt*sizeof(float),16);
-    float *meanFR_INH       = (float *)_mm_malloc(nodes_mt*sizeof(float),16);
-    float *global_input     = (float *)_mm_malloc(nodes_mt*sizeof(float),16);
-    float *global_input_FFI = (float *)_mm_malloc(nodes_mt*sizeof(float),16);
-    float *S_i_E            = (float *)_mm_malloc(nodes_mt*sizeof(float),16);
-    float *S_i_I            = (float *)_mm_malloc(nodes_mt*sizeof(float),16);
-    float *J_i_local        = (float *)_mm_malloc(nodes_mt*sizeof(float),16);
-    float *stim_E           = (float *)_mm_malloc(nodes_mt*sizeof(float),16);
+    float *meanFR           = (float *)_mm_malloc(nodes_mt*sizeof(float),32);
+    float *meanFR_INH       = (float *)_mm_malloc(nodes_mt*sizeof(float),32);
+    float *global_input     = (float *)_mm_malloc(nodes_mt*sizeof(float),32);
+    float *global_input_FFI = (float *)_mm_malloc(nodes_mt*sizeof(float),32);
+    float *S_i_E            = (float *)_mm_malloc(nodes_mt*sizeof(float),32);
+    float *S_i_I            = (float *)_mm_malloc(nodes_mt*sizeof(float),32);
+    float *J_i_local        = (float *)_mm_malloc(nodes_mt*sizeof(float),32);
+    float *stim_E           = (float *)_mm_malloc(nodes_mt*sizeof(float),32);
 
     if(!meanFR || !meanFR_INH || !global_input || !global_input_FFI || !S_i_E || !S_i_I || !J_i_local || !stim_E){
         printf("ERROR: Running out of memory. Aborting...\n"); exit(EXIT_FAILURE);
     }
 
-    __m128 *_meanFR         = (__m128*)meanFR;
-    __m128 *_meanFR_INH     = (__m128*)meanFR_INH;
-    __m128 *_global_input   = (__m128*)global_input;
-    __m128 *_global_input_FFI = (__m128*)global_input_FFI;
-    __m128 *_S_i_E          = (__m128*)S_i_E;
-    __m128 *_S_i_I          = (__m128*)S_i_I;
-    __m128 *_J_i_local      = (__m128*)J_i_local;
-    __m128 *_stim_E         = (__m128*)stim_E;
+    __m256 *_meanFR         = (__m256*)meanFR;
+    __m256 *_meanFR_INH     = (__m256*)meanFR_INH;
+    __m256 *_global_input   = (__m256*)global_input;
+    __m256 *_global_input_FFI = (__m256*)global_input_FFI;
+    __m256 *_S_i_E          = (__m256*)S_i_E;
+    __m256 *_S_i_I          = (__m256*)S_i_I;
+    __m256 *_J_i_local      = (__m256*)J_i_local;
+    __m256 *_stim_E         = (__m256*)stim_E;
 
     // Balloon-Windkessel
-    float rho=0.34f, alpha=0.32f, tau=0.98f, y=1.0f/0.41f, kappa=1.0f/0.65f;
-    float V_0=0.02f, k1=7*rho, k2=2.0f, k3=2*rho-0.2f, oneminrho=(1.0f - rho);
-    float f_tmp;
-    float *BOLD     = (float *)_mm_malloc(nodes_mt * BOLD_ts_len * sizeof(float),16);
-    float *CBV      = (float *)_mm_malloc(nodes_mt * BOLD_ts_len * sizeof(float),16);
-    float *ELEC     = (float *)_mm_malloc(nodes_mt * ELEC_ts_len * sizeof(float),16);
+    double rho=0.34, alpha=0.32, tau=0.98, y=1.0/0.41, kappa=1.0/0.65;
+    double V_0=0.02, k1=7.0*rho, k2=2.0, k3=2.0*rho-0.2, oneminrho=(1.0 - rho);
+    double f_tmp;
+    float *BOLD     = (float *)_mm_malloc(nodes_mt * BOLD_ts_len * sizeof(float),32);
+    float *CBV      = (float *)_mm_malloc(nodes_mt * BOLD_ts_len * sizeof(float),32);
+    float *ELEC     = (float *)_mm_malloc(nodes_mt * ELEC_ts_len * sizeof(float),32);
+    double *bw_x_ex  = (double *)_mm_malloc(nodes_mt * sizeof(double),32);
+    double *bw_f_ex  = (double *)_mm_malloc(nodes_mt * sizeof(double),32);
+    double *bw_nu_ex = (double *)_mm_malloc(nodes_mt * sizeof(double),32);
+    double *bw_q_ex  = (double *)_mm_malloc(nodes_mt * sizeof(double),32);
 
-    float *bw_x_ex  = (float *)_mm_malloc(nodes_mt * sizeof(float),16);
-    float *bw_f_ex  = (float *)_mm_malloc(nodes_mt * sizeof(float),16);
-    float *bw_nu_ex = (float *)_mm_malloc(nodes_mt * sizeof(float),16);
-    float *bw_q_ex  = (float *)_mm_malloc(nodes_mt * sizeof(float),16);
     if(!BOLD || !CBV || !ELEC || !bw_x_ex || !bw_f_ex || !bw_nu_ex || !bw_q_ex){ printf("ERROR: Running out of memory. Aborting...\n"); exit(EXIT_FAILURE); }
 
     // reset arrays
@@ -379,18 +375,41 @@ void *run_simulation(void *arg)
         global_input[j]=0.0f; global_input_FFI[j]=0.0f;
         S_i_E[j]=0.0f; S_i_I[j]=0.0f;
         J_i_local[j]= J_i[j + start_nodes_mt];
-        stim_E[j]=0.0f;   // NEW
+        stim_E[j]=0.0f;
     }
     if (t_id==0){
         for (j=0;j<thr_data->reg_act_size;j++) region_activity[j]=0.0f;
     }
     for (j=0;j<nodes_mt;j++){
-        bw_x_ex[j]=0.0f; bw_f_ex[j]=1.0f; bw_nu_ex[j]=1.0f; bw_q_ex[j]=1.0f;
+        bw_x_ex[j]=0.0; bw_f_ex[j]=1.0; bw_nu_ex[j]=1.0; bw_q_ex[j]=1.0;
     }
-    for (j=0;j<nodes_mt * BOLD_ts_len; j++){   // NEW
+    for (j=0;j<nodes_mt * BOLD_ts_len; j++){ 
         CBV[j] = 0.0f;
     }
     pthread_barrier_wait(&mybarrier1);
+
+    // --- PRE-COMPUTE STIMULUS SCHEDULE ---
+    // Allocate a contiguous array for the stimuli per node owned by the thread
+    // Size is nodes_mt (to cover fake/padding nodes) * time_steps
+    float *thread_stim_schedule = (float *)_mm_malloc((size_t)time_steps * nodes_mt * sizeof(float), 32);
+    for (size_t idx = 0; idx < (size_t)time_steps * nodes_mt; idx++) {
+        thread_stim_schedule[idx] = 0.0f;
+    }
+
+    // Populate the schedule with the stimulus amplitudes
+    for (int s = 0; s < n_stimuli; s++) {
+        int node = stimuli[s].node;
+        // Check if this thread owns this real node
+        if (node >= start_nodes_mt && node < end_nodes_mt_glob) {
+            int local = node - start_nodes_mt; 
+            for (int t = stimuli[s].start_ts; t < stimuli[s].end_ts; t++) {
+                if (t < time_steps) {
+                    thread_stim_schedule[t * nodes_mt + local] += stimuli[s].amplitude;
+                }
+            }
+        }
+    }
+    // ------------------------------------------
 
     int ts_bold_i = 0;
     int ts_elec_i = 0;
@@ -398,20 +417,10 @@ void *run_simulation(void *arg)
     for (ts=0; ts<time_steps; ts++){
         if (t_id==0) printf("%.1f %% \r", ((float)ts / (float)time_steps) * 100.0f );
         
-        // build external excitatory stimulus for this time step
-        for (j = 0; j < nodes_mt; j++) stim_E[j] = 0.0f;
-
-        for (int s = 0; s < n_stimuli; s++) {
-            if (ts >= stimuli[s].start_ts && ts < stimuli[s].end_ts) {
-                int node = stimuli[s].node;
-                if (node >= start_nodes_mt && node < end_nodes_mt_glob) {
-                    int local = node - start_nodes_mt;   // 0 .. nodes_real-1
-                    if (local >= 0 && local < nodes_real) {
-                        stim_E[local] += stimuli[s].amplitude;
-                    }
-                }
-            }
+        for (j = 0; j < nodes_mt; j++) {
+            stim_E[j] = thread_stim_schedule[ts * nodes_mt + j];
         }
+
 
         // Pre-generate all random numbers for this entire 1 ms step
         for (int i_rnd = 0; i_rnd < rand_buf_size; i_rnd++) {
@@ -436,57 +445,91 @@ void *run_simulation(void *arg)
             }
 
             // vectorized local dynamics
-            // vectorized local dynamics
             i_node_vec_local = 0;
             for (i_node_vec=start_nodes_vec_mt; i_node_vec<end_nodes_vec_mt; i_node_vec++){
-                __m128 _stim_vec = _stim_E[i_node_vec_local];
+                __m256 _stim_vec = _stim_E[i_node_vec_local];
 
-                _tmp_I_E = _mm_sub_ps(
-                    _mm_mul_ps(
+                // --- EXCITATORY ---
+                _tmp_I_E = _mm256_sub_ps(
+                    _mm256_mul_ps(
                         thr_data->_a_E,
-                        _mm_add_ps(
-                            _mm_add_ps(_w_E__I_0,
-                                       _mm_mul_ps(_w_plus_J_NMDA, _S_i_E[i_node_vec_local])),
-                            
-                                       // global input + external stimulus - inhibitory feedback
-                            _mm_add_ps(
-                                _mm_sub_ps(_global_input[i_node_vec_local],
-                                           _mm_mul_ps(_J_i_local[i_node_vec_local], _S_i_I[i_node_vec_local])),
+                        _mm256_add_ps(
+                            _mm256_add_ps(_w_E__I_0, _mm256_mul_ps(_w_plus_J_NMDA, _S_i_E[i_node_vec_local])),
+                            _mm256_add_ps(
+                                _mm256_sub_ps(_global_input[i_node_vec_local],
+                                            _mm256_mul_ps(_J_i_local[i_node_vec_local], _S_i_I[i_node_vec_local])),
                                 _stim_vec
                             )
                         )
                     ),
                     _b_E
                 );
-                *_tmp_exp_E = _mm_mul_ps(_min_d_E, _tmp_I_E);
-                tmp_exp_E[0] = tmp_exp_E[0] ? expf(tmp_exp_E[0]) : 0.9f;
-                tmp_exp_E[1] = tmp_exp_E[1] ? expf(tmp_exp_E[1]) : 0.9f;
-                tmp_exp_E[2] = tmp_exp_E[2] ? expf(tmp_exp_E[2]) : 0.9f;
-                tmp_exp_E[3] = tmp_exp_E[3] ? expf(tmp_exp_E[3]) : 0.9f;
-                _tmp_H_E = _mm_div_ps(_tmp_I_E, _mm_sub_ps(_one, *_tmp_exp_E));
-                _meanFR[i_node_vec_local] = _mm_add_ps(_meanFR[i_node_vec_local], _tmp_H_E);
+            
+                //----------------------------------------------------------------------------------------------
+                // Fully vectorized exponential and division-by-zero prevention
+                __m256 _exp_arg_E = _mm256_mul_ps(_min_d_E, _tmp_I_E);
+                __m256 _exp_E     = exp256_ps(_exp_arg_E); 
+                __m256 _denom_E   = _mm256_sub_ps(_one, _exp_E);
 
-                _tmp_I_I = _mm_sub_ps(_mm_mul_ps(thr_data->_a_I,_mm_sub_ps(_mm_add_ps(_mm_add_ps(_w_I__I_0,_global_input_FFI[i_node_vec_local]),
-                                   _mm_mul_ps(_J_NMDA,_S_i_E[i_node_vec_local])), _S_i_I[i_node_vec_local])), _b_I);
-                *_tmp_exp_I = _mm_mul_ps(_min_d_I, _tmp_I_I);
-                tmp_exp_I[0] = tmp_exp_I[0] ? expf(tmp_exp_I[0]) : 0.9f;
-                tmp_exp_I[1] = tmp_exp_I[1] ? expf(tmp_exp_I[1]) : 0.9f;
-                tmp_exp_I[2] = tmp_exp_I[2] ? expf(tmp_exp_I[2]) : 0.9f;
-                tmp_exp_I[3] = tmp_exp_I[3] ? expf(tmp_exp_I[3]) : 0.9f;
-                _tmp_H_I = _mm_div_ps(_tmp_I_I, _mm_sub_ps(_one, *_tmp_exp_I));
-                _meanFR_INH[i_node_vec_local] = _mm_add_ps(_meanFR_INH[i_node_vec_local], _tmp_H_I);
+                // 1. Create a mask where the denominator is EXACTLY 0.0f
+                __m256 _zero_mask_E = _mm256_cmp_ps(_denom_E, _mm256_setzero_ps(), _CMP_EQ_OQ);
 
-                __m128 _rand_I = _mm_load_ps(&rand_buf[rand_idx]);
-                rand_idx += 4;
-                _S_i_I[i_node_vec_local] = _mm_add_ps(_mm_add_ps(_mm_mul_ps(_sigma_sqrt_dt, _rand_I), _S_i_I[i_node_vec_local]),
-                                                      _mm_mul_ps(_dt, _mm_add_ps(_mm_mul_ps(_imintau_I, _S_i_I[i_node_vec_local]),
-                                                                                 _mm_mul_ps(_tmp_H_I, thr_data->_gamma_I))));
+                // 2. Replace 0.0f denominators with 1.0f so the hardware division doesn't NaN
+                __m256 _safe_denom_E = _mm256_blendv_ps(_denom_E, _one, _zero_mask_E);
 
-                __m128 _rand_E = _mm_load_ps(&rand_buf[rand_idx]);
-                rand_idx += 4;
-                _S_i_E[i_node_vec_local] = _mm_add_ps(_mm_add_ps(_mm_mul_ps(_sigma_sqrt_dt, _rand_E), _S_i_E[i_node_vec_local]),
-                                                      _mm_mul_ps(_dt, _mm_add_ps(_mm_mul_ps(_imintau_E, _S_i_E[i_node_vec_local]),
-                                                                                 _mm_mul_ps(_mm_mul_ps(_mm_sub_ps(_one,_S_i_E[i_node_vec_local]), _gamma),
+                // 3. Perform the safe division
+                _tmp_H_E = _mm256_div_ps(_tmp_I_E, _safe_denom_E);
+
+                // 4. Apply the limit for  where the mask was true. 
+                _tmp_H_E = _mm256_blendv_ps(_tmp_H_E, thr_data->_limit_E, _zero_mask_E);
+                _meanFR[i_node_vec_local] = _mm256_add_ps(_meanFR[i_node_vec_local], _tmp_H_E);
+                //----------------------------------------------------------------------------------------------
+
+                // --- INHIBITORY ---
+                _tmp_I_I = _mm256_sub_ps(
+                    _mm256_mul_ps(thr_data->_a_I,
+                    _mm256_sub_ps(
+                        _mm256_add_ps(
+                            _mm256_add_ps(_w_I__I_0, _global_input_FFI[i_node_vec_local]),
+                            _mm256_mul_ps(_J_NMDA, _S_i_E[i_node_vec_local])
+                            ),
+                            _S_i_I[i_node_vec_local]
+                        )
+                    ),
+                             _b_I
+                             );
+
+                //----------------------------------------------------------------------------------------------
+                // Fully vectorized exponential and division-by-zero prevention
+                __m256 _exp_arg_I = _mm256_mul_ps(_min_d_I, _tmp_I_I);
+                __m256 _exp_I     = exp256_ps(_exp_arg_I);
+                __m256 _denom_I   = _mm256_sub_ps(_one, _exp_I);
+
+                // 1. Mask exact 0.0f
+                __m256 _zero_mask_I = _mm256_cmp_ps(_denom_I, _mm256_setzero_ps(), _CMP_EQ_OQ);
+
+                // 2. Safe denominator
+                __m256 _safe_denom_I = _mm256_blendv_ps(_denom_I, _one, _zero_mask_I);
+
+                // 3. Safe division
+                _tmp_H_I = _mm256_div_ps(_tmp_I_I, _safe_denom_I);
+                
+                // 4. Apply the limit for  where the mask was true. 
+                _tmp_H_I = _mm256_blendv_ps(_tmp_H_I, thr_data->_limit_I, _zero_mask_I);
+                _meanFR_INH[i_node_vec_local] = _mm256_add_ps(_meanFR_INH[i_node_vec_local], _tmp_H_I);
+                //----------------------------------------------------------------------------------------------
+
+                __m256 _rand_I = _mm256_load_ps(&rand_buf[rand_idx]);
+                rand_idx += 8;
+                _S_i_I[i_node_vec_local] = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(_sigma_sqrt_dt, _rand_I), _S_i_I[i_node_vec_local]),
+                                                      _mm256_mul_ps(_dt, _mm256_add_ps(_mm256_mul_ps(_imintau_I, _S_i_I[i_node_vec_local]),
+                                                                                 _mm256_mul_ps(_tmp_H_I, thr_data->_gamma_I))));
+
+                __m256 _rand_E = _mm256_load_ps(&rand_buf[rand_idx]);
+                rand_idx += 8;
+                _S_i_E[i_node_vec_local] = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(_sigma_sqrt_dt, _rand_E), _S_i_E[i_node_vec_local]),
+                                                      _mm256_mul_ps(_dt, _mm256_add_ps(_mm256_mul_ps(_imintau_E, _S_i_E[i_node_vec_local]),
+                                                                                 _mm256_mul_ps(_mm256_mul_ps(_mm256_sub_ps(_one,_S_i_E[i_node_vec_local]), _gamma),
                                                                                             _tmp_H_E))));
                 i_node_vec_local++;
             }
@@ -503,6 +546,7 @@ void *run_simulation(void *arg)
                         t_id, ring_buf_pos, start_nodes_mt, nodes_real, reg_act_size);
                 exit(EXIT_FAILURE);
             }
+            pthread_barrier_wait(&mybarrier3);
             memcpy(&region_activity[ring_buf_pos + start_nodes_mt], S_i_E, (size_t)nodes_real * sizeof(float));
 
             // advance ring buffer head by 'nodes'
@@ -510,21 +554,22 @@ void *run_simulation(void *arg)
         }
 
         // BW model update and BOLD sample for real nodes
+        double dt_d = (double)model_dt; // Explicitly promote dt for the step
         for (j=0;j<nodes_real;j++){
-            bw_x_ex[j]  = bw_x_ex[j]  +  model_dt * (S_i_E[j] - kappa * bw_x_ex[j] - y * (bw_f_ex[j] - 1.0f));
-            f_tmp       = bw_f_ex[j]  +  model_dt * bw_x_ex[j];
-            bw_nu_ex[j] = bw_nu_ex[j] +  model_dt * (1.0f/tau) * (bw_f_ex[j] - powf(bw_nu_ex[j], 1.0f/alpha));
-            bw_q_ex[j]  = bw_q_ex[j]  +  model_dt * (1.0f/tau) * (bw_f_ex[j]*(1.0f - powf(oneminrho,(1.0f/bw_f_ex[j])))/rho
-                                         - powf(bw_nu_ex[j],1.0f/alpha) * bw_q_ex[j] / bw_nu_ex[j]);
+            bw_x_ex[j]  = bw_x_ex[j]  +  dt_d * ((double)S_i_E[j] - kappa * bw_x_ex[j] - y * (bw_f_ex[j] - 1.0));
+            f_tmp       = bw_f_ex[j]  +  dt_d * bw_x_ex[j];
+            bw_nu_ex[j] = bw_nu_ex[j] +  dt_d * (1.0/tau) * (bw_f_ex[j] - pow(bw_nu_ex[j], 1.0/alpha));
+            bw_q_ex[j]  = bw_q_ex[j]  +  dt_d * (1.0/tau) * (bw_f_ex[j]*(1.0 - pow(oneminrho, 1.0/bw_f_ex[j]))/rho
+                                        - pow(bw_nu_ex[j], 1.0/alpha) * bw_q_ex[j] / bw_nu_ex[j]);
             bw_f_ex[j]  = f_tmp;
         }
 
         if (ts % BOLD_TR == 0){
             for (j=0;j<nodes_real;j++){
                 int idx = ts_bold_i + j * BOLD_ts_len;
-                BOLD[idx] = 100.0f / rho * V_0 *
-                    (k1 * (1.0f - bw_q_ex[j]) + k2 * (1.0f - bw_q_ex[j]/bw_nu_ex[j]) + k3 * (1.0f - bw_nu_ex[j]));
-                CBV[idx]  = bw_nu_ex[j];
+                BOLD[idx] = (float)(100.0 / rho * V_0 *
+                    (k1 * (1.0 - bw_q_ex[j]) + k2 * (1.0 - bw_q_ex[j]/bw_nu_ex[j]) + k3 * (1.0 - bw_nu_ex[j])));
+                CBV[idx]  = (float)bw_nu_ex[j];
             }
             ts_bold_i++;
         }
@@ -541,50 +586,14 @@ void *run_simulation(void *arg)
 
     thr_data->num_elec_samples = ts_elec_i;
 
-    // Copy BOLD back only for real nodes
-    memcpy(&BOLD_ex[start_nodes_mt * BOLD_ts_len], BOLD, (size_t)nodes_real * BOLD_ts_len * sizeof(float));
-    memcpy(&CBV_ex[start_nodes_mt * BOLD_ts_len],  CBV,  (size_t)nodes_real * BOLD_ts_len * sizeof(float));
-    memcpy(&ELEC_ex[start_nodes_mt * ELEC_ts_len], ELEC, (size_t)nodes_real * ELEC_ts_len * sizeof(float));
+    if (nodes_real > 0) {
+        // Copy data back only for real nodes
+        memcpy(&BOLD_ex[start_nodes_mt * BOLD_ts_len], BOLD, (size_t)nodes_real * BOLD_ts_len * sizeof(float));
+        memcpy(&CBV_ex[start_nodes_mt * BOLD_ts_len],  CBV,  (size_t)nodes_real * BOLD_ts_len * sizeof(float));
+        memcpy(&ELEC_ex[start_nodes_mt * ELEC_ts_len], ELEC, (size_t)nodes_real * ELEC_ts_len * sizeof(float));
+    }
 
     pthread_barrier_wait(&mybarrier3);
-
-    if (t_id==0){
-        FILE *FCout_BOLD = fopen(thr_data->output_BOLD_file, "w");
-        if (!FCout_BOLD){ printf("ERROR: Could not open BOLD output file.\n"); }
-        else{
-            for (j=0;j<nodes;j++){
-                for (k=0;k<ts_bold_i;k++){
-                    fprintf(FCout_BOLD, "%.5f ", BOLD_ex[j*BOLD_ts_len + k]);
-                }
-                fprintf(FCout_BOLD, "\n");
-            }
-            fclose(FCout_BOLD);
-        }
-        FILE *FCout_CBV = fopen(thr_data->output_CBV_file, "w");
-        if (!FCout_CBV){
-            printf("ERROR: Could not open CBV output file.\n");
-        } else {
-            for (j=0;j<nodes;j++){
-                for (k=0;k<ts_bold_i;k++){
-                    fprintf(FCout_CBV, "%.5f ", CBV_ex[j*BOLD_ts_len + k]);
-                }
-                fprintf(FCout_CBV, "\n");
-            }
-            fclose(FCout_CBV);
-        }
-        FILE *FCout_ELEC = fopen(thr_data->output_ELEC_file, "w");
-        if (!FCout_ELEC){
-            printf("ERROR: Could not open Electrical output file.\n");
-        } else {
-            for (j=0; j<nodes; j++){
-                for (k=0; k<ts_elec_i; k++){
-                    fprintf(FCout_ELEC, "%.5f ", ELEC_ex[j*ELEC_ts_len + k]);
-                }
-                fprintf(FCout_ELEC, "\n");
-            }
-            fclose(FCout_ELEC);
-        }
-    }
 
     // --- MEMORY CLEANUP ---
     _mm_free(meanFR);
@@ -602,6 +611,7 @@ void *run_simulation(void *arg)
     _mm_free(bw_f_ex);
     _mm_free(bw_nu_ex);
     _mm_free(bw_q_ex);
+    _mm_free(thread_stim_schedule);
 
     _mm_free(rand_buf);
     gsl_rng_free(r);
@@ -621,14 +631,14 @@ int main(int argc, char *argv[])
 
     struct timespec start_time, end_time;
     clock_gettime(CLOCK_MONOTONIC, &start_time);
-    int i,j;
+    int i,j,k;
     int n_threads = atoi(argv[1]);
 
     // fixed values
     const float dt = 0.1f;
     const float sqrt_dt = sqrtf(dt);
     const float model_dt = 0.001f;
-    const int vectorization_grade = 4;
+    const int vectorization_grade = 8;
 
     // these values are just a reference, the ones used in the simulation are always read from the disk
     int   time_steps     = (int)(667*1.94*1000);
@@ -684,6 +694,16 @@ int main(int argc, char *argv[])
 
     const float sigma_sqrt_dt = sqrt_dt * sigma;
     const int   nodes_vec     = fake_nodes / vectorization_grade;
+    
+    // set the maximum number of threads such that every thread has at least 2 nodes
+    const int   max_useful_threads = nodes_vec / 2;
+    if (max_useful_threads < n_threads) {
+        printf("\nNotice: %d threads requested, but maximum suggested number of threads is %d threads. Scaling down to prevent heavy bottlenecks.\n\n", n_threads, max_useful_threads);
+        n_threads = max_useful_threads;
+    }
+
+    const int base_nodes_vec_mt = divRoundUp(nodes_vec, n_threads);
+    const int actual_threads = divRoundUp(nodes_vec, base_nodes_vec_mt);
     const float min_d_E       = -1.0f * d_E;
     const float min_d_I       = -1.0f * d_I;
     const float imintau_E     = -1.0f / tau_E;
@@ -699,6 +719,12 @@ int main(int argc, char *argv[])
     // electrical downsampling (ms)
     int ELEC_TR = 1; // adjust if needed
     int ELEC_ts_len = time_steps / ELEC_TR + 1;
+    
+    if (actual_threads < n_threads) {
+        printf("\nNotice: %d threads requested, but workload naturally divides into %d threads. Scaling down to prevent empty threads and barrier deadlocks.\n\n", n_threads, actual_threads);
+        n_threads = actual_threads;
+    }
+
 
     // load optional stimuli
     Stim_t *stimuli = NULL;
@@ -719,10 +745,10 @@ int main(int argc, char *argv[])
                                             &n_conn_table, G_J_NMDA, &SC_cap, &SC_rowsums, &SC_inpreg);
     int reg_act_size = nodes * maxdelay;
 
-    float *J_i     = (float *)_mm_malloc(fake_nodes * sizeof(float),16);
-    float *BOLD_ex = (float *)_mm_malloc(nodes * BOLD_ts_len * sizeof(float),16);
-    float *CBV_ex  = (float *)_mm_malloc(nodes * BOLD_ts_len * sizeof(float),16);
-    float *ELEC_ex = (float *)_mm_malloc(nodes * ELEC_ts_len * sizeof(float),16);
+    float *J_i     = (float *)_mm_malloc(fake_nodes * sizeof(float),32);
+    float *BOLD_ex = (float *)_mm_malloc(nodes * BOLD_ts_len * sizeof(float),32);
+    float *CBV_ex  = (float *)_mm_malloc(nodes * BOLD_ts_len * sizeof(float),32);
+    float *ELEC_ex = (float *)_mm_malloc(nodes * ELEC_ts_len * sizeof(float),32);
 
     if(!J_i || !BOLD_ex || !CBV_ex){
             printf("ERROR: Running out of memory.\n");
@@ -733,36 +759,36 @@ int main(int argc, char *argv[])
         }  
     for (j=0;j<fake_nodes;j++) J_i[j]=tmpJi;
 
-    const __m128 _dt                 = _mm_load1_ps(&dt);
-    const __m128 _sigma_sqrt_dt_v    = _mm_load1_ps(&sigma_sqrt_dt);
-    const __m128 _w_plus_J_NMDA      = _mm_load1_ps(&w_plus__J_NMDA);
-    const __m128 _a_E                = _mm_load1_ps(&a_E);
-    const __m128 _b_E                = _mm_load1_ps(&b_E);
-    const __m128 _min_d_E            = _mm_load1_ps(&min_d_E);
-    const __m128 _a_I                = _mm_load1_ps(&a_I);
-    const __m128 _b_I                = _mm_load1_ps(&b_I);
-    const __m128 _min_d_I            = _mm_load1_ps(&min_d_I);
-    const __m128 _gamma              = _mm_load1_ps(&gamma);
-    const __m128 _gamma_I_v          = _mm_load1_ps(&gamma_I);
-    const __m128 _imintau_E_v        = _mm_load1_ps(&imintau_E);
-    const __m128 _imintau_I_v        = _mm_load1_ps(&imintau_I);
-    const __m128 _w_E__I_0_v         = _mm_load1_ps(&w_E__I_0);
-    const __m128 _w_I__I_0_v         = _mm_load1_ps(&w_I__I_0);
+    const __m256 _dt                 = _mm256_set1_ps(dt);
+    const __m256 _sigma_sqrt_dt_v    = _mm256_set1_ps(sigma_sqrt_dt);
+    const __m256 _w_plus_J_NMDA      = _mm256_set1_ps(w_plus__J_NMDA);
+    const __m256 _a_E                = _mm256_set1_ps(a_E);
+    const __m256 _b_E                = _mm256_set1_ps(b_E);
+    const __m256 _min_d_E            = _mm256_set1_ps(min_d_E);
+    const __m256 _a_I                = _mm256_set1_ps(a_I);
+    const __m256 _b_I                = _mm256_set1_ps(b_I);
+    const __m256 _min_d_I            = _mm256_set1_ps(min_d_I);
+    const __m256 _gamma              = _mm256_set1_ps(gamma);
+    const __m256 _gamma_I_v          = _mm256_set1_ps(gamma_I);
+    const __m256 _imintau_E_v        = _mm256_set1_ps(imintau_E);
+    const __m256 _imintau_I_v        = _mm256_set1_ps(imintau_I);
+    const __m256 _w_E__I_0_v         = _mm256_set1_ps(w_E__I_0);
+    const __m256 _w_I__I_0_v         = _mm256_set1_ps(w_I__I_0);
     float tmp_sigma = sigma * dt;
-    const __m128 _sigma              = _mm_load1_ps(&tmp_sigma);
-    const __m128 _one                = _mm_load1_ps(&one);
-    const __m128 _J_NMDA_v           = _mm_load1_ps(&J_NMDA);
-
-    // threading
-    pthread_barrier_init(&mybarrier_base, NULL, n_threads);
+    const __m256 _sigma              = _mm256_set1_ps(tmp_sigma);
+    const __m256 _one                = _mm256_set1_ps(one);
+    const __m256 _J_NMDA_v           = _mm256_set1_ps(J_NMDA);
+    const __m256 _limit_E_v          = _mm256_set1_ps(1.0f / d_E);
+    const __m256 _limit_I_v          = _mm256_set1_ps(1.0f / d_I);
 
     pthread_t *thr = (pthread_t *)malloc((size_t)n_threads * sizeof(pthread_t));
-    thread_data_t *thr_data = (thread_data_t *)malloc((size_t)n_threads * sizeof(thread_data_t));
+    thread_data_t *thr_data = (thread_data_t *)_mm_malloc((size_t)n_threads * sizeof(thread_data_t), 32);
     if (!thr || !thr_data) {
         printf("ERROR: Out of memory allocating thread arrays.\n");
         exit(1); // Remember our new exit codes!
     }
     
+    initialize_thread_barriers(n_threads);
     int rc;
 
     for (i=0;i<n_threads;i++){
@@ -786,6 +812,8 @@ int main(int argc, char *argv[])
         thr_data[i]._min_d_I            = _min_d_I;
         thr_data[i]._b_I                = _b_I;
         thr_data[i]._J_NMDA             = _J_NMDA_v;
+        thr_data[i]._limit_E            = _limit_E_v;
+        thr_data[i]._limit_I            = _limit_I_v;
         thr_data[i]._w_I__I_0           = _w_I__I_0_v;
         thr_data[i]._a_I                = _a_I;
         thr_data[i]._min_d_E            = _min_d_E;
@@ -822,8 +850,42 @@ int main(int argc, char *argv[])
         if (rc){ fprintf(stderr,"error: pthread_create, rc: %d\n", rc); return EXIT_FAILURE; }
     }
 
-    for (i=0;i<n_threads;i++) pthread_join(thr[i], NULL);
-    printf("Threads finished. Back to main thread.\n");
+    for (i=0; i<n_threads; i++) pthread_join(thr[i], NULL);
+    printf("\nThreads finished. Writing data to disk...\n");
+
+    // Calculate final lengths based on TR steps
+    int ts_bold_final = (time_steps - 1) / BOLD_TR + 1;
+    int ts_elec_final = thr_data[0].num_elec_samples; 
+
+    // Write BOLD
+    FILE *FCout_BOLD = fopen(output_BOLD_file, "w");
+    if (FCout_BOLD) {
+        for (j=0; j<nodes; j++) {
+            for (k=0; k<ts_bold_final; k++) fprintf(FCout_BOLD, "%.5f ", BOLD_ex[j*BOLD_ts_len + k]);
+            fprintf(FCout_BOLD, "\n");
+        }
+        fclose(FCout_BOLD);
+    } else { printf("ERROR: Could not open BOLD output file.\n"); }
+
+    // Write CBV
+    FILE *FCout_CBV = fopen(output_CBV_file, "w");
+    if (FCout_CBV) {
+        for (j=0; j<nodes; j++) {
+            for (k=0; k<ts_bold_final; k++) fprintf(FCout_CBV, "%.5f ", CBV_ex[j*BOLD_ts_len + k]);
+            fprintf(FCout_CBV, "\n");
+        }
+        fclose(FCout_CBV);
+    } else { printf("ERROR: Could not open CBV output file.\n"); }
+
+    // Write ELEC
+    FILE *FCout_ELEC = fopen(output_ELEC_file, "w");
+    if (FCout_ELEC) {
+        for (j=0; j<nodes; j++) {
+            for (k=0; k<ts_elec_final; k++) fprintf(FCout_ELEC, "%.5f ", ELEC_ex[j*ELEC_ts_len + k]);
+            fprintf(FCout_ELEC, "\n");
+        }
+        fclose(FCout_ELEC);
+    } else { printf("ERROR: Could not open Electrical output file.\n"); }
 
     clock_gettime(CLOCK_MONOTONIC, &end_time);
     double wall_time_used = (end_time.tv_sec - start_time.tv_sec) + 
@@ -834,9 +896,9 @@ int main(int argc, char *argv[])
     _mm_free(J_i);
     _mm_free(CBV_ex);
     _mm_free(ELEC_ex);
+        _mm_free(thr_data);
     if (stimuli) free(stimuli);
     free(thr);
-    free(thr_data);
 
     // --- FINAL CLEANUP OF GLOBAL CONNECTIVITY ---
     for (i = 0; i < nodes; i++) {
@@ -858,6 +920,10 @@ int main(int argc, char *argv[])
     _mm_free(SC_rowsums);
     _mm_free(reg_globinp_p);
     _mm_free(region_activity);
+
+    pthread_barrier_destroy(&mybarrier1);
+    pthread_barrier_destroy(&mybarrier2);
+    pthread_barrier_destroy(&mybarrier3);
 
     return 0;
 }
