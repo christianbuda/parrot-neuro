@@ -16,6 +16,7 @@
 
 
 #include <stdio.h>
+#include <stdint.h>
 #include <immintrin.h>
 #include "avx_mathfun.h"
 #include <stdlib.h>
@@ -40,6 +41,99 @@ typedef struct {
     int   end_ts;     // end time (exclusive), in simulation time steps (ms)
     float amplitude;  // stimulus amplitude
 } Stim_t;
+
+// AVX2 Vectorized PRNG State (xoshiro128+)
+typedef struct {
+    __m256i s[4];
+} avx_xoshiro128p_state;
+
+// Helper to seed the 8 parallel generators using your existing GSL generator
+static inline void init_avx_xoshiro(gsl_rng *r, avx_xoshiro128p_state *state) {
+    uint32_t seed_data[32]; // 4 states * 8 lanes = 32 integers
+    
+    // Fill the array with random 32-bit integers from GSL
+    for (int i = 0; i < 32; i++) {
+        seed_data[i] = (uint32_t)gsl_rng_get(r);
+        // Prevent all-zero states just in case
+        if (seed_data[i] == 0) seed_data[i] = 1; 
+    }
+    
+    // Load the seeds into our AVX registers
+    state->s[0] = _mm256_loadu_si256((__m256i*)&seed_data[0]);
+    state->s[1] = _mm256_loadu_si256((__m256i*)&seed_data[8]);
+    state->s[2] = _mm256_loadu_si256((__m256i*)&seed_data[16]);
+    state->s[3] = _mm256_loadu_si256((__m256i*)&seed_data[24]);
+}
+
+// Helper function: Vectorized 32-bit left rotation
+static inline __m256i rotl_avx(__m256i x, int k) {
+    return _mm256_or_si256(_mm256_slli_epi32(x, k), _mm256_srli_epi32(x, 32 - k));
+}
+
+// Generate 8 random 32-bit integers and update the PRNG state
+static inline __m256i avx_xoshiro128p_next(avx_xoshiro128p_state *state) {
+    // 1. Calculate the result: s0 + s3
+    __m256i result = _mm256_add_epi32(state->s[0], state->s[3]);
+
+    // 2. Calculate the shifted value t = s1 << 9
+    __m256i t = _mm256_slli_epi32(state->s[1], 9);
+
+    // 3. Perform the XOR cascades
+    state->s[2] = _mm256_xor_si256(state->s[2], state->s[0]);
+    state->s[3] = _mm256_xor_si256(state->s[3], state->s[1]);
+    state->s[1] = _mm256_xor_si256(state->s[1], state->s[2]);
+    state->s[0] = _mm256_xor_si256(state->s[0], state->s[3]);
+
+    state->s[2] = _mm256_xor_si256(state->s[2], t);
+
+    // 4. Rotate s3 left by 11
+    state->s[3] = rotl_avx(state->s[3], 11);
+
+    // Return the 8 newly generated random integers
+    return result;
+}
+
+// Helper: Convert 32-bit random integers to uniform floats in the range (0.0, 1.0]
+static inline __m256 avx_u32_to_float(__m256i x) {
+    // 1. Shift right to extract 23 random bits (the size of a float mantissa)
+    __m256i mantissa = _mm256_srli_epi32(x, 9);
+    
+    // 2. Bitwise OR with the IEEE 754 exponent for 1.0f (0x3f800000)
+    __m256i one_bits = _mm256_set1_epi32(0x3f800000);
+    __m256i float_bits = _mm256_or_si256(mantissa, one_bits);
+    
+    // 3. Cast to float vectors: values are now perfectly uniform in [1.0, 2.0)
+    __m256 f = _mm256_castsi256_ps(float_bits);
+    
+    // 4. Subtract from 2.0f to get uniform floats in (0.0, 1.0]
+    // (We need to avoid exactly 0.0 so we don't take log(0) in Box-Muller!)
+    return _mm256_sub_ps(_mm256_set1_ps(2.0f), f);
+}
+
+// Generate two vectors of 8 Gaussian random numbers (16 total floats)
+static inline void avx_generate_gaussian_pair(avx_xoshiro128p_state *state, __m256 *z0, __m256 *z1) {
+    // 1. Generate two vectors of uniform floats
+    __m256 u1 = avx_u32_to_float(avx_xoshiro128p_next(state));
+    __m256 u2 = avx_u32_to_float(avx_xoshiro128p_next(state));
+
+    // 2. Calculate the radius: sqrt(-2.0f * ln(u1))
+    __m256 neg_two = _mm256_set1_ps(-2.0f);
+    __m256 ln_u1   = log256_ps(u1); // Uses avx_mathfun.h
+    __m256 radius2 = _mm256_mul_ps(neg_two, ln_u1);
+    __m256 radius  = _mm256_sqrt_ps(radius2);
+
+    // 3. Calculate the angle: theta = 2.0f * PI * u2
+    __m256 two_pi = _mm256_set1_ps(6.28318530718f);
+    __m256 theta  = _mm256_mul_ps(two_pi, u2);
+
+    // 4. Calculate cos and sin (Uses avx_mathfun.h)
+    __m256 cos_theta = cos256_ps(theta);
+    __m256 sin_theta = sin256_ps(theta);
+
+    // 5. Multiply by radius to get the final Gaussian vectors
+    *z0 = _mm256_mul_ps(radius, cos_theta);
+    *z1 = _mm256_mul_ps(radius, sin_theta);
+}
 
 static inline int divRoundUp(const int x, const int y){ return (x + y - 1) / y; }
 
@@ -316,20 +410,14 @@ void *run_simulation(void *arg)
 
     const int nodes_real = end_nodes_mt_glob - start_nodes_mt; // real nodes owned by this thread
 
-    // Allocate an aligned buffer for our random numbers
-        // Multiply by 16 because AVX consumes 8 for I and 8 for E
-    int rand_buf_size = 10 * nodes_vec_mt * 16;
-    float *rand_buf = (float *)_mm_malloc(rand_buf_size * sizeof(float), 32);
-    
-    if (!rand_buf) {
-        printf("ERROR: Out of memory allocating random buffer.\n"); 
-        exit(1); 
-    }
-
     printf("thread %d: start: %d end: %d size: %d\n", t_id, start_nodes_mt, end_nodes_mt, nodes_mt);
 
     gsl_rng *r = gsl_rng_alloc (gsl_rng_mt19937);
     gsl_rng_set (r, (t_id + thr_data->rand_num_seed));
+    
+    // Initialize the AVX PRNG state!
+    avx_xoshiro128p_state rng_state;
+    init_avx_xoshiro(r, &rng_state);
 
     float *meanFR           = (float *)_mm_malloc(nodes_mt*sizeof(float),32);
     float *meanFR_INH       = (float *)_mm_malloc(nodes_mt*sizeof(float),32);
@@ -410,13 +498,6 @@ void *run_simulation(void *arg)
                 }
             }
         }
-
-        // Pre-generate all random numbers for this entire 1 ms step
-        for (int i_rnd = 0; i_rnd < rand_buf_size; i_rnd++) {
-            rand_buf[i_rnd] = (float)gsl_ran_gaussian(r, 1.0);
-        }
-        
-        int rand_idx = 0; // Pointer to track where we are in the buffer
 
         // 10 sub-steps per ms (dt=0.1 ms)
         for (int_i=0; int_i<10; int_i++){
@@ -508,18 +589,21 @@ void *run_simulation(void *arg)
                 _meanFR_INH[i_node_vec_local] = _mm256_add_ps(_meanFR_INH[i_node_vec_local], _tmp_H_I);
                 //----------------------------------------------------------------------------------------------
 
-                __m256 _rand_I = _mm256_load_ps(&rand_buf[rand_idx]);
-                rand_idx += 8;
+                // GENERATE 16 GAUSSIAN FLOATS
+                __m256 _rand_E, _rand_I;
+                avx_generate_gaussian_pair(&rng_state, &_rand_E, &_rand_I);
+
+                // Now use _rand_I in the Inhibitory calculation
                 _S_i_I[i_node_vec_local] = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(_sigma_sqrt_dt, _rand_I), _S_i_I[i_node_vec_local]),
                                                       _mm256_mul_ps(_dt, _mm256_add_ps(_mm256_mul_ps(_imintau_I, _S_i_I[i_node_vec_local]),
-                                                                                 _mm256_mul_ps(_tmp_H_I, thr_data->_gamma_I))));
+                                                                                     _mm256_mul_ps(_tmp_H_I, thr_data->_gamma_I))));
 
-                __m256 _rand_E = _mm256_load_ps(&rand_buf[rand_idx]);
-                rand_idx += 8;
+                // And use _rand_E in the Excitatory calculation
                 _S_i_E[i_node_vec_local] = _mm256_add_ps(_mm256_add_ps(_mm256_mul_ps(_sigma_sqrt_dt, _rand_E), _S_i_E[i_node_vec_local]),
                                                       _mm256_mul_ps(_dt, _mm256_add_ps(_mm256_mul_ps(_imintau_E, _S_i_E[i_node_vec_local]),
-                                                                                 _mm256_mul_ps(_mm256_mul_ps(_mm256_sub_ps(_one,_S_i_E[i_node_vec_local]), _gamma),
-                                                                                            _tmp_H_E))));
+                                                                                     _mm256_mul_ps(_mm256_mul_ps(_mm256_sub_ps(_one,_S_i_E[i_node_vec_local]), _gamma),
+                                                                                                    _tmp_H_E))));
+                
                 i_node_vec_local++;
             }
 
@@ -601,7 +685,6 @@ void *run_simulation(void *arg)
     _mm_free(bw_nu_ex);
     _mm_free(bw_q_ex);
 
-    _mm_free(rand_buf);
     gsl_rng_free(r);
     pthread_exit(NULL);
 }
