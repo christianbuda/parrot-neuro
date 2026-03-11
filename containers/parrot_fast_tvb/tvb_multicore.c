@@ -15,6 +15,11 @@
 // THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
+// Comment this line out for high-speed binary output, 
+// or leave it defined for human-readable text output.
+#define DEBUG_TEXT_OUTPUT
+
+
 #include <stdio.h>
 #include <stdint.h>
 #include <immintrin.h>
@@ -702,7 +707,7 @@ int main(int argc, char *argv[])
 
     struct timespec start_time, end_time;
     clock_gettime(CLOCK_MONOTONIC, &start_time);
-    int i,j,k;
+    int i,j;
     int n_threads = atoi(argv[1]);
 
     // fixed values
@@ -736,9 +741,9 @@ int main(int argc, char *argv[])
     const char *cap_file = "/input/SC_weights.txt";
     const char *dist_file = "/input/SC_distances.txt";
     const char *reg_file = "/input/SC_regionids.txt";
-    const char *output_BOLD_file = "/output/BOLD.txt";
-    const char *output_CBV_file = "/output/CBV.txt";
-    const char *output_ELEC_file = "/output/ELEC.txt";
+    const char *output_BOLD_file = "/output/BOLD";
+    const char *output_CBV_file = "/output/CBV";
+    const char *output_ELEC_file = "/output/ELEC";
 
 
     // read params
@@ -926,35 +931,61 @@ int main(int argc, char *argv[])
     int ts_bold_final = (time_steps - 1) / BOLD_TR + 1;
     int ts_elec_final = thr_data[0].num_elec_samples; 
 
-    // Write BOLD
-    FILE *FCout_BOLD = fopen(output_BOLD_file, "w");
-    if (FCout_BOLD) {
-        for (j=0; j<nodes; j++) {
-            for (k=0; k<ts_bold_final; k++) fprintf(FCout_BOLD, "%.5f ", BOLD_ex[j*BOLD_ts_len + k]);
-            fprintf(FCout_BOLD, "\n");
-        }
-        fclose(FCout_BOLD);
-    } else { printf("ERROR: Could not open BOLD output file.\n"); }
+    // --- WRITE BOLD ---
+    #ifdef DEBUG_TEXT_OUTPUT
+        int k;
+        FILE *FCout_BOLD = fopen(output_BOLD_file, "w");
+        if (FCout_BOLD) {
+            for (j=0; j<nodes; j++) {
+                for (k=0; k<ts_bold_final; k++) fprintf(FCout_BOLD, "%.5f ", BOLD_ex[j*BOLD_ts_len + k]);
+                fprintf(FCout_BOLD, "\n");
+            }
+            fclose(FCout_BOLD);
+        } else { printf("ERROR: Could not open BOLD output file.\n"); }
 
-    // Write CBV
-    FILE *FCout_CBV = fopen(output_CBV_file, "w");
-    if (FCout_CBV) {
-        for (j=0; j<nodes; j++) {
-            for (k=0; k<ts_bold_final; k++) fprintf(FCout_CBV, "%.5f ", CBV_ex[j*BOLD_ts_len + k]);
-            fprintf(FCout_CBV, "\n");
-        }
-        fclose(FCout_CBV);
-    } else { printf("ERROR: Could not open CBV output file.\n"); }
+        FILE *FCout_CBV = fopen(output_CBV_file, "w");
+        if (FCout_CBV) {
+            for (j=0; j<nodes; j++) {
+                for (k=0; k<ts_bold_final; k++) fprintf(FCout_CBV, "%.5f ", CBV_ex[j*BOLD_ts_len + k]);
+                fprintf(FCout_CBV, "\n");
+            }
+            fclose(FCout_CBV);
+        } else { printf("ERROR: Could not open CBV output file.\n"); }
 
-    // Write ELEC
-    FILE *FCout_ELEC = fopen(output_ELEC_file, "w");
-    if (FCout_ELEC) {
-        for (j=0; j<nodes; j++) {
-            for (k=0; k<ts_elec_final; k++) fprintf(FCout_ELEC, "%.5f ", ELEC_ex[j*ELEC_ts_len + k]);
-            fprintf(FCout_ELEC, "\n");
-        }
-        fclose(FCout_ELEC);
-    } else { printf("ERROR: Could not open Electrical output file.\n"); }
+        FILE *FCout_ELEC = fopen(output_ELEC_file, "w");
+        if (FCout_ELEC) {
+            for (j=0; j<nodes; j++) {
+                for (k=0; k<ts_elec_final; k++) fprintf(FCout_ELEC, "%.5f ", ELEC_ex[j*ELEC_ts_len + k]);
+                fprintf(FCout_ELEC, "\n");
+            }
+            fclose(FCout_ELEC);
+        } else { printf("ERROR: Could not open Electrical output file.\n"); }
+    #else
+        FILE *FCout_BOLD = fopen(output_BOLD_file, "wb");
+        if (FCout_BOLD) {
+            for (j=0; j<nodes; j++) {
+                // Write the entire row for this node in one massive chunk
+                fwrite(&BOLD_ex[j*BOLD_ts_len], sizeof(float), ts_bold_final, FCout_BOLD);
+            }
+            fclose(FCout_BOLD);
+        } else { printf("ERROR: Could not open BOLD output file.\n"); }
+
+        FILE *FCout_CBV = fopen(output_CBV_file, "wb");
+        if (FCout_CBV) {
+            for (j=0; j<nodes; j++) {
+                fwrite(&CBV_ex[j*BOLD_ts_len], sizeof(float), ts_bold_final, FCout_CBV);
+            }
+            fclose(FCout_CBV);
+        } else { printf("ERROR: Could not open CBV output file.\n"); }
+
+        FILE *FCout_ELEC = fopen(output_ELEC_file, "wb");
+        if (FCout_ELEC) {
+            for (j=0; j<nodes; j++) {
+                fwrite(&ELEC_ex[j*ELEC_ts_len], sizeof(float), ts_elec_final, FCout_ELEC);
+            }
+            fclose(FCout_ELEC);
+        } else { printf("ERROR: Could not open Electrical output file.\n"); }
+    #endif
 
     clock_gettime(CLOCK_MONOTONIC, &end_time);
     double wall_time_used = (end_time.tv_sec - start_time.tv_sec) + 
