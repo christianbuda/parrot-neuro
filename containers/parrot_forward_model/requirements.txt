@@ -1,5 +1,6 @@
 pygeodesic
 libigl
+potpourri3d
 scipy
 scikit-learn
 trimesh

@@ -1,6 +1,7 @@
 from mesh_poisson_disk_sampling import poisson_disk_vertex_sampling, uniform_vertex_sampling
 import pygeodesic.geodesic as geodesic 
 import igl
+import potpourri3d as pp3d
 import scipy
 import sklearn
 import trimesh
@@ -148,6 +149,22 @@ def find_closest_euclidean_source(mesh_vertices, source_indices):
         
         return positions_in_source_list
 
+def compute_distance_matrix(sampled, vertices, faces):
+    # computes approximate geodesic distance between selected vertices
+    solver = pp3d.MeshHeatMethodDistanceSolver(vertices, faces)
+
+    n_subset = len(sampled)
+    dist_matrix = np.zeros((n_subset, n_subset))
+    
+    for i, source_idx in enumerate(sampled):
+        dists_to_all = solver.compute_distance(source_idx)
+        dist_matrix[i, :] = dists_to_all[sampled]
+
+    # Symmetrize for numerical stability
+    dist_matrix = (dist_matrix + dist_matrix.T) / 2.0
+    
+    return dist_matrix
+
 def sample_surface(mesh, min_dist, vertex_label, vertex_thickness = None, vertex_volume = None, prune_bad_dipoles = True, generator = None, verbose = True, test_mode = False):
     # input is a trimesh object and the minimum distance between sampled vertices (in mm)
     
@@ -194,6 +211,7 @@ def sample_surface(mesh, min_dist, vertex_label, vertex_thickness = None, vertex
         
     if test_mode:
         best_idx = find_closest_euclidean_source(vertices, sampled_vertices)
+        distance_matrix = scipy.spatial.distance_matrix(vertices[sampled_vertices], vertices[sampled_vertices])
     else:
         if verbose:
             print('Computing geodesic distance between sampled dipoles and all other vertices.')
@@ -202,6 +220,7 @@ def sample_surface(mesh, min_dist, vertex_label, vertex_thickness = None, vertex
         # subcortical region follow a more sophisticated approach where each dipole can only have influence on the ones with the same label
         geoalg = geodesic.PyGeodesicAlgorithmExact(vertices, faces)
         _, best_idx = geoalg.geodesicDistances(source_indices=sampled_vertices, target_indices=np.arange(len(vertices)))
+        distance_matrix = compute_distance_matrix(sampled_vertices, vertices, faces)
     
     best_idx = best_idx[zero_lab]
     
@@ -234,13 +253,13 @@ def sample_surface(mesh, min_dist, vertex_label, vertex_thickness = None, vertex
     # set orient_type to N (Normals)
     orient_type = np.repeat('N', len(dipole_normals))
 
-    return sampled_vertices, vertices[sampled_vertices], dipole_labels, dipole_volume, dipole_normals, orient_type
+    return sampled_vertices, vertices[sampled_vertices], dipole_labels, dipole_volume, dipole_normals, orient_type, distance_matrix
 
 def sample_all_surfaces(all_meshes, dipole_spacing, generator = None, test_mode = False):
     surface_dipoles = []
     for mesh_dict in all_meshes:
         print(f'Sampling dipoles on mesh {mesh_dict["mesh"]}')
-        sampled_vertices, dipole_positions, dipole_labels, dipole_volume, dipole_normals, orient_type = sample_surface(mesh = trimesh.load_mesh(mesh_dict['mesh']), min_dist = dipole_spacing, vertex_label = load_npy(mesh_dict['labels']), vertex_thickness = load_npy(mesh_dict['thickness']), vertex_volume = (load_npy(mesh_dict['volume']) if 'volume' in mesh_dict.keys() else None), generator = generator, test_mode = test_mode)
+        sampled_vertices, dipole_positions, dipole_labels, dipole_volume, dipole_normals, orient_type, distance_matrix = sample_surface(mesh = trimesh.load_mesh(mesh_dict['mesh']), min_dist = dipole_spacing, vertex_label = load_npy(mesh_dict['labels']), vertex_thickness = load_npy(mesh_dict['thickness']), vertex_volume = (load_npy(mesh_dict['volume']) if 'volume' in mesh_dict.keys() else None), generator = generator, test_mode = test_mode)
         print('Done!\n')
         basename = pathlib.Path(mesh_dict['mesh']).stem
         output_dir = add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/surfaces/'+basename)
@@ -268,6 +287,9 @@ def sample_all_surfaces(all_meshes, dipole_spacing, generator = None, test_mode 
             save_npy(output_dict['dipole_labels'], dipole_labels)
         
         surface_dipoles.append(output_dict)
+        
+        # save distance matrix (does not need aggregation)
+        save_npy(os.path.join(output_dir, 'distance_matrix.npy'), distance_matrix)
     
     return surface_dipoles
 
