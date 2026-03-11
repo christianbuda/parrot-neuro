@@ -186,8 +186,9 @@ echo "For each sample, four kinds of files are generated:" >> "$SUBJECTS_DIR/$SU
 echo "dipole_positions.npy: (N,3) array that contains the position of each dipole in world space." >> "$SUBJECTS_DIR/$SUBJECT/dipoles/legend.txt"
 echo "dipole_volume.npy: (N,) array that contains the estimated volume of gray matter associated to each dipole." >> "$SUBJECTS_DIR/$SUBJECT/dipoles/legend.txt"
 echo "dipole_directions.npy: (N,3) array that contains the preferential direction of each dipole in world space." >> "$SUBJECTS_DIR/$SUBJECT/dipoles/legend.txt"
+echo "dipole_traceback.npy: (N,) boolean array, available only in the surfaces and volumetric subfolders. It traces the sub arrays back to the aggregated one. E.g. if A is the array at dipoles/dipole_positions.npy, B is the array at dipoles/volumetric/dipole_positions.npy, and M is the array at dipoles/volumetric/dipole_traceback.npy, then it is true that B = A[M]." >> "$SUBJECTS_DIR/$SUBJECT/dipoles/legend.txt"
 echo "orient_type.npy: (N,) array that indicates the kind of procedure used to choose a preferential direction (one of ['U', 'N', 'G', 'P', 'R'], which mean, respectively, ['Unassigned', 'Normal to a surface', 'Gradient of smoothed structure (to mimick normal to surface)', 'Principal axis of the structure', 'Randomly generated (uniformly on unit sphere)'])." >> "$SUBJECTS_DIR/$SUBJECT/dipoles/legend.txt"
-echo "*_dipole_volume.npy: (N,) array that contains the label associated to each dipole in various atlases." >> "$SUBJECTS_DIR/$SUBJECT/dipoles/legend.txt"
+echo "*_dipole_labels.npy: (N,) array that contains the label associated to each dipole in various atlases." >> "$SUBJECTS_DIR/$SUBJECT/dipoles/legend.txt"
 for s in "${SPACING_LIST[@]}"; do
     # Ensure 1 decimal point formatting
     spacing=$(printf "%.1f" "$s")

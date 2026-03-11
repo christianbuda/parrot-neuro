@@ -646,13 +646,32 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
     
     return output_dict
 
-def aggregate_array_files(path_dicts, output_dir):
+def aggregate_array_files(path_dicts, output_dir, save_traceback = True):
     all_keys = list(map(lambda x: set(x.keys()), path_dicts))
     all_keys = set.intersection(*all_keys)
     
     for attribute in all_keys:
         out = np.concatenate(load_npy(list(map(lambda x: x[attribute], path_dicts))), axis = 0)
         save_npy(os.path.join(output_dir,attribute+'.npy'), out)
+    
+    if save_traceback:
+        dipole_traceback(path_dicts)
+    
+    return
+
+def dipole_traceback(path_dicts):
+    all_keys = list(map(lambda x: set(x.keys()), path_dicts))
+    all_keys = set.intersection(*all_keys)
+    
+    # pick any attribute
+    attribute = all_keys.pop()
+    
+    path_list = list(map(lambda x: x[attribute], path_dicts))
+    all_arrays = load_npy(list(map(lambda x: x[attribute], path_dicts)))
+    all_lengths = list(map(len, all_arrays))
+    paths_array = np.concatenate([np.repeat(path_list[i], all_lengths[i]) for i in range(len(all_lengths))], axis = 0)
+    for path in path_list:
+        np.save(os.path.join(os.path.dirname(path), 'dipole_traceback.npy'), path == paths_array)
     return
 
 def all_equal(iterator):
