@@ -1,3 +1,9 @@
+# parrot development
+development/
+
+# parrot specific
+.temp_pipeline*
+
 # --- Python Standard ---
 __pycache__/
 *.py[cod]
@@ -7,7 +13,6 @@ __pycache__/
 env/
 venv/
 .env
-.temp_pipeline*
 
 # --- Distribution / Packaging ---
 dist/
