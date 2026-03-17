@@ -103,7 +103,7 @@ ENV PATH="/opt/conda/envs/neuro/bin:$PATH"
 RUN wget -qO /tmp/cerebellum.tar.gz "https://github.com/christianbuda/parrot-neuro/releases/download/cerebellum_template/cerebellum_template.tar.gz" \
     && tar -xzf /tmp/cerebellum.tar.gz -C /home \
     && rm /tmp/cerebellum.tar.gz
-RUN wget -qO /tmp/bigbrain.tar.gz "https://github.com/christianbuda/parrot-neuro/releases/download/cerebellum_template/cerebellum_template.tar.gz" \
+RUN wget -qO /tmp/bigbrain.tar.gz "https://github.com/christianbuda/parrot-neuro/releases/download/bigbrain_scans/bigbrain_scans.tar.gz" \
     && tar -xzf /tmp/bigbrain.tar.gz -C /home \
     && rm /tmp/bigbrain.tar.gz
 RUN wget -qO /home/bigbrain_scans/full16_100um_2009b_sym.nii.gz "https://ftp.bigbrainproject.org/bigbrain-ftp/BigBrainRelease.2015/3D_Volumes/MNI-ICBM152_Space/nii/full16_100um_2009b_sym.nii.gz"
