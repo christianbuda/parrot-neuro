@@ -629,6 +629,20 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
         orient_type[which_dipoles] = 'R'  # Random
     ######################################################################
     
+    # create the distance matrix
+    # this is not simply the distance between all couples of dipoles,
+    # it is made in such a way that different structure are infinitely far away
+    # to keep them separated in subsequent processing
+    distance_matrix = np.repeat(np.inf, len(dipole_positions)**2).reshape((len(dipole_positions), len(dipole_positions)))
+    
+    with open(add_subject_dir('atlas/atlas_to_aggregated.json')) as f:
+        aggregated = json.load(f)
+    aggregated = {t[1]:t[0] for t in aggregated}
+
+    for val in aggregated.values():
+        mask = np.isin(dipole_labels, val)
+        distance_matrix[np.ix_(mask,mask)] = scipy.spatial.distance_matrix(dipole_positions[mask], dipole_positions[mask])
+    
     ############# save dipoles just sampled #######################
     output_dir = add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/volumetric/')
 
@@ -644,6 +658,9 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
     save_npy(output_dict['dipole_labels'], dipole_labels)
     save_npy(output_dict['orient_type'], orient_type)
     
+    # save distance matrix (does not need aggregation)
+    save_npy(os.path.join(output_dir, 'distance_matrix.npy'), distance_matrix)
+        
     return output_dict
 
 def aggregate_array_files(path_dicts, output_dir, save_traceback = True):
