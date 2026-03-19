@@ -17,7 +17,7 @@
 
 // Comment this line out for high-speed binary output, 
 // or leave it defined for human-readable text output.
-#define DEBUG_TEXT_OUTPUT
+//#define DEBUG_TEXT_OUTPUT
 
 
 #include <stdio.h>
@@ -203,11 +203,10 @@ int load_stimuli(const char *fname, int nodes, int time_steps,
     return 1;
 }
 
-int importGlobalConnectivity(const char *SC_cap_filename, const char *SC_dist_filename, const char *SC_inputreg_filename, int regions,
+int importGlobalConnectivity(const char *SC_cap_filename, const char *SC_dist_filename, int regions,
                              float **region_activity, struct Xi_p **reg_globinp_p, float global_trans_v,
                              int **n_conn_table, float G_J_NMDA, struct SC_capS **SC_cap, float **SC_rowsums, struct SC_inpregS **SC_inpreg)
 {
-    (void)SC_inputreg_filename;
     int i,j,k,maxdelay=0,tmpint;
     float *region_activity_p;
     double tmp,tmp2;
@@ -718,12 +717,13 @@ int main(int argc, char *argv[])
 
     // these values are just a reference, the ones used in the simulation are always read from the disk
     int   time_steps     = (int)(667*1.94*1000);
-    int   nodes          = 84;
-    int   fake_nodes     = 84;
-    float global_trans_v = 1.0f;
-    float G              = 0.5f;
     int   BOLD_TR        = 1940;
     int   rand_num_seed  = 1403;
+    int   nodes          = 84;
+    int   fake_nodes     = 84;
+
+    float G              = 1.0f;
+    float global_trans_v = 12.5f;
     float w_plus=1.4f, J_NMDA=0.15f;
     float tmpJi=1.0f;
 
@@ -738,28 +738,26 @@ int main(int argc, char *argv[])
     // input and output filenames
     const char *param_file = "/input/param_set.txt";
     const char *stim_file = "/input/stimulus.txt";
-    const char *cap_file = "/input/SC_weights.txt";
-    const char *dist_file = "/input/SC_distances.txt";
-    const char *reg_file = "/input/SC_regionids.txt";
+    const char *cap_file = "/input/weights.txt";
+    const char *dist_file = "/input/distances.txt";
     const char *output_BOLD_file = "/output/BOLD";
     const char *output_CBV_file = "/output/CBV";
-    const char *output_ELEC_file = "/output/ELEC";
+    const char *output_ELEC_file = "/output/ELECTRICAL";
 
 
     // read params
     FILE *file;
     file=fopen(param_file,"r");
     if (!file){ printf("\nERROR: Could not open file %s.\n", param_file); exit(EXIT_FAILURE); }
-    if(!(fscanf(file,"%d",&nodes)!=EOF && fscanf(file,"%f",&G)!=EOF && fscanf(file,"%f",&J_NMDA)!=EOF &&
-         fscanf(file,"%f",&w_plus)!=EOF && fscanf(file,"%f",&tmpJi)!=EOF && fscanf(file,"%f",&sigma)!=EOF &&
-         fscanf(file,"%d",&time_steps)!=EOF && fscanf(file,"%d",&BOLD_TR)!=EOF && fscanf(file,"%f",&global_trans_v)!=EOF &&
+    if(!(fscanf(file,"%d",&nodes)!=EOF &&
+         fscanf(file,"%d",&time_steps)!=EOF && fscanf(file,"%d",&BOLD_TR)!=EOF &&
          fscanf(file,"%d",&rand_num_seed)!=EOF)){
         printf("\nERROR: Unexpected end-of-file in %s\n", param_file); exit(EXIT_FAILURE);
     }
     fclose(file);
     
     if (nodes % vectorization_grade != 0){
-        printf("\nWarning: nodes (%d) not multiple of SIMD width (%d). Adding fake nodes...\n\n", nodes, vectorization_grade);
+        printf("WARNING: nodes (%d) not multiple of SIMD width (%d). Adding fake nodes...\n\n", nodes, vectorization_grade);
         int remainder = nodes % vectorization_grade;
         if (remainder > 0) fake_nodes = nodes + (vectorization_grade - remainder);
     }else{
@@ -772,7 +770,7 @@ int main(int argc, char *argv[])
     // set the maximum number of threads such that every thread has at least 2 nodes
     const int   max_useful_threads = nodes_vec / 2;
     if (max_useful_threads < n_threads) {
-        printf("\nNotice: %d threads requested, but maximum suggested number of threads is %d threads. Scaling down to prevent heavy bottlenecks.\n\n", n_threads, max_useful_threads);
+        printf("WARNING: %d threads requested, but maximum suggested number of threads is %d threads. Scaling down to prevent heavy bottlenecks.\n\n", n_threads, max_useful_threads);
         n_threads = max_useful_threads;
     }
 
@@ -795,7 +793,7 @@ int main(int argc, char *argv[])
     int ELEC_ts_len = time_steps / ELEC_TR + 1;
     
     if (actual_threads < n_threads) {
-        printf("\nNotice: %d threads requested, but workload naturally divides into %d threads. Scaling down to prevent empty threads and barrier deadlocks.\n\n", n_threads, actual_threads);
+        printf("WARNING: %d threads requested, but workload naturally divides into %d threads. Scaling down to prevent empty threads and barrier deadlocks.\n\n", n_threads, actual_threads);
         n_threads = actual_threads;
     }
 
@@ -814,7 +812,7 @@ int main(int argc, char *argv[])
     struct SC_capS    *SC_cap;
     struct SC_inpregS *SC_inpreg;
 
-    int maxdelay = importGlobalConnectivity(cap_file, dist_file, reg_file, nodes,
+    int maxdelay = importGlobalConnectivity(cap_file, dist_file, nodes,
                                             &region_activity, &reg_globinp_p, global_trans_v,
                                             &n_conn_table, G_J_NMDA, &SC_cap, &SC_rowsums, &SC_inpreg);
     int reg_act_size = nodes * maxdelay;
