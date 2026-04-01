@@ -316,7 +316,8 @@ def sample_spherical(npoints, generator = None):
     if generator is None:
         generator = np.random.default_rng()
     vec = generator.standard_normal(size = 3*npoints).reshape((-1,3))
-    vec /= np.linalg.norm(vec, axis=-1, keepdims=True)
+    norms = np.maximum(np.linalg.norm(vec, axis=-1, keepdims=True), 1e-12)
+    vec /= norms
     return vec
 
 def get_structure_size(positions):
