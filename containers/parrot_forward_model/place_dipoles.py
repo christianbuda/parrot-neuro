@@ -191,18 +191,18 @@ def sample_surface(mesh, min_dist, vertex_label, vertex_thickness = None, vertex
         _,_, sampled_vertices = poisson_disk_vertex_sampling(vertices, faces, min_dist = min_dist, generator = generator, verbose = verbose)
         sampled_vertices = np.array(sampled_vertices) # this solves a weird issue where the output is a list of np.int64
     
-    # remove dipoles with label equal to zero (usually not interesting)
+    # remove dipoles with label equal to zero or less (usually not interesting)
     if prune_bad_dipoles:
         if isinstance(vertex_label, list):
             # check that all labels have the same zeros
-            zero_lab = np.stack(list(map(lambda x: x!=0, vertex_label)), axis = 0)
-            assert np.all(np.all(zero_lab, axis = 0) == np.any(zero_lab, axis = 0)), f'Label 0 does not coincide across all labels for current mesh, cannot proceed with removing dipoles with 0 label.'
+            zero_lab = np.stack(list(map(lambda x: x>0, vertex_label)), axis = 0)
+            assert np.all(np.all(zero_lab, axis = 0) == np.any(zero_lab, axis = 0)), f'Label <0 do not coincide across all atlases for current mesh, cannot proceed with removing dipoles with 0 label.'
             
             # pick the first (they are all the same)
             zero_lab = zero_lab[0]
         else:
             # simply remove dipoles with null label
-            zero_lab = (vertex_label!=0)
+            zero_lab = (vertex_label>0)
         
         # select subset of vertices
         sampled_vertices = sampled_vertices[zero_lab[sampled_vertices]]
