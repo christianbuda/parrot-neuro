@@ -35,8 +35,27 @@ if __name__ == "__main__":
     vertices = np.array(mesh.vertices)
     faces = np.array(mesh.faces)
     
-    with open(os.path.join(subject_dir, 'scalp_landmarks/fiducials.json'), 'r') as f:
-        fiducials = json.load(f)
+    if os.path.isfile(os.path.join(subject_dir, 'scalp_landmarks/fiducials.json')):
+        with open(os.path.join(subject_dir, 'scalp_landmarks/fiducials.json'), 'r') as f:
+            fiducials = json.load(f)
+    else:
+        # take simnibs fiducials and dump them in electrodes folder
+        fiducials = np.loadtxt(os.path.join(subject_dir, 'simnibs_charm/eeg_positions/Fiducials.csv'), delimiter=',', dtype=str)
+        names = fiducials[:,-1].tolist()
+        points = fiducials[:,1:-1].astype(float).tolist()
+        
+        # project the fiducials on the mesh vertices to get fid indices
+        points, _ = project_fid_on_mesh(points, vertices, return_positions = True, return_indices=True)
+    
+        fiducials = dict(zip(names, points))
+        if 'Nz' in fiducials.keys():
+            fiducials['NAS'] = fiducials.pop('Nz')
+        if 'Iz' in fiducials.keys():
+            fiducials['IN'] = fiducials.pop('Iz')
+        
+        os.makedirs(os.path.join(subject_dir, 'scalp_landmarks/'), exist_ok=True)
+        with open(os.path.join(subject_dir, 'scalp_landmarks/fiducials.json'), 'w') as f:
+            json.dump(fiducials, f)
 
     points = [fiducials['RPA'], fiducials['LPA'], fiducials['NAS'], fiducials['IN']]
 
