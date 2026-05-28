@@ -161,7 +161,7 @@ start_time=$(date +%s)
 
 
 # if not already done, compute electrodes positions
-if [ ! -d "$SUBJECTS_DIR/$SUBJECT/electrodes" ]; then
+if [ ! -f "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/electrodes.txt ]; then
 	echo "Computing electrodes positions on the reconstructed scalp..."
 
 	start=$(date +%s)
@@ -174,7 +174,7 @@ if [ ! -d "$SUBJECTS_DIR/$SUBJECT/electrodes" ]; then
 
 	echo "Electrodes computation completed in ${duration} seconds." | tee -a "$LOG_FILE"
 else
-    echo "Electrodes positions detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+    echo "Electrodes positions log detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 
@@ -193,7 +193,7 @@ for s in "${SPACING_LIST[@]}"; do
     # Ensure 1 decimal point formatting
     spacing=$(printf "%.1f" "$s")
 
-    if [ ! -d "$SUBJECTS_DIR"/"$SUBJECT"/dipoles/spacing"$spacing"mm ]; then
+    if [ ! -f "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/dipoles"$spacing"mm.txt ]; then
         echo "Placing dipoles at $spacing mm spacing..."
 
         start=$(date +%s)
@@ -206,16 +206,16 @@ for s in "${SPACING_LIST[@]}"; do
         hours=$(( duration / 3600 ))
         minutes=$(( (duration % 3600) / 60 ))
 
-        echo "Dipoles placing (with $spacing mm spacing) completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
+        echo "Dipoles placement (with $spacing mm spacing) completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
     else
-        echo "Dipoles placed at $spacing mm spacing detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+        echo "Logs for ipoles placed at $spacing mm spacing detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
     fi
     echo
 done
 
 
 # if not already done, mesh the label fields
-if [ ! -d "$SUBJECTS_DIR/$SUBJECT/tetmesh" ]; then
+if [ ! -f "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/tetmesh.txt ]; then
     # load config for current mesh
     CONFIG_FILE="$SUBJECTS_DIR"/"$SUBJECT"/tissue_labels/electrical/"$VOLUME_TO_MESH"_mesher_parameters.txt
     ANGLE="30.0"; DIST="2.0"; DEF_SURF="2.0"; DEF_VOL="5.0"; RATIO="3.0"; SMOOTH="2"; OPT_TIME="1800"
@@ -258,12 +258,12 @@ if [ ! -d "$SUBJECTS_DIR/$SUBJECT/tetmesh" ]; then
 
 	echo "Tetrahedral meshing completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
 else
-    echo "Tetrahedral mesh detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+    echo "Tetrahedral mesh logs detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 
 # if not already done, solve the forward problem
-if [ ! -d "$SUBJECTS_DIR/$SUBJECT/forward_solvers" ]; then
+if [ ! -f "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/forward_solvers.txt ]; then
     mkdir -p "$SUBJECTS_DIR/$SUBJECT/forward_solvers"
     mkdir -p "$SUBJECTS_DIR/$SUBJECT/leadfields"
 
@@ -291,7 +291,7 @@ if [ ! -d "$SUBJECTS_DIR/$SUBJECT/forward_solvers" ]; then
 
 	echo "All three forward solvers run in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
 else
-    echo "Forward solvers folder detected, skipping step..." | tee -a "$LOG_FILE"
+    echo "Forward solvers logs folder detected, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 

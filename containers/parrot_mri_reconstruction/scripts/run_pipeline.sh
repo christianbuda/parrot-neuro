@@ -132,39 +132,76 @@ else
     export USE_GPU=false
 fi
 ######################################
+# Define a function to clean up temporary files/links
+cleanup() {
+    # Check if the path exists AND is a symlink (-L)
+    if [ -L "$SUBJECTS_DIR"/"$subj" ]; then
+        rm "$SUBJECTS_DIR"/"$subj"
+    fi
+}
 
-# if not already done, run freesurfer recon
-if [ ! -d /SUBJECTS/"$subj"/freesurfer ]; then
-	echo "Running Freesurfer reconstruction..."
+# run the cleanup function on EXIT
+trap cleanup EXIT
+######################################
+# --- FREESURFER PATH HANDLING ---
+# If recon-all was previously completed and moved, subsequent FreeSurfer commands 
+# (like segment_subregions) might fail because they expect the subject folder to be in $SUBJECTS_DIR.
+# This creates a temporary symlink if the folder was already moved to your custom directory.
+if [ ! -d "$SUBJECTS_DIR"/"$subj" ] && [ -f /SUBJECTS/"$subj"/reconstruction_logs/freesurfer.txt ]; then
+        ln -s /SUBJECTS/"$subj"/freesurfer "$SUBJECTS_DIR"/"$subj"
+fi
+######################################
 
-	# run recon-all
-	start=$(date +%s)
-	recon-all -subject "$subj" -i "$T1_file" "${fs_args[@]}" -all -threads "$N_THREADS" > /SUBJECTS/"$subj"/reconstruction_logs/freesurfer.txt 2>&1
-	check_step $? "Freesurfer reconstruction" "$subj"/reconstruction_logs/freesurfer.txt
-	end=$(date +%s)
+# Freesurfer Recon-All
+if [ ! -f /SUBJECTS/"$subj"/reconstruction_logs/freesurfer.txt ]; then
+        echo "Running Freesurfer reconstruction..."
+
+        # run recon all
+        start=$(date +%s)
+        recon-all -subject "$subj" -i "$T1_file" "${fs_args[@]}" -all -threads "$N_THREADS" > /SUBJECTS/"$subj"/reconstruction_logs/freesurfer.txt 2>&1
+        check_step $? "Freesurfer reconstruction" "$subj"/reconstruction_logs/freesurfer.txt
+        end=$(date +%s)
 
         duration=$(( end - start ))
         hours=$(( duration / 3600 ))
         minutes=$(( (duration % 3600) / 60 ))
 
-        echo "Freesurfer reconstruction completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
+        rm -rf /SUBJECTS/"$subj"/freesurfer # remove if it already exists
+        mv "$SUBJECTS_DIR"/"$subj" /SUBJECTS/"$subj"/freesurfer
+        ln -s /SUBJECTS/"$subj"/freesurfer "$SUBJECTS_DIR"/"$subj"
+	cp $FREESURFER_HOME/FreeSurferColorLUT.txt /SUBJECTS/"$subj"/freesurfer/FreeSurferColorLUT.txt
+	cp -r /home/Schaefer2018_LocalGlobal/Parcellations/project_to_individual /SUBJECTS/"$subj"/freesurfer/Schaefer_LUT
 
-	echo "Running BEM surfaces reconstruction..."
-	# make bem surfaces
-	start=$(date +%s)
-	micromamba run -n neuro python /scripts/make_bem_surfaces.py --subject "$subj" --subjects_dir "$SUBJECTS_DIR"  > /SUBJECTS/"$subj"/reconstruction_logs/mne.txt 2>&1
-        check_step $? "Make BEM surfaces" "$subj"/reconstruction_logs/bem.txt
-	end=$(date +%s)
+        echo "Freesurfer reconstruction completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
+else
+        echo "Freesurfer reconstruction log detected, skipping recon-all..." | tee -a "$LOG_FILE"
+fi
+echo
+
+# BEM Surfaces
+if [ ! -f /SUBJECTS/"$subj"/reconstruction_logs/mne.txt ]; then
+        echo "Running BEM surfaces reconstruction..."
+
+        # make bem surfaces
+        start=$(date +%s)
+        micromamba run -n neuro python /scripts/make_bem_surfaces.py --subject "$subj" --subjects_dir "$SUBJECTS_DIR"  > /SUBJECTS/"$subj"/reconstruction_logs/mne.txt 2>&1
+        check_step $? "Make BEM surfaces" "$subj"/reconstruction_logs/mne.txt
+        end=$(date +%s)
 
         duration=$(( end - start ))
         minutes=$(( duration / 60 ))
         seconds=$(( duration % 60 ))
 
-        echo "BEM surfaces reconstruction completed in ${minutes} minutes and ${seconds} seconds." | tee -a "$LOG_FILE"
+        echo "MNE BEM surfaces reconstruction completed in ${minutes} minutes and ${seconds} seconds." | tee -a "$LOG_FILE"
+else
+        echo "MNE BEM surfaces log detected, skipping MNE BEM reconstruction..." | tee -a "$LOG_FILE"
+fi
+echo
 
-	echo "Registering user to Schaefer atlases..."
-	start=$(date +%s)
-
+# Schaefer Atlases
+if [ ! -f /SUBJECTS/"$subj"/reconstruction_logs/schaefer.txt ]; then
+        echo "Registering user to Schaefer atlases..."
+        start=$(date +%s)
 	echo "------------------------------------------------------------------------------------" > /SUBJECTS/"$subj"/reconstruction_logs/schaefer.txt
 	for n_parcels in {100..1000..100}; do
 		ATLAS_NAME="Schaefer2018_${n_parcels}Parcels_17Networks_order"
@@ -176,42 +213,44 @@ if [ ! -d /SUBJECTS/"$subj"/freesurfer ]; then
 		mri_aparc2aseg --s "$subj" --o "$SUBJECTS_DIR"/"$subj"/mri/schaefer${n_parcels}_aparc+aseg.mgz --annot "$ATLAS_NAME" >> /SUBJECTS/"$subj"/reconstruction_logs/schaefer.txt 2>&1
 		check_step $? "Creation of Schaefer $n_parcels volumetric atlas" "$subj"/reconstruction_logs/schaefer.txt
 		echo "------------------------------------------------------------------------------------" >> /SUBJECTS/"$subj"/reconstruction_logs/schaefer.txt
-	done
-
-	end=$(date +%s)
-
+        done
+        end=$(date +%s)
         duration=$(( end - start ))
         minutes=$(( duration / 60 ))
-
         echo "Registration to Schaefer atlases completed in ${minutes} minutes." | tee -a "$LOG_FILE"
-
-	echo "Running Freesurfer subcortical stream..."
-	# run subcortical stream
-	start=$(date +%s)
-	segment_subregions thalamus --cross "$subj" --threads "$N_THREADS" > /SUBJECTS/"$subj"/reconstruction_logs/freesurfer_thalamus.txt 2>&1
-	check_step $? "Freesurfer thalamus reconstruction" "$subj"/reconstruction_logs/freesurfer_thalamus.txt
-	segment_subregions hippo-amygdala --cross "$subj" --threads "$N_THREADS" > /SUBJECTS/"$subj"/reconstruction_logs/freesurfer_hippoamygdala.txt 2>&1
-        check_step $? "Freesurfer hippo-amygdala reconstruction" "$subj"/reconstruction_logs/freesurfer_hippoamygdala.txt
-	segment_subregions brainstem --cross "$subj" --threads "$N_THREADS" > /SUBJECTS/"$subj"/reconstruction_logs/freesurfer_brainstem.txt 2>&1
-        check_step $? "Freesurfer brainstem reconstruction" "$subj"/reconstruction_logs/freesurfer_brainstem.txt
-	end=$(date +%s)
-
-        duration=$(( end - start ))
-        minutes=$(( duration / 60 ))
-
-        echo "Freesurfer subcortical stream completed in ${minutes} minutes." | tee -a "$LOG_FILE"
-
-	mv "$SUBJECTS_DIR"/"$subj" /SUBJECTS/"$subj"/freesurfer
-	cp $FREESURFER_HOME/FreeSurferColorLUT.txt /SUBJECTS/"$subj"/freesurfer/FreeSurferColorLUT.txt
-	cp -r /home/Schaefer2018_LocalGlobal/Parcellations/project_to_individual /SUBJECTS/"$subj"/freesurfer/Schaefer_LUT
 else
-        echo "Freesurfer reconstruction detected in subject's folder, skipping all associated steps..." | tee -a "$LOG_FILE"
+        echo "Schaefer atlases log detected, skipping registration..." | tee -a "$LOG_FILE"
 fi
 echo
 
+# Subcortical Stream
+if [ ! -f /SUBJECTS/"$subj"/reconstruction_logs/freesurfer_subcortical.txt ]; then
+        echo "Running Freesurfer subcortical stream..."
+
+        start=$(date +%s)
+
+        echo -e "Starting thalamus subsegmentation..." > /SUBJECTS/"$subj"/reconstruction_logs/freesurfer_subcortical.txt 2>&1
+        segment_subregions thalamus --cross "$subj" --threads "$N_THREADS" >> /SUBJECTS/"$subj"/reconstruction_logs/freesurfer_subcortical.txt 2>&1
+        check_step $? "Freesurfer thalamus reconstruction" "$subj"/reconstruction_logs/freesurfer_subcortical.txt
+        
+        echo -e "\n\n\n\n\n\n\n\n\n\nStarting hippo-amygdala subsegmentation..." >> /SUBJECTS/"$subj"/reconstruction_logs/freesurfer_subcortical.txt 2>&1
+        segment_subregions hippo-amygdala --cross "$subj" --threads "$N_THREADS" >> /SUBJECTS/"$subj"/reconstruction_logs/freesurfer_subcortical.txt 2>&1
+        check_step $? "Freesurfer hippo-amygdala reconstruction" "$subj"/reconstruction_logs/freesurfer_subcortical.txt
+        
+        echo -e "\n\n\n\n\n\n\n\n\n\nStarting brainstem subsegmentation..." >> /SUBJECTS/"$subj"/reconstruction_logs/freesurfer_subcortical.txt 2>&1
+        segment_subregions brainstem --cross "$subj" --threads "$N_THREADS" >> /SUBJECTS/"$subj"/reconstruction_logs/freesurfer_subcortical.txt 2>&1
+        check_step $? "Freesurfer brainstem reconstruction" "$subj"/reconstruction_logs/freesurfer_subcortical.txt
+
+        end=$(date +%s)
+        duration=$(( end - start ))
+        minutes=$(( duration / 60 ))
+        echo "Freesurfer subcortical stream completed in ${minutes} minutes." | tee -a "$LOG_FILE"
+else
+        echo "Subcortical stream log detected, skipping subcortical segmentation..." | tee -a "$LOG_FILE"
+fi
 
 # if not already done, run simnibs charm
-if [ ! -d /SUBJECTS/"$subj"/simnibs_charm ]; then
+if [ ! -f "$subj"/reconstruction_logs/simnibs_charm.txt ]; then
 	echo "Running Simnibs charm reconstruction..."
 
 	start=$(date +%s)
@@ -223,6 +262,8 @@ if [ ! -d /SUBJECTS/"$subj"/simnibs_charm ]; then
 	check_step $? "Simnibs charm surface extraction" "$subj"/reconstruction_logs/simnibs_charm.txt
         cp /scripts/simnibs_conductivities.txt /home/simnibs_reconstructions/m2m_subject/conductivities.txt
         cp /scripts/simnibs_labels.txt /home/simnibs_reconstructions/m2m_subject/labels.txt
+
+        rm -rf /SUBJECTS/"$subj"/simnibs_charm # remove if it already exists
 	mv /home/simnibs_reconstructions/m2m_subject /SUBJECTS/"$subj"/simnibs_charm
 	end=$(date +%s)
 
@@ -232,14 +273,15 @@ if [ ! -d /SUBJECTS/"$subj"/simnibs_charm ]; then
 
         echo "Simnibs charm reconstruction completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
 else
-	echo "Simnibs charm reconstruction detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+	echo "Simnibs charm log detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 
 
 # if not already done, run fsl first
-if [ ! -d /SUBJECTS/"$subj"/fsl_first ]; then
+if [ ! -f "$subj"/reconstruction_logs/fsl_first.txt ]; then
 	echo "Running FSL first reconstruction..."
+        rm -rf /SUBJECTS/"$subj"/fsl_first # remove if it already exists
 	mkdir /SUBJECTS/"$subj"/fsl_first
 	cp "$T1_file" /SUBJECTS/"$subj"/fsl_first/T1.nii.gz
 
@@ -257,13 +299,14 @@ if [ ! -d /SUBJECTS/"$subj"/fsl_first ]; then
 
         echo "FSL first reconstruction completed in ${minutes} minutes and ${seconds} seconds." | tee -a "$LOG_FILE"
 else
-	echo "FSL first reconstruction detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+	echo "FSL first log detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 
 # if not already done, run synthstrip
-if [ ! -d /SUBJECTS/"$subj"/synthstrip ]; then
+if [ ! -f "$subj"/reconstruction_logs/synthstrip.txt ]; then
 	echo "Running SynthStrip reconstruction..."
+        rm -rf /SUBJECTS/"$subj"/synthstrip # remove if it already exists
         mkdir /SUBJECTS/"$subj"/synthstrip
 
 	synt_flag=()
@@ -284,13 +327,14 @@ if [ ! -d /SUBJECTS/"$subj"/synthstrip ]; then
 
         echo "SynthStrip reconstruction completed in ${minutes} minutes and ${seconds} seconds." | tee -a "$LOG_FILE"
 else
-	echo "SynthStrip reconstruction detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+	echo "SynthStrip log detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 
 # if not already done, run ANTs registration to align cerebellum surface
-if [ ! -d /SUBJECTS/"$subj"/cerebellum ]; then
+if [ ! -f "$subj"/reconstruction_logs/cerebellum.txt ]; then
 	echo "Running Cerebellum reconstruction..."
+        rm -rf /SUBJECTS/"$subj"/cerebellum # remove if it already exists
         mkdir /SUBJECTS/"$subj"/cerebellum
 	cp /home/cerebellum_template/Cerebellar_Regions.csv /SUBJECTS/"$subj"/cerebellum/LABELS.csv
 
@@ -305,13 +349,14 @@ if [ ! -d /SUBJECTS/"$subj"/cerebellum ]; then
 
         echo "Cerebellum reconstruction completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
 else
-	echo "Cerebellum reconstruction detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+	echo "Cerebellum reconstruction log detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 
 # if not already done, run ANTs registration to align bigbrain scans
-if [ ! -d /SUBJECTS/"$subj"/bigbrain ]; then
+if [ ! -f "$subj"/reconstruction_logs/bigbrain.txt ]; then
 	echo "Running bigbrain registration..."
+        rm -rf /SUBJECTS/"$subj"/bigbrain # remove if it already exists
         mkdir /SUBJECTS/"$subj"/bigbrain
 
 	start=$(date +%s)
@@ -325,13 +370,14 @@ if [ ! -d /SUBJECTS/"$subj"/bigbrain ]; then
 
         echo "BigBrain registration completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
 else
-	echo "BigBrain registration detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+	echo "BigBrain registration log detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 
 # convert all relevant meshes to world space and gather them in one place
-if [ ! -d /SUBJECTS/"$subj"/surfaces ]; then
+if [ ! -f "$subj"/reconstruction_logs/surfaces.txt ]; then
 	echo "Converting all relevant meshes to world space and gathering them in one place..."
+        rm -rf /SUBJECTS/"$subj"/surfaces # remove if it already exists
         mkdir /SUBJECTS/"$subj"/surfaces
 
 	start=$(date +%s)
@@ -345,13 +391,14 @@ if [ ! -d /SUBJECTS/"$subj"/surfaces ]; then
 
 	echo "Surface gathering completed in ${minutes} minutes and ${seconds} seconds." | tee -a "$LOG_FILE"
 else
-        echo "Surfaces detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+        echo "Surfaces log detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 
 # make atlases from various tools' segmentations
-if [ ! -d /SUBJECTS/"$subj"/atlas ]; then
+if [ ! -f "$subj"/reconstruction_logs/atlas.txt ]; then
         echo "Making atlases from various tools' segmentations..."
+        rm -rf /SUBJECTS/"$subj"/atlas # remove if it already exists
         mkdir /SUBJECTS/"$subj"/atlas
 
         start=$(date +%s)
@@ -365,13 +412,14 @@ if [ ! -d /SUBJECTS/"$subj"/atlas ]; then
 
         echo "Atlases completed in ${minutes} minutes and ${seconds} seconds." | tee -a "$LOG_FILE"
 else
-        echo "Atlases detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+        echo "Atlases log detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 
 # make electrical label fields using simnibs reconstruction and sim4life (optional)
-if [ ! -d /SUBJECTS/"$subj"/tissue_labels/electrical ]; then
+if [ ! -f "$subj"/reconstruction_logs/electrical_labelfields.txt ]; then
         echo "Making electrical label fields using simnibs reconstruction and Sim4Life (optional)..."
+        rm -rf /SUBJECTS/"$subj"/tissue_labels/electrical # remove if it already exists
         mkdir -p /SUBJECTS/"$subj"/tissue_labels/electrical
         cp /scripts/simnibs_mesher_parameters.txt /SUBJECTS/"$subj"/tissue_labels/electrical/
         cp /scripts/sim4life_mesher_parameters.txt /SUBJECTS/"$subj"/tissue_labels/electrical/
@@ -385,13 +433,14 @@ if [ ! -d /SUBJECTS/"$subj"/tissue_labels/electrical ]; then
 
         echo "Electrical label fields completed in ${duration} seconds." | tee -a "$LOG_FILE"
 else
-        echo "Electrical label fields detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+        echo "Electrical label fields log detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 
 # make acoustic label fields using simnibs reconstruction and sim4life (optional)
-if [ ! -d /SUBJECTS/"$subj"/tissue_labels/acoustic ]; then
+if [ ! -f "$subj"/reconstruction_logs/acoustic_labelfields.txt ]; then
         echo "Making acoustic label fields using simnibs reconstruction and Sim4Life (optional)..."
+        rm -rf /SUBJECTS/"$subj"/tissue_labels/acoustic # remove if it already exists
         mkdir -p /SUBJECTS/"$subj"/tissue_labels/acoustic
 
         start=$(date +%s)
@@ -403,6 +452,6 @@ if [ ! -d /SUBJECTS/"$subj"/tissue_labels/acoustic ]; then
 
         echo "Acoustic label fields completed in ${duration} seconds." | tee -a "$LOG_FILE"
 else
-        echo "Acoustic label fields detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+        echo "Acoustic label fields log detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo

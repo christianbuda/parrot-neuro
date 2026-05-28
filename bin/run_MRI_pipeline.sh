@@ -372,7 +372,7 @@ echo
 start_time=$(date +%s)
 
 # if not already done, run fastsurfer
-if [ ! -d "$SUBJECTS_DIR/$SUBJECT/fastsurfer" ]; then
+if [ ! -f "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/fastsurfer.txt ]; then
 	echo "Running FastSurfer reconstruction..."
 	mkdir -p "$TMP_DIR"/tmp_fastsurfer
 
@@ -380,7 +380,9 @@ if [ ! -d "$SUBJECTS_DIR/$SUBJECT/fastsurfer" ]; then
 	docker run -v "$TMP_DIR":/data -v "$SUBJECTS_DIR":/fs_license $USE_GPU --rm --user $(id -u):$(id -g) deepmi/fastsurfer:latest --fs_license /fs_license/license.txt --t1 /data/input/subject.nii.gz --sid "$SUBJECT" --sd /data/tmp_fastsurfer --3T --threads "$N_THREADS" --seg_only > "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/fastsurfer.txt 2>&1
 	check_step $? "FastSurfer reconstruction" "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/fastsurfer.txt
 	end=$(date +%s)
+
 	# move output
+    rm -rf "$SUBJECTS_DIR"/"$SUBJECT"/fastsurfer # remove if it already exists
 	mv "$TMP_DIR"/tmp_fastsurfer/"$SUBJECT" "$SUBJECTS_DIR"/"$SUBJECT"/fastsurfer
 
 	duration=$(( end - start ))
@@ -388,13 +390,13 @@ if [ ! -d "$SUBJECTS_DIR/$SUBJECT/fastsurfer" ]; then
 
 	echo "FastSurfer reconstruction completed in ${minutes} minutes." | tee -a "$LOG_FILE"
 else
-        echo "FastSurfer reconstruction detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+        echo "FastSurfer reconstruction log detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 
 
 # if not already done, run hippunfold
-if [ ! -d "$SUBJECTS_DIR/$SUBJECT/hippunfold" ]; then
+if [ ! -f "$SUBJECTS_DIR"/"$SUBJECT"/reconstruction_logs/hippunfold.txt ]; then
     echo "Running HippUnfold reconstruction..."
     mkdir -p "$TMP_DIR"/tmp_hippunfold
 
@@ -404,6 +406,7 @@ if [ ! -d "$SUBJECTS_DIR/$SUBJECT/hippunfold" ]; then
     end=$(date +%s)
 
     # move output
+    rm -rf "$SUBJECTS_DIR"/"$SUBJECT"/hippunfold # remove if it already exists
     mv "$TMP_DIR"/tmp_hippunfold/hippunfold/sub-subject "$SUBJECTS_DIR"/"$SUBJECT"/hippunfold
 
     # make label file
@@ -425,7 +428,7 @@ EOL
 
     echo "HippUnfold reconstruction completed in ${hours} hours and ${minutes} minutes." | tee -a "$LOG_FILE"
 else
-        echo "HippUnfold reconstruction detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
+        echo "HippUnfold reconstruction log detected in subject's folder, skipping step..." | tee -a "$LOG_FILE"
 fi
 echo
 
