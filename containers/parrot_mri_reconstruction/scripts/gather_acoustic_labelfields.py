@@ -65,9 +65,9 @@ sim4life_to_itis = {'Cerebrum_white_matter':'Brain (White Matter)',
 'Intervertebral_disc':'Intervertebral Disc',
 'Skull_cancellous':'Skull (Cancellous)'}
 
-def read_charm_labels(subj_dir):
+def read_charm_labels(path):
     
-    with open(os.path.join(subj_dir, 'simnibs_charm/final_tissues_LUT.txt'), 'r') as f:
+    with open(path, 'r') as f:
         labels = f.readlines()
     
     # add background air
@@ -79,11 +79,11 @@ def read_charm_labels(subj_dir):
     
     return labels, LUT
 
-def convert_simnibs_labelfield(subj_dir):
-    labels, LUT = read_charm_labels(subj_dir)
+def convert_simnibs_labelfield():
+    labels, LUT = read_charm_labels(os.path.join(output_dir, f'simnibscharm/sub-{subject}/final_tissues_LUT.txt'))
     label_dict = {val:key for (key, val) in labels.items()}
 
-    label_field = nib.load(os.path.join(subj_dir, 'simnibs_charm/final_tissues.nii.gz'))
+    label_field = nib.load(os.path.join(output_dir, f'simnibscharm/sub-{subject}/final_tissues.nii.gz'))
     field_value = label_field.get_fdata().astype(int)
 
     original_labels = np.unique(field_value)
@@ -99,11 +99,11 @@ def convert_simnibs_labelfield(subj_dir):
     ####################################################
 
     # use white matter from cerebellum stream
-    cereb = get_resampled_image(os.path.join(subj_dir, 'cerebellum/nonlinear_white_labels.nii.gz'), os.path.join(subj_dir, 'simnibs_charm/final_tissues.nii.gz'))
+    cereb = get_resampled_image(os.path.join(output_dir, f'cerebellum/sub-{subject}/nonlinear_white_labels.nii.gz'), os.path.join(subj_output_dirdir, f'simnibscharm/sub-{subject}/final_tissues.nii.gz'))
     field_value[cereb>0] = final_tissues.index('White-Matter')
 
     # use gray matter from main atlas streams
-    aggregated = get_resampled_image(os.path.join(subj_dir, 'atlas/atlas_aggregated.nii.gz'), os.path.join(subj_dir, 'simnibs_charm/final_tissues.nii.gz'))
+    aggregated = get_resampled_image(os.path.join(output_dir, f'atlas/sub-{subject}/atlas_aggregated.nii.gz'), os.path.join(output_dir, f'simnibscharm/sub-{subject}/final_tissues.nii.gz'))
     field_value[aggregated>0] = final_tissues.index('Gray-Matter') # gray matter
     
     ####################################################
@@ -112,45 +112,45 @@ def convert_simnibs_labelfield(subj_dir):
 
     # save the volume
     label_field = nib.Nifti1Image(field_value, label_field.affine, label_field.header)
-    nib.save(label_field, os.path.join(subj_dir, 'tissue_labels/acoustic/simnibs.nii.gz'))
+    nib.save(label_field, os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/simnibs.nii.gz'))
 
     # save the corresponding label file
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/simnibs_labels.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/simnibs_labels.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             f.write(f'{idx},{tissue}\n')
 
     # save the corresponding LUT file
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/simnibs_LUT.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/simnibs_LUT.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             old_label = label_dict[tissue]
             f.write(f'{idx}\t{LUT[old_label]['name']}\t{LUT[old_label]['R']}\t{LUT[old_label]['G']}\t{LUT[old_label]['B']}\t{LUT[old_label]['A']}\n')
     
     # save the corresponding acoustic parameters
     
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/simnibs_density.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/simnibs_density.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             f.write(f'{idx},{density[simnibs_to_itis[tissue]]}\n')
     
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/simnibs_speed_of_sound.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/simnibs_speed_of_sound.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             f.write(f'{idx},{speed_of_sound[simnibs_to_itis[tissue]]}\n')
     
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/simnibs_attenuation_constant.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/simnibs_attenuation_constant.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             f.write(f'{idx},{attenuation_constant[simnibs_to_itis[tissue]]}\n')
             
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/simnibs_nonlinearity_parameter.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/simnibs_nonlinearity_parameter.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             f.write(f'{idx},{nonlinearity_parameter[simnibs_to_itis[tissue]]}\n')
     
     return
 
 
-def read_Sim4Life_labels(subj_dir, raise_error = True):
+def read_Sim4Life_labels(path, raise_error = True):
     # this function reads the labels of the segmentation and checks if they are as expected (i.e. in the right order)
     # raise_error flag is used to raise an error when the labels are not as expected
     
-    with open(os.path.join(subj_dir, 'tissue_labels/sim4life_raw/label_field.txt'), 'r') as f:
+    with open(path, 'r') as f:
         labels = f.readlines()
 
     # remove header
@@ -179,13 +179,13 @@ def read_Sim4Life_labels(subj_dir, raise_error = True):
 
     return labels, LUT
 
-def convert_sim4life_labelfield(subj_dir):
+def convert_sim4life_labelfield():
     # this function converts the label field generated with sim4life by joining some of the tissues into just one (bringing the total to at most 20 tissues)
     
-    labels, LUT = read_Sim4Life_labels(subj_dir, raise_error = True)
+    labels, LUT = read_Sim4Life_labels(os.path.join(output_dir, f'sim4life/sub-{subject}/label_field.txt'), raise_error = True)
     label_dict = {val:key for (key, val) in labels.items()}
     
-    label_field = nib.load(os.path.join(subj_dir, 'tissue_labels/sim4life_raw/label_field.nii.gz'))
+    label_field = nib.load(os.path.join(output_dir, f'sim4life/sub-{subject}/label_field.nii.gz'))
     field_value = label_field.get_fdata().astype(np.uint8)
     
     # removes some of the labels in the volume by joining it to other tissue types
@@ -209,11 +209,11 @@ def convert_sim4life_labelfield(subj_dir):
     ####################################################
 
     # use white matter from cerebellum stream
-    cereb = get_resampled_image(os.path.join(subj_dir, 'cerebellum/nonlinear_white_labels.nii.gz'), os.path.join(subj_dir, 'tissue_labels/sim4life_raw/label_field.nii.gz'))
+    cereb = get_resampled_image(os.path.join(output_dir, f'cerebellum/sub-{subject}/nonlinear_white_labels.nii.gz'), os.path.join(output_dir, f'sim4life/sub-{subject}/label_field.nii.gz'))
     field_value[cereb>0] = final_tissues.index('Cerebrum_white_matter')
 
     # use gray matter from main atlas streams
-    aggregated = get_resampled_image(os.path.join(subj_dir, 'atlas/atlas_aggregated.nii.gz'), os.path.join(subj_dir, 'tissue_labels/sim4life_raw/label_field.nii.gz'))
+    aggregated = get_resampled_image(os.path.join(output_dir, f'atlas/sub-{subject}/atlas_aggregated.nii.gz'), os.path.join(output_dir, f'sim4life/sub-{subject}/label_field.nii.gz'))
     field_value[aggregated>0] = final_tissues.index('Cerebrum_grey_matter') # gray matter
     field_value[np.isin(aggregated, [22,23])] = final_tissues.index('Thalamus') # thalamus
     field_value[np.isin(aggregated, [9,10])] = final_tissues.index('Hippocampus') # hippocampus
@@ -223,17 +223,17 @@ def convert_sim4life_labelfield(subj_dir):
 
     # save the volume
     label_field = nib.Nifti1Image(field_value, label_field.affine, label_field.header)
-    nib.save(label_field, os.path.join(subj_dir, 'tissue_labels/acoustic/sim4life.nii.gz'))
+    nib.save(label_field, os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/sim4life.nii.gz'))
     
     # save the corresponding labels file
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/sim4life_labels.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/sim4life_labels.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             if tissue in sim4life_to_itis.keys():
                 tissue = sim4life_to_itis[tissue]
             f.write(f'{idx},{tissue}\n')
     
     # save the corresponding LUT file
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/sim4life_LUT.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/sim4life_LUT.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             old_label = label_dict[tissue]
             tissue = LUT[old_label]['name']
@@ -242,25 +242,25 @@ def convert_sim4life_labelfield(subj_dir):
             f.write(f'{idx}\t{tissue}\t{LUT[old_label]['R']}\t{LUT[old_label]['G']}\t{LUT[old_label]['B']}\t{LUT[old_label]['A']}\n')
     
     # save the corresponding acoustic parameters
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/sim4life_density.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/sim4life_density.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             if tissue in sim4life_to_itis.keys():
                 tissue = sim4life_to_itis[tissue]
             f.write(f'{idx},{density[tissue]}\n')
     
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/sim4life_speed_of_sound.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/sim4life_speed_of_sound.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             if tissue in sim4life_to_itis.keys():
                 tissue = sim4life_to_itis[tissue]
             f.write(f'{idx},{speed_of_sound[tissue]}\n')
 
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/sim4life_attenuation_constant.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/sim4life_attenuation_constant.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             if tissue in sim4life_to_itis.keys():
                 tissue = sim4life_to_itis[tissue]
             f.write(f'{idx},{attenuation_constant[tissue]}\n')
     
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/sim4life_nonlinearity_parameter.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/sim4life_nonlinearity_parameter.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             if tissue in sim4life_to_itis.keys():
                 tissue = sim4life_to_itis[tissue]
@@ -279,39 +279,47 @@ if __name__ == "__main__":
 
     # 1. Define the Subject Folder Argument
     parser.add_argument(
-        '--subject_dir',
+        '--subject', 
         type=str,
         required=True,
-        help='Path to the subject folder (e.g., /SUBJECTS/<subjectname>/)'
+        help='Subject ID (e.g. "01")'
+    )
+    
+    parser.add_argument(
+        '--output_dir', 
+        type=str,
+        required=True,
+        help='Path to the output folder (e.g., /derivatives/)'
     )
 
     # Parse the arguments from the command line
     args = parser.parse_args()
 
     # Call your main processing function
-    subj_dir = args.subject_dir
+    subject = args.subject
+    output_dir = args.output_dir
 
-    convert_simnibs_labelfield(subj_dir)
+    convert_simnibs_labelfield()
 
-    if os.path.isdir(os.path.join(subj_dir, 'tissue_labels/sim4life_raw')):
+    if os.path.isdir(os.path.join(output_dir, f'sim4life/sub-{subject}')):
         print("Sim4Life tissue labels field folder detected, generating additional label field from it")
-        convert_sim4life_labelfield(subj_dir)
+        convert_sim4life_labelfield()
     else:
         print("Sim4Life tissue labels field folder not detected, will only generate SimNibs label field.")
 
     # save the full ITIS acoustic parameters files
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/ITIS_density.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/ITIS_density.txt'), 'w') as f:
         for key,val in density.items():
             f.write(f'{key},{val}\n')
     
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/ITIS_speed_of_sound.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/ITIS_speed_of_sound.txt'), 'w') as f:
         for key,val in speed_of_sound.items():
             f.write(f'{key},{val}\n')
     
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/ITIS_attenuation_constant.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/ITIS_attenuation_constant.txt'), 'w') as f:
         for key,val in attenuation_constant.items():
             f.write(f'{key},{val}\n')
     
-    with open(os.path.join(subj_dir, 'tissue_labels/acoustic/ITIS_nonlinearity_parameter.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/ITIS_nonlinearity_parameter.txt'), 'w') as f:
         for key,val in nonlinearity_parameter.items():
             f.write(f'{key},{val}\n')

@@ -120,12 +120,19 @@ if __name__ == "__main__":
         formatter_class=argparse.RawTextHelpFormatter
     )
 
-    # 1. Define the Subject Folder Argument
+    # 1. Define the Subject Folders Arguments
     parser.add_argument(
-        '--subject_dir', 
+        '--subject', 
         type=str,
         required=True,
-        help='Path to the subject folder (e.g., /SUBJECTS/<subjectname>/)'
+        help='Identifier of the subject (e.g., "01")'
+    )
+        
+    parser.add_argument(
+        '--output_dir', 
+        type=str,
+        required=True,
+        help='Path to the output folder (e.g., /derivatives/)'
     )
 
     # 2. Define the Template Folder Argument
@@ -149,7 +156,8 @@ if __name__ == "__main__":
 
     # set ants number of threads
     os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = args.threads
-    subject_folder = args.subject_dir
+    subject = args.subject
+    output_dir = args.output_dir
     cerebellum_template_folder = args.template_dir
 
 
@@ -157,17 +165,17 @@ if __name__ == "__main__":
     import ants
 
     # load brain stripped T1
-    subject_brain = ants.image_read(os.path.join(subject_folder,'synthstrip/T1_stripped.nii.gz'))
+    subject_brain = ants.image_read(os.path.join(output_dir,f'synthstrip/sub-{subject}/T1_stripped.nii.gz'))
 
     # apply bias field correction and reapply brain mask
     subject_brain = ants.n4_bias_field_correction(subject_brain)
-    subject_brain = subject_brain * ants.image_read(os.path.join(subject_folder,'synthstrip/T1_stripped_mask.nii.gz'))
+    subject_brain = subject_brain * ants.image_read(os.path.join(output_dir,f'synthstrip/sub-{subject}/T1_stripped_mask.nii.gz'))
 
     # save bias field corrected brain
-    ants.image_write(subject_brain, os.path.join(subject_folder,'cerebellum/T1_stripped_N4corrected.nii.gz'))
+    ants.image_write(subject_brain, os.path.join(output_dir,f'cerebellum/sub-{subject}/T1_stripped_N4corrected.nii.gz'))
 
     # then load and resample cerebellum mask
-    subject_cerebmask = ants.image_read(os.path.join(subject_folder,'fastsurfer/mri/cerebellum.CerebNet.nii.gz'))
+    subject_cerebmask = ants.image_read(os.path.join(output_dir,f'fastsurfer/sub-{subject}/mri/cerebellum.CerebNet.nii.gz'))
     subject_cerebmask = ants.resample_image_to_target(subject_cerebmask, subject_brain, interp_type='genericLabel')
     subject_cerebmask = ants.threshold_image(subject_cerebmask, low_thresh=0.5)
 
@@ -185,13 +193,13 @@ if __name__ == "__main__":
 
     ############## RUN REGISTRATIONS #################
     # run affine+nonlinear transform
-    os.mkdir(os.path.join(subject_folder, 'cerebellum/transform_files'))
+    os.mkdir(os.path.join(output_dir, f'cerebellum/sub-{subject}/transform_files'))
 
     print('Running nonlinear registration...')
     
     # we only provide the fixed mask because we want ants to look everywhere in the subject brain for the best cerebellar alignment
     # (actually im afraid that the intersection of the two masks will make the registration very difficult in some edge cases)
-    run_multistage_registration(fixed=template_brain, moving=subject_brain, outprefix=os.path.join(subject_folder,'cerebellum/transform_files/'))
+    run_multistage_registration(fixed=template_brain, moving=subject_brain, outprefix=os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/'))
 
     ################## APPLY TRANSFORMS to VOLUMES ###################
 
@@ -199,20 +207,20 @@ if __name__ == "__main__":
     warped_template = ants.apply_transforms(
         fixed=subject_brain,
         moving=template_brain,
-        transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat')],
+        transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat')],
         whichtoinvert=[True]
     )
 
-    ants.image_write(warped_template, os.path.join(subject_folder,"cerebellum/affine_template_brain.nii.gz"))
+    ants.image_write(warped_template, os.path.join(output_dir,f"cerebellum/sub-{subject}/affine_template_brain.nii.gz"))
 
     warped_template = ants.apply_transforms(
 	fixed=subject_brain,
 	moving=template_brain,
-	transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat'), os.path.join(subject_folder,'cerebellum/transform_files/1InverseWarp.nii.gz')],
+	transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat'), os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/1InverseWarp.nii.gz')],
 	whichtoinvert=[True, False]
     )
 
-    ants.image_write(warped_template, os.path.join(subject_folder,"cerebellum/nonlinear_template_brain.nii.gz"))
+    ants.image_write(warped_template, os.path.join(output_dir,f"cerebellum/sub-{subject}/nonlinear_template_brain.nii.gz"))
 
     ### cerebellum gray labels
     gray_labels = ants.image_read(os.path.join(cerebellum_template_folder, 'Cerebellum_GM_Labels.nii.gz'))
@@ -220,22 +228,22 @@ if __name__ == "__main__":
     warped_gray_labels = ants.apply_transforms(
         fixed=subject_brain,
         moving=gray_labels,
-        transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat')],
+        transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat')],
         whichtoinvert=[True],
 	interpolator='genericLabel'
     )
 
-    ants.image_write(warped_gray_labels, os.path.join(subject_folder,"cerebellum/affine_gray_labels.nii.gz"))
+    ants.image_write(warped_gray_labels, os.path.join(output_dir,f"cerebellum/sub-{subject}/affine_gray_labels.nii.gz"))
 
     warped_gray_labels = ants.apply_transforms(
         fixed=subject_brain,
         moving=gray_labels,
-        transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat'), os.path.join(subject_folder,'cerebellum/transform_files/1InverseWarp.nii.gz')],
+        transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat'), os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/1InverseWarp.nii.gz')],
         whichtoinvert=[True, False],
 	interpolator='genericLabel'
     )
 
-    ants.image_write(warped_gray_labels, os.path.join(subject_folder,"cerebellum/nonlinear_gray_labels.nii.gz"))
+    ants.image_write(warped_gray_labels, os.path.join(output_dir,f"cerebellum/sub-{subject}/nonlinear_gray_labels.nii.gz"))
 
     ### cerebellum white labels
     white_labels = ants.image_read(os.path.join(cerebellum_template_folder, 'Cerebellum_WM_Labels.nii.gz'))
@@ -243,22 +251,22 @@ if __name__ == "__main__":
     warped_white_labels = ants.apply_transforms(
         fixed=subject_brain,
         moving=white_labels,
-        transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat')],
+        transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat')],
         whichtoinvert=[True],
 	interpolator='genericLabel'
     )
 
-    ants.image_write(warped_white_labels, os.path.join(subject_folder,"cerebellum/affine_white_labels.nii.gz"))
+    ants.image_write(warped_white_labels, os.path.join(output_dir,f"cerebellum/sub-{subject}/affine_white_labels.nii.gz"))
 
     warped_white_labels = ants.apply_transforms(
         fixed=subject_brain,
         moving=white_labels,
-        transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat'), os.path.join(subject_folder,'cerebellum/transform_files/1InverseWarp.nii.gz')],
+        transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat'), os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/1InverseWarp.nii.gz')],
         whichtoinvert=[True, False],
 	interpolator='genericLabel'
     )
 
-    ants.image_write(warped_white_labels, os.path.join(subject_folder,"cerebellum/nonlinear_white_labels.nii.gz"))
+    ants.image_write(warped_white_labels, os.path.join(output_dir,f"cerebellum/sub-{subject}/nonlinear_white_labels.nii.gz"))
 
     ################## APPLY TRANSFORMS 1 ###################
 
@@ -278,7 +286,7 @@ if __name__ == "__main__":
     warped_points = ants.apply_transforms_to_points(
         dim=3,
         points=points,
-        transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat')]
+        transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat')]
     )
 
     # convert back to RAS
@@ -289,14 +297,14 @@ if __name__ == "__main__":
 
     mesh[5:int(mesh[4].split()[1])+5] = list(map(lambda x: ' '.join(list(map(lambda y: '{:.6f}'.format(y), x)))+'\n', warped_points.to_numpy()))
 
-    with open(os.path.join(subject_folder,'cerebellum/affine_Cerebellum_Inner_Surf_With_Features.vtk'), 'w') as f:
+    with open(os.path.join(output_dir,f'cerebellum/sub-{subject}/affine_Cerebellum_Inner_Surf_With_Features.vtk'), 'w') as f:
         f.writelines(mesh)
 
     ### warp nonlinear
     warped_points = ants.apply_transforms_to_points(
         dim=3,
         points=points,
-        transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/1Warp.nii.gz'), os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat')]
+        transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/1Warp.nii.gz'), os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat')]
     )
 
     # convert back to RAS
@@ -308,7 +316,7 @@ if __name__ == "__main__":
 
     mesh[5:int(mesh[4].split()[1])+5] = list(map(lambda x: ' '.join(list(map(lambda y: '{:.6f}'.format(y), x)))+'\n', warped_points.to_numpy()))
 
-    with open(os.path.join(subject_folder,'cerebellum/nonlinear_Cerebellum_Inner_Surf_With_Features.vtk'), 'w') as f:
+    with open(os.path.join(output_dir,f'cerebellum/sub-{subject}/nonlinear_Cerebellum_Inner_Surf_With_Features.vtk'), 'w') as f:
         f.writelines(mesh)
         
     ################## APPLY TRANSFORMS 2 ###################
@@ -329,7 +337,7 @@ if __name__ == "__main__":
     warped_points = ants.apply_transforms_to_points(
         dim=3,
         points=points,
-        transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat')]
+        transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat')]
     )
 
     # convert back to RAS
@@ -340,14 +348,14 @@ if __name__ == "__main__":
 
     mesh[5:int(mesh[4].split()[1])//3+5+1] = list(map(lambda x: ' '.join(list(map(lambda y: '{:.6g}'.format(y), x)))+'\n', warped_points[:-2].to_numpy().reshape((-1,9)))) + [' '.join(list(map(lambda y: '{:.6g}'.format(y), warped_points[-2:].to_numpy().flatten())))+'\n']
 
-    with open(os.path.join(subject_folder,'cerebellum/affine_Cerebellum_Surf_GM_Labels.vtk'), 'w') as f:
+    with open(os.path.join(output_dir,f'cerebellum/sub-{subject}/affine_Cerebellum_Surf_GM_Labels.vtk'), 'w') as f:
         f.writelines(mesh)
 
     ### warp nonlinear
     warped_points = ants.apply_transforms_to_points(
         dim=3,
         points=points,
-        transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/1Warp.nii.gz'), os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat')]
+        transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/1Warp.nii.gz'), os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat')]
     )
 
     # convert back to RAS
@@ -359,7 +367,7 @@ if __name__ == "__main__":
 
     mesh[5:int(mesh[4].split()[1])//3+5+1] = list(map(lambda x: ' '.join(list(map(lambda y: '{:.6g}'.format(y), x)))+'\n', warped_points[:-2].to_numpy().reshape((-1,9)))) + [' '.join(list(map(lambda y: '{:.6g}'.format(y), warped_points[-2:].to_numpy().flatten())))+'\n']
     
-    with open(os.path.join(subject_folder,'cerebellum/nonlinear_Cerebellum_Surf_GM_Labels.vtk'), 'w') as f:
+    with open(os.path.join(output_dir,f'cerebellum/sub-{subject}/nonlinear_Cerebellum_Surf_GM_Labels.vtk'), 'w') as f:
         f.writelines(mesh)
         
     ################## APPLY TRANSFORMS 3 ###################
@@ -380,7 +388,7 @@ if __name__ == "__main__":
     warped_points = ants.apply_transforms_to_points(
         dim=3,
         points=points,
-        transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat')]
+        transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat')]
     )
 
     # convert back to RAS
@@ -391,14 +399,14 @@ if __name__ == "__main__":
 
     mesh[5:int(mesh[4].split()[1])//3+5+1] = list(map(lambda x: ' '.join(list(map(lambda y: '{:.6g}'.format(y), x)))+'\n', warped_points[:-1].to_numpy().reshape((-1,9)))) + [' '.join(list(map(lambda y: '{:.6g}'.format(y), warped_points[-1:].to_numpy().flatten())))+'\n']
     
-    with open(os.path.join(subject_folder,'cerebellum/affine_Cerebellum_Surf_WM_Labels.vtk'), 'w') as f:
+    with open(os.path.join(output_dir,f'cerebellum/sub-{subject}/affine_Cerebellum_Surf_WM_Labels.vtk'), 'w') as f:
         f.writelines(mesh)
 
     ### warp nonlinear
     warped_points = ants.apply_transforms_to_points(
         dim=3,
         points=points,
-        transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/1Warp.nii.gz'), os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat')]
+        transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/1Warp.nii.gz'), os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat')]
     )
 
     # convert back to RAS
@@ -410,7 +418,7 @@ if __name__ == "__main__":
 
     mesh[5:int(mesh[4].split()[1])//3+5+1] = list(map(lambda x: ' '.join(list(map(lambda y: '{:.6g}'.format(y), x)))+'\n', warped_points[:-1].to_numpy().reshape((-1,9)))) + [' '.join(list(map(lambda y: '{:.6g}'.format(y), warped_points[-1:].to_numpy().flatten())))+'\n']
     
-    with open(os.path.join(subject_folder,'cerebellum/nonlinear_Cerebellum_Surf_WM_Labels.vtk'), 'w') as f:
+    with open(os.path.join(output_dir,f'cerebellum/sub-{subject}/nonlinear_Cerebellum_Surf_WM_Labels.vtk'), 'w') as f:
         f.writelines(mesh)
 
     ################## APPLY TRANSFORMS 4 ###################
@@ -431,7 +439,7 @@ if __name__ == "__main__":
     warped_points = ants.apply_transforms_to_points(
         dim=3,
         points=points,
-        transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat')]
+        transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat')]
     )
 
     # convert back to RAS
@@ -442,14 +450,14 @@ if __name__ == "__main__":
 
     mesh[5:int(mesh[4].split()[1])+5] = list(map(lambda x: ' '.join(list(map(lambda y: '{:.6f}'.format(y), x)))+'\n', warped_points.to_numpy()))
 
-    with open(os.path.join(subject_folder,'cerebellum/affine_manifold_Cerebellum_Inner_Surf_With_Features.vtk'), 'w') as f:
+    with open(os.path.join(output_dir,f'cerebellum/sub-{subject}/affine_manifold_Cerebellum_Inner_Surf_With_Features.vtk'), 'w') as f:
         f.writelines(mesh)
 
     ### warp nonlinear
     warped_points = ants.apply_transforms_to_points(
         dim=3,
         points=points,
-        transformlist=[os.path.join(subject_folder,'cerebellum/transform_files/1Warp.nii.gz'), os.path.join(subject_folder,'cerebellum/transform_files/0GenericAffine.mat')]
+        transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/1Warp.nii.gz'), os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat')]
     )
 
     # convert back to RAS
@@ -461,5 +469,5 @@ if __name__ == "__main__":
 
     mesh[5:int(mesh[4].split()[1])+5] = list(map(lambda x: ' '.join(list(map(lambda y: '{:.6f}'.format(y), x)))+'\n', warped_points.to_numpy()))
 
-    with open(os.path.join(subject_folder,'cerebellum/nonlinear_manifold_Cerebellum_Inner_Surf_With_Features.vtk'), 'w') as f:
+    with open(os.path.join(output_dir,f'cerebellum/sub-{subject}/nonlinear_manifold_Cerebellum_Inner_Surf_With_Features.vtk'), 'w') as f:
         f.writelines(mesh)

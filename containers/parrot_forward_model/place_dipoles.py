@@ -28,7 +28,7 @@ import json
 # hippunfold_R_hipp_middle # 200 -> 90 -> 50
 
 def str_to_label(names):
-    with open(add_subject_dir('atlas/atlas100_labels.txt'), 'r') as f:
+    with open(add_output_dir(f'atlas/sub-{subject}/atlas100_labels.txt'), 'r') as f:
         label_dict = f.readlines()
     label_dict = dict(map(lambda x: tuple(x.strip().split(',')[-1::-1]), label_dict))
     labels = []
@@ -36,10 +36,10 @@ def str_to_label(names):
         labels.append(int(label_dict[name]))
     return labels
 
-def add_subject_dir(*paths):
+def add_output_dir(*paths):
     if len(paths)==1:
-        return os.path.join(subject_dir, paths[0])
-    return tuple([add_subject_dir(x) for x in paths])
+        return os.path.join(output_dir, paths[0])
+    return tuple([add_output_dir(x) for x in paths])
 
 def load_npy(paths):
     if isinstance(paths, list):
@@ -262,7 +262,7 @@ def sample_all_surfaces(all_meshes, dipole_spacing, generator = None, test_mode 
         sampled_vertices, dipole_positions, dipole_labels, dipole_volume, dipole_normals, orient_type, distance_matrix = sample_surface(mesh = trimesh.load_mesh(mesh_dict['mesh']), min_dist = dipole_spacing, vertex_label = load_npy(mesh_dict['labels']), vertex_thickness = load_npy(mesh_dict['thickness']), vertex_volume = (load_npy(mesh_dict['volume']) if 'volume' in mesh_dict.keys() else None), generator = generator, test_mode = test_mode)
         print('Done!\n')
         basename = pathlib.Path(mesh_dict['mesh']).stem
-        output_dir = add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/surfaces/'+basename)
+        output_dir = add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/surfaces/'+basename)
 
         output_dict = { 'sampled_vertices':os.path.join(output_dir, 'sampled_vertices.npy'),
                         'dipole_positions':os.path.join(output_dir, 'dipole_positions.npy'),
@@ -325,9 +325,9 @@ def get_structure_size(positions):
     # it computes the span of the point cloud along the principal directions
     
     # handle edge cases
-    if len(positions == 1):
+    if len(positions) == 1:
         return np.inf
-    if len(positions== 2):
+    if len(positions) == 2:
         return np.linalg.norm(positions[0]-positions[1])
     
     def span(x, axis = None):
@@ -405,13 +405,13 @@ def get_instruction_files(kind):
         
         return labels_to_exclude, gradient_as_normal, principal_axis_left, principal_axis_right, random_orientations
     elif kind == 'surfaces':
-        all_meshes = [  {'mesh':add_subject_dir('surfaces/freesurfer_lh_middle.ply'), 'thickness':add_subject_dir('surfaces/freesurfer_lh_middle_thickness.npy'), 'labels':glob.glob(add_subject_dir('atlas/freesurfer_surf/lh.*Parcels_labels.npy')), 'volume':add_subject_dir('surfaces/freesurfer_lh_middle_volume.npy')},
-                        {'mesh':add_subject_dir('surfaces/freesurfer_rh_middle.ply'), 'thickness':add_subject_dir('surfaces/freesurfer_rh_middle_thickness.npy'), 'labels':glob.glob(add_subject_dir('atlas/freesurfer_surf/rh.*Parcels_labels.npy')), 'volume':add_subject_dir('surfaces/freesurfer_rh_middle_volume.npy')},
-                        {'mesh':add_subject_dir('surfaces/cereb_inner_processed.ply'), 'thickness':add_subject_dir('surfaces/cereb_inner_processed_thickness.npy'), 'labels':add_subject_dir('atlas/cerebellum_surf/cereb_labels.npy')},
-                        {'mesh':add_subject_dir('surfaces/hippunfold_L_dentate_middle.ply'), 'thickness':add_subject_dir('surfaces/hippunfold_L_dentate_middle_thickness.npy'), 'labels':add_subject_dir('atlas/hippunfold_surf/L_dent_labels.npy')},
-                        {'mesh':add_subject_dir('surfaces/hippunfold_R_dentate_middle.ply'), 'thickness':add_subject_dir('surfaces/hippunfold_R_dentate_middle_thickness.npy'), 'labels':add_subject_dir('atlas/hippunfold_surf/R_dent_labels.npy')},
-                        {'mesh':add_subject_dir('surfaces/hippunfold_L_hipp_middle.ply'), 'thickness':add_subject_dir('surfaces/hippunfold_L_hipp_middle_thickness.npy'), 'labels':add_subject_dir('atlas/hippunfold_surf/L_hipp_labels.npy')},
-                        {'mesh':add_subject_dir('surfaces/hippunfold_R_hipp_middle.ply'), 'thickness':add_subject_dir('surfaces/hippunfold_R_hipp_middle_thickness.npy'), 'labels':add_subject_dir('atlas/hippunfold_surf/R_hipp_labels.npy')}]
+        all_meshes = [  {'mesh':add_output_dir(f'surfaces/sub-{subject}/freesurfer_lh_middle.ply'), 'thickness':add_output_dir(f'surfaces/sub-{subject}/freesurfer_lh_middle_thickness.npy'), 'labels':glob.glob(add_output_dir(f'atlas/sub-{subject}/freesurfer_surf/lh.*Parcels_labels.npy')), 'volume':add_output_dir(f'surfaces/sub-{subject}/freesurfer_lh_middle_volume.npy')},
+                        {'mesh':add_output_dir(f'surfaces/sub-{subject}/freesurfer_rh_middle.ply'), 'thickness':add_output_dir(f'surfaces/sub-{subject}/freesurfer_rh_middle_thickness.npy'), 'labels':glob.glob(add_output_dir(f'atlas/sub-{subject}/freesurfer_surf/rh.*Parcels_labels.npy')), 'volume':add_output_dir(f'surfaces/sub-{subject}/freesurfer_rh_middle_volume.npy')},
+                        {'mesh':add_output_dir(f'surfaces/sub-{subject}/cereb_inner_processed.ply'), 'thickness':add_output_dir(f'surfaces/sub-{subject}/cereb_inner_processed_thickness.npy'), 'labels':add_output_dir(f'atlas/sub-{subject}/cerebellum_surf/cereb_labels.npy')},
+                        {'mesh':add_output_dir(f'surfaces/sub-{subject}/hippunfold_L_dentate_middle.ply'), 'thickness':add_output_dir(f'surfaces/sub-{subject}/hippunfold_L_dentate_middle_thickness.npy'), 'labels':add_output_dir(f'atlas/sub-{subject}/hippunfold_surf/L_dent_labels.npy')},
+                        {'mesh':add_output_dir(f'surfaces/sub-{subject}/hippunfold_R_dentate_middle.ply'), 'thickness':add_output_dir(f'surfaces/sub-{subject}/hippunfold_R_dentate_middle_thickness.npy'), 'labels':add_output_dir(f'atlas/sub-{subject}/hippunfold_surf/R_dent_labels.npy')},
+                        {'mesh':add_output_dir(f'surfaces/sub-{subject}/hippunfold_L_hipp_middle.ply'), 'thickness':add_output_dir(f'surfaces/sub-{subject}/hippunfold_L_hipp_middle_thickness.npy'), 'labels':add_output_dir(f'atlas/sub-{subject}/hippunfold_surf/L_hipp_labels.npy')},
+                        {'mesh':add_output_dir(f'surfaces/sub-{subject}/hippunfold_R_hipp_middle.ply'), 'thickness':add_output_dir(f'surfaces/sub-{subject}/hippunfold_R_hipp_middle_thickness.npy'), 'labels':add_output_dir(f'atlas/sub-{subject}/hippunfold_surf/R_hipp_labels.npy')}]
         return all_meshes
     else:
         raise ValueError('kind must be one of ["volume", "surfaces"]')
@@ -428,7 +428,7 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
     labels_to_exclude, gradient_as_normal, principal_axis_left, principal_axis_right, random_orientations = instruction_files
 
     # load volumetric atlas to select region to sample
-    atlas = nib.load(add_subject_dir('atlas/atlas100.nii.gz'))
+    atlas = nib.load(add_output_dir(f'atlas/sub-{subject}/atlas100.nii.gz'))
     assert atlas.header.get_xyzt_units()[0] == 'mm', 'Input atlas has spacing in units that are not mm, proceeding will break the code.'
     voxel_size = np.array(atlas.header.get_zooms())
     affine = atlas.affine
@@ -495,7 +495,7 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
     voxel_per_dipole = np.unique(best_idx, return_counts = True)[1]
     dipole_centroids/=voxel_per_dipole[:,np.newaxis]
 
-    dipole_volume = voxel_per_dipole**np.prod(voxel_size)
+    dipole_volume = voxel_per_dipole * np.prod(voxel_size)
     dipole_positions = np.array(dipole_centroids)
     ##########################################################
 
@@ -636,7 +636,7 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
     # to keep them separated in subsequent processing
     distance_matrix = np.repeat(np.inf, len(dipole_positions)**2).reshape((len(dipole_positions), len(dipole_positions)))
     
-    with open(add_subject_dir('atlas/atlas_to_aggregated.json')) as f:
+    with open(add_output_dir(f'atlas/sub-{subject}/atlas_to_aggregated.json')) as f:
         aggregated = json.load(f)
     aggregated = {t[1]:t[0] for t in aggregated}
 
@@ -645,7 +645,7 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
         distance_matrix[np.ix_(mask,mask)] = scipy.spatial.distance_matrix(dipole_positions[mask], dipole_positions[mask])
     
     ############# save dipoles just sampled #######################
-    output_dir = add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/volumetric/')
+    output_dir = add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/volumetric/')
 
     output_dict = { 'dipole_positions':os.path.join(output_dir, 'dipole_positions.npy'),
                     'dipole_volume':os.path.join(output_dir, 'dipole_volume.npy'),
@@ -740,11 +740,17 @@ if __name__ == "__main__":
 
     # Define the Subject Folder Argument
     parser.add_argument(
-        '--subject_dir',
+        '--subject', 
         type=str,
-        required=False,
-        default='/subject/', # to be used inside container
-        help='Path to the subject folder (e.g., /SUBJECTS/<subjectname>/)'
+        required=True,
+        help='Subject ID (e.g. "01")'
+    )
+    
+    parser.add_argument(
+        '--output_dir', 
+        type=str,
+        required=True,
+        help='Path to the output folder (e.g., /derivatives/)'
     )
     
     parser.add_argument(
@@ -758,13 +764,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Get the base directory and dipole spacing from the command line
-    subject_dir = args.subject_dir
+    subject = args.subject
+    output_dir = args.output_dir
     dipole_spacing = args.dipole_spacing
     
     # make output directory if needed
-    os.makedirs(add_subject_dir(f'dipoles/'), exist_ok=True)
+    os.makedirs(add_output_dir(f'dipoles/sub-{subject}/'), exist_ok=True)
     
-    if os.path.isdir(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/')):
+    if os.path.isdir(add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/')):
         print(f'WARNING: Dipoles at {dipole_spacing} mm spacing already detected in subject folder, skipped computation.')
     else:
         # load random number generator
@@ -776,18 +783,18 @@ if __name__ == "__main__":
 
         # save dipoles to disk
         all_arrays_dict = unify_attribute([volumetric_dipoles_dict] + surface_dipoles_dict, 'dipole_labels')
-        aggregate_array_files(all_arrays_dict, add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/'))
+        aggregate_array_files(all_arrays_dict, add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/'))
 
         # create aggregated labels file for convenience and neural density files, assumes that parcels 1000 is available
-        labels = np.load(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/1000Parcels_dipole_labels.npy'))
+        labels = np.load(add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/1000Parcels_dipole_labels.npy'))
 
-        density = compute_neural_density(labels, add_subject_dir('atlas/atlas1000.nii.gz'), add_subject_dir('bigbrain/subject_full16_100um_2009b_sym.nii.gz'))
-        np.save(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/dipole_neural_density.npy'), density)
+        density = compute_neural_density(labels, add_output_dir(f'atlas/sub-{subject}/atlas1000.nii.gz'), add_output_dir(f'bigbrain/sub-{subject}/subject_full16_100um_2009b_sym.nii.gz'))
+        np.save(add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/dipole_neural_density.npy'), density)
 
-        with open(add_subject_dir('atlas/atlas_to_aggregated.json'), 'r') as f:
+        with open(add_output_dir(f'atlas/sub-{subject}/atlas_to_aggregated.json'), 'r') as f:
             atlas_to_aggregated = json.load(f)
 
         aggregated_labels = np.zeros_like(labels)
         for idx, val in enumerate(atlas_to_aggregated):
             aggregated_labels[np.isin(labels, val[0])] = idx
-        np.save(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/aggregated_dipole_labels.npy'), aggregated_labels)
+        np.save(add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/aggregated_dipole_labels.npy'), aggregated_labels)

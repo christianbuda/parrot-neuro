@@ -302,98 +302,113 @@ def fix_intersection(fixed_mesh, moving_mesh, min_dist, step_size, dist_check = 
     
     return output_mesh
 
-def add_subject_dir(*paths):
+def add_output_dir(*paths):
     if len(paths)==1:
-        return os.path.join(subject_dir, paths[0])
-    return tuple([add_subject_dir(x) for x in paths])
+        return os.path.join(output_dir, paths[0])
+    return tuple([add_output_dir(x) for x in paths])
 
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Convert relevant surfaces to nifti world space and save in .ply")
-    parser.add_argument('--subject_dir', type=str, required = True, help='Path to the subject directory containing all reconstructions')
+    
+    parser.add_argument(
+        '--subject', 
+        type=str,
+        required=True,
+        help='Subject ID (e.g. "01")'
+    )
+    
+    parser.add_argument(
+        '--output_dir', 
+        type=str,
+        required=True,
+        help='Path to the output folder (e.g., /derivatives/)'
+    )
+    
     args = parser.parse_args()
 
     # Get the base directory from the command line
-    subject_dir = args.subject_dir
+    subject = args.subject
+    output_dir = args.output_dir
 
-    vox2ras_tkr = nib.load(add_subject_dir("freesurfer/mri/T1.mgz")).header.get_vox2ras_tkr()
-    fs_T1_affine = nib.load(add_subject_dir('freesurfer/mri/T1.mgz')).affine
-    orig_T1 = nib.load(add_subject_dir('raw/T1.nii.gz'))
+    vox2ras_tkr = nib.load(add_output_dir(f"freesurfer/sub-{subject}/mri/T1.mgz")).header.get_vox2ras_tkr()
+    fs_T1_affine = nib.load(add_output_dir(f'freesurfer/sub-{subject}/mri/T1.mgz')).affine
+    orig_T1 = nib.load(add_output_dir(f'raw/sub-{subject}/T1.nii.gz'))
 
 
     # FSL first surfaces
-    brstem = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-BrStem_first.vtk')))
-    surf_to_ply(brstem, add_subject_dir('surfaces/first_BrStem.ply'))
+    brstem = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-BrStem_first.vtk')))
+    surf_to_ply(brstem, add_output_dir(f'surfaces/sub-{subject}/first_BrStem.ply'))
 
-    Laccu = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-L_Accu_first.vtk')))
-    surf_to_ply(Laccu, add_subject_dir('surfaces/first_L_Accu.ply'))
+    Laccu = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Accu_first.vtk')))
+    surf_to_ply(Laccu, add_output_dir(f'surfaces/sub-{subject}/first_L_Accu.ply'))
 
-    Lamyg = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-L_Amyg_first.vtk')))
-    surf_to_ply(Lamyg, add_subject_dir('surfaces/first_L_Amyg.ply'))
+    Lamyg = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Amyg_first.vtk')))
+    surf_to_ply(Lamyg, add_output_dir(f'surfaces/sub-{subject}/first_L_Amyg.ply'))
 
-    Lcaud = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-L_Caud_first.vtk')))
-    surf_to_ply(Lcaud, add_subject_dir('surfaces/first_L_Caud.ply'))
+    Lcaud = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Caud_first.vtk')))
+    surf_to_ply(Lcaud, add_output_dir(f'surfaces/sub-{subject}/first_L_Caud.ply'))
 
-    Lhipp = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-L_Hipp_first.vtk')))
-    surf_to_ply(Lhipp, add_subject_dir('surfaces/first_L_Hipp.ply'))
+    Lhipp = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Hipp_first.vtk')))
+    surf_to_ply(Lhipp, add_output_dir(f'surfaces/sub-{subject}/first_L_Hipp.ply'))
 
-    Lpall = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-L_Pall_first.vtk')))
-    surf_to_ply(Lpall, add_subject_dir('surfaces/first_L_Pall.ply'))
+    Lpall = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Pall_first.vtk')))
+    surf_to_ply(Lpall, add_output_dir(f'surfaces/sub-{subject}/first_L_Pall.ply'))
 
-    Lputa = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-L_Puta_first.vtk')))
-    surf_to_ply(Lputa, add_subject_dir('surfaces/first_L_Puta.ply'))
+    Lputa = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Puta_first.vtk')))
+    surf_to_ply(Lputa, add_output_dir(f'surfaces/sub-{subject}/first_L_Puta.ply'))
 
-    Lthal = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-L_Thal_first.vtk')))
-    surf_to_ply(Lthal, add_subject_dir('surfaces/first_L_Thal.ply'))
+    Lthal = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Thal_first.vtk')))
+    surf_to_ply(Lthal, add_output_dir(f'surfaces/sub-{subject}/first_L_Thal.ply'))
 
-    Raccu = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-R_Accu_first.vtk')))
-    surf_to_ply(Raccu, add_subject_dir('surfaces/first_R_Accu.ply'))
+    Raccu = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Accu_first.vtk')))
+    surf_to_ply(Raccu, add_output_dir(f'surfaces/sub-{subject}/first_R_Accu.ply'))
 
-    Ramyg = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-R_Amyg_first.vtk')))
-    surf_to_ply(Ramyg, add_subject_dir('surfaces/first_R_Amyg.ply'))
+    Ramyg = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Amyg_first.vtk')))
+    surf_to_ply(Ramyg, add_output_dir(f'surfaces/sub-{subject}/first_R_Amyg.ply'))
 
-    Rcaud = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-R_Caud_first.vtk')))
-    surf_to_ply(Rcaud, add_subject_dir('surfaces/first_R_Caud.ply'))
+    Rcaud = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Caud_first.vtk')))
+    surf_to_ply(Rcaud, add_output_dir(f'surfaces/sub-{subject}/first_R_Caud.ply'))
 
-    Rhipp = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-R_Hipp_first.vtk')))
-    surf_to_ply(Rhipp, add_subject_dir('surfaces/first_R_Hipp.ply'))
+    Rhipp = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Hipp_first.vtk')))
+    surf_to_ply(Rhipp, add_output_dir(f'surfaces/sub-{subject}/first_R_Hipp.ply'))
 
-    Rpall = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-R_Pall_first.vtk')))
-    surf_to_ply(Rpall, add_subject_dir('surfaces/first_R_Pall.ply'))
+    Rpall = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Pall_first.vtk')))
+    surf_to_ply(Rpall, add_output_dir(f'surfaces/sub-{subject}/first_R_Pall.ply'))
 
-    Rputa = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-R_Puta_first.vtk')))
-    surf_to_ply(Rputa, add_subject_dir('surfaces/first_R_Puta.ply'))
+    Rputa = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Puta_first.vtk')))
+    surf_to_ply(Rputa, add_output_dir(f'surfaces/sub-{subject}/first_R_Puta.ply'))
 
-    Rthal = fix_FIRST_mesh(read_vtk(add_subject_dir('fsl_first/FSL-R_Thal_first.vtk')))
-    surf_to_ply(Rthal, add_subject_dir('surfaces/first_R_Thal.ply'))
+    Rthal = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Thal_first.vtk')))
+    surf_to_ply(Rthal, add_output_dir(f'surfaces/sub-{subject}/first_R_Thal.ply'))
 
 
     # freesurfer surfaces
-    Lwhite = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/surf/lh.white")))
-    surf_to_ply(Lwhite, add_subject_dir('surfaces/freesurfer_lh_white.ply'))
+    Lwhite = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/surf/lh.white")))
+    surf_to_ply(Lwhite, add_output_dir(f'surfaces/sub-{subject}/freesurfer_lh_white.ply'))
 
-    Rwhite = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/surf/rh.white")))
-    surf_to_ply(Rwhite, add_subject_dir('surfaces/freesurfer_rh_white.ply'))
+    Rwhite = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/surf/rh.white")))
+    surf_to_ply(Rwhite, add_output_dir(f'surfaces/sub-{subject}/freesurfer_rh_white.ply'))
 
-    Lgray = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/surf/lh.pial")))
-    surf_to_ply(Lgray, add_subject_dir('surfaces/freesurfer_lh_pial.ply'))
+    Lgray = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/surf/lh.pial")))
+    surf_to_ply(Lgray, add_output_dir(f'surfaces/sub-{subject}/freesurfer_lh_pial.ply'))
 
-    Rgray = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/surf/rh.pial")))
-    surf_to_ply(Rgray, add_subject_dir('surfaces/freesurfer_rh_pial.ply'))
+    Rgray = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/surf/rh.pial")))
+    surf_to_ply(Rgray, add_output_dir(f'surfaces/sub-{subject}/freesurfer_rh_pial.ply'))
 
     Lmiddle = ((Lwhite[0]+Lgray[0])/2, Lwhite[1])
     kwargs = {}
     for nparcels in [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]:
-        labels, _, _ = nib.freesurfer.read_annot(add_subject_dir(f'freesurfer/label/lh.Schaefer2018_{nparcels}Parcels_17Networks_order.annot'))
+        labels, _, _ = nib.freesurfer.read_annot(add_output_dir(f'freesurfer/sub-{subject}/label/lh.Schaefer2018_{nparcels}Parcels_17Networks_order.annot'))
         kwargs[f'original_labels_{nparcels}'] = labels
-    surf_to_ply(Lmiddle, add_subject_dir('surfaces/freesurfer_lh_middle.ply'), volume = nib.freesurfer.io.read_morph_data(add_subject_dir('freesurfer/surf/lh.volume')).astype(float), thickness = nib.freesurfer.io.read_morph_data(add_subject_dir('freesurfer/surf/lh.thickness')).astype(float), **kwargs)
+    surf_to_ply(Lmiddle, add_output_dir(f'surfaces/sub-{subject}/freesurfer_lh_middle.ply'), volume = nib.freesurfer.io.read_morph_data(add_output_dir(f'freesurfer/sub-{subject}/surf/lh.volume')).astype(float), thickness = nib.freesurfer.io.read_morph_data(add_output_dir(f'freesurfer/sub-{subject}/surf/lh.thickness')).astype(float), **kwargs)
 
     Rmiddle = ((Rwhite[0]+Rgray[0])/2, Rwhite[1])
     kwargs = {}
     for nparcels in [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]:
-        labels, _, _ = nib.freesurfer.read_annot(add_subject_dir(f'freesurfer/label/rh.Schaefer2018_{nparcels}Parcels_17Networks_order.annot'))
+        labels, _, _ = nib.freesurfer.read_annot(add_output_dir(f'freesurfer/sub-{subject}/label/rh.Schaefer2018_{nparcels}Parcels_17Networks_order.annot'))
         kwargs[f'original_labels_{nparcels}'] = labels
-    surf_to_ply(Rmiddle, add_subject_dir('surfaces/freesurfer_rh_middle.ply'), volume = nib.freesurfer.io.read_morph_data(add_subject_dir('freesurfer/surf/rh.volume')).astype(float), thickness = nib.freesurfer.io.read_morph_data(add_subject_dir('freesurfer/surf/rh.thickness')).astype(float), **kwargs)
+    surf_to_ply(Rmiddle, add_output_dir(f'surfaces/sub-{subject}/freesurfer_rh_middle.ply'), volume = nib.freesurfer.io.read_morph_data(add_output_dir(f'freesurfer/sub-{subject}/surf/rh.volume')).astype(float), thickness = nib.freesurfer.io.read_morph_data(add_output_dir(f'freesurfer/sub-{subject}/surf/rh.thickness')).astype(float), **kwargs)
     
     
     # BEM surfaces
@@ -405,52 +420,52 @@ if __name__ == "__main__":
     
     # NOTE that this fix is not smart, it does not know where the anatomy is
     # it just inflates enough to get numerical stability in the BEM solver, the surfaces will likely still be crooked
-    brain = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/bem/brain.surf"))))
-    surf_to_ply(brain, add_subject_dir('surfaces/freesurfer_BEM_brain.ply'))
+    brain = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/bem/brain.surf"))))
+    surf_to_ply(brain, add_output_dir(f'surfaces/sub-{subject}/freesurfer_BEM_brain.ply'))
 
-    inner_skull = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/bem/inner_skull.surf"))))
-    surf_to_ply(inner_skull, add_subject_dir('surfaces/freesurfer_BEM_inner_skull.ply'))
+    inner_skull = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/bem/inner_skull.surf"))))
+    surf_to_ply(inner_skull, add_output_dir(f'surfaces/sub-{subject}/freesurfer_BEM_inner_skull.ply'))
 
-    outer_skull = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/bem/outer_skull.surf"))))
+    outer_skull = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/bem/outer_skull.surf"))))
     outer_skull = fix_intersection(inner_skull, outer_skull, min_dist = 4, step_size = 0.1)
-    surf_to_ply(outer_skull, add_subject_dir('surfaces/freesurfer_BEM_outer_skull.ply'))
+    surf_to_ply(outer_skull, add_output_dir(f'surfaces/sub-{subject}/freesurfer_BEM_outer_skull.ply'))
 
-    outer_skin = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_subject_dir("freesurfer/bem/outer_skin.surf"))))
+    outer_skin = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/bem/outer_skin.surf"))))
     outer_skin = fix_intersection(outer_skull, outer_skin, min_dist = 3, step_size = 0.1)
-    surf_to_ply(outer_skin, add_subject_dir('surfaces/freesurfer_BEM_outer_skin.ply'))
+    surf_to_ply(outer_skin, add_output_dir(f'surfaces/sub-{subject}/freesurfer_BEM_outer_skin.ply'))
     
     # MNE scalp
-    scalp = (np.load(add_subject_dir("freesurfer/bem/vertices-scalp.npy")), np.load(add_subject_dir("freesurfer/bem/faces-scalp.npy")))
+    scalp = (np.load(add_output_dir(f"freesurfer/sub-{subject}/bem/vertices-scalp.npy")), np.load(add_output_dir(f"freesurfer/sub-{subject}/bem/faces-scalp.npy")))
     scalp = fix_freesurfer_mesh(scalp)
     scalp = repair_mesh_topology(scalp)
-    surf_to_ply(scalp, add_subject_dir('surfaces/MNE_scalp.ply'))
+    surf_to_ply(scalp, add_output_dir(f'surfaces/sub-{subject}/MNE_scalp.ply'))
 
 
     # charm surfaces
-    surf_to_ply(trimesh.load_mesh(add_subject_dir("simnibs_charm/converted/white.stl")), add_subject_dir("surfaces/charm_white.ply"))
-    surf_to_ply(trimesh.load_mesh(add_subject_dir("simnibs_charm/converted/gray.stl")), add_subject_dir("surfaces/charm_gray.ply"))
-    surf_to_ply(trimesh.load_mesh(add_subject_dir("simnibs_charm/converted/scalp.stl")), add_subject_dir("surfaces/charm_scalp.ply"))
-    surf_to_ply(trimesh.load_mesh(add_subject_dir("simnibs_charm/converted/eyes_balls.stl")), add_subject_dir("surfaces/charm_eyes_balls.ply"))
-    surf_to_ply(trimesh.load_mesh(add_subject_dir("simnibs_charm/converted/eyes_muscles.stl")), add_subject_dir("surfaces/charm_eyes_muscles.ply"))
-    surf_to_ply(trimesh.load_mesh(add_subject_dir("simnibs_charm/converted/CSF.stl")), add_subject_dir("surfaces/charm_CSF.ply"))
-    surf_to_ply(trimesh.load_mesh(add_subject_dir("simnibs_charm/converted/bone_compact.stl")), add_subject_dir("surfaces/charm_bone_compact.ply"))
-    surf_to_ply(trimesh.load_mesh(add_subject_dir("simnibs_charm/converted/bone_spongy.stl")), add_subject_dir("surfaces/charm_bone_spongy.ply"))
-    surf_to_ply(trimesh.load_mesh(add_subject_dir("simnibs_charm/converted/blood.stl")), add_subject_dir("surfaces/charm_blood.ply"))
+    surf_to_ply(trimesh.load_mesh(add_output_dir(f"simnibscharm/sub-{subject}/converted/white.stl")), add_output_dir(f"surfaces/sub-{subject}/charm_white.ply"))
+    surf_to_ply(trimesh.load_mesh(add_output_dir(f"simnibscharm/sub-{subject}/converted/gray.stl")), add_output_dir(f"surfaces/sub-{subject}/charm_gray.ply"))
+    surf_to_ply(trimesh.load_mesh(add_output_dir(f"simnibscharm/sub-{subject}/converted/scalp.stl")), add_output_dir(f"surfaces/sub-{subject}/charm_scalp.ply"))
+    surf_to_ply(trimesh.load_mesh(add_output_dir(f"simnibscharm/sub-{subject}/converted/eyes_balls.stl")), add_output_dir(f"surfaces/sub-{subject}/charm_eyes_balls.ply"))
+    surf_to_ply(trimesh.load_mesh(add_output_dir(f"simnibscharm/sub-{subject}/converted/eyes_muscles.stl")), add_output_dir(f"surfaces/sub-{subject}/charm_eyes_muscles.ply"))
+    surf_to_ply(trimesh.load_mesh(add_output_dir(f"simnibscharm/sub-{subject}/converted/CSF.stl")), add_output_dir(f"surfaces/sub-{subject}/charm_CSF.ply"))
+    surf_to_ply(trimesh.load_mesh(add_output_dir(f"simnibscharm/sub-{subject}/converted/bone_compact.stl")), add_output_dir(f"surfaces/sub-{subject}/charm_bone_compact.ply"))
+    surf_to_ply(trimesh.load_mesh(add_output_dir(f"simnibscharm/sub-{subject}/converted/bone_spongy.stl")), add_output_dir(f"surfaces/sub-{subject}/charm_bone_spongy.ply"))
+    surf_to_ply(trimesh.load_mesh(add_output_dir(f"simnibscharm/sub-{subject}/converted/blood.stl")), add_output_dir(f"surfaces/sub-{subject}/charm_blood.ply"))
 
 
     # hippocampus surfaces
-    surf_to_ply(nib.load(add_subject_dir('hippunfold/surf/sub-subject_hemi-L_space-T1w_den-0p5mm_label-hipp_midthickness.surf.gii')).agg_data(('pointset', 'triangle')), add_subject_dir('surfaces/hippunfold_L_hipp_middle.ply'), thickness = nib.load(add_subject_dir('hippunfold/surf/sub-subject_hemi-L_space-T1w_den-0p5mm_label-hipp_thickness.shape.gii')).darrays[0].data.astype(float), original_labels = nib.load(add_subject_dir('hippunfold/surf/sub-subject_hemi-L_space-T1w_den-0p5mm_label-hipp_atlas-multihist7_subfields.label.gii')).darrays[0].data)
-    surf_to_ply(nib.load(add_subject_dir('hippunfold/surf/sub-subject_hemi-R_space-T1w_den-0p5mm_label-hipp_midthickness.surf.gii')).agg_data(('pointset', 'triangle')), add_subject_dir('surfaces/hippunfold_R_hipp_middle.ply'), thickness = nib.load(add_subject_dir('hippunfold/surf/sub-subject_hemi-R_space-T1w_den-0p5mm_label-hipp_thickness.shape.gii')).darrays[0].data.astype(float), original_labels = nib.load(add_subject_dir('hippunfold/surf/sub-subject_hemi-R_space-T1w_den-0p5mm_label-hipp_atlas-multihist7_subfields.label.gii')).darrays[0].data)
+    surf_to_ply(nib.load(add_output_dir(f'hippunfold/sub-{subject}/surf/sub-subject_hemi-L_space-T1w_den-0p5mm_label-hipp_midthickness.surf.gii')).agg_data(('pointset', 'triangle')), add_output_dir(f'surfaces/sub-{subject}/hippunfold_L_hipp_middle.ply'), thickness = nib.load(add_output_dir(f'hippunfold/sub-{subject}/surf/sub-subject_hemi-L_space-T1w_den-0p5mm_label-hipp_thickness.shape.gii')).darrays[0].data.astype(float), original_labels = nib.load(add_output_dir(f'hippunfold/sub-{subject}/surf/sub-subject_hemi-L_space-T1w_den-0p5mm_label-hipp_atlas-multihist7_subfields.label.gii')).darrays[0].data)
+    surf_to_ply(nib.load(add_output_dir(f'hippunfold/sub-{subject}/surf/sub-subject_hemi-R_space-T1w_den-0p5mm_label-hipp_midthickness.surf.gii')).agg_data(('pointset', 'triangle')), add_output_dir(f'surfaces/sub-{subject}/hippunfold_R_hipp_middle.ply'), thickness = nib.load(add_output_dir(f'hippunfold/sub-{subject}/surf/sub-subject_hemi-R_space-T1w_den-0p5mm_label-hipp_thickness.shape.gii')).darrays[0].data.astype(float), original_labels = nib.load(add_output_dir(f'hippunfold/sub-{subject}/surf/sub-subject_hemi-R_space-T1w_den-0p5mm_label-hipp_atlas-multihist7_subfields.label.gii')).darrays[0].data)
     
     # dentate gyrus surfaces
-    thickness, labels = make_dentate_attributes(*add_subject_dir('hippunfold/LABELS.txt', 'hippunfold/anat/sub-subject_hemi-L_space-cropT1w_desc-subfields_atlas-multihist7_dseg.nii.gz', 'hippunfold/surf/sub-subject_hemi-L_space-T1w_den-0p5mm_label-dentate_midthickness.surf.gii'))
-    surf_to_ply(nib.load(add_subject_dir('hippunfold/surf/sub-subject_hemi-L_space-T1w_den-0p5mm_label-dentate_midthickness.surf.gii')).agg_data(('pointset', 'triangle')), add_subject_dir('surfaces/hippunfold_L_dentate_middle.ply'), thickness = thickness, original_labels = labels)
-    thickness, labels = make_dentate_attributes(*add_subject_dir('hippunfold/LABELS.txt', 'hippunfold/anat/sub-subject_hemi-R_space-cropT1w_desc-subfields_atlas-multihist7_dseg.nii.gz', 'hippunfold/surf/sub-subject_hemi-R_space-T1w_den-0p5mm_label-dentate_midthickness.surf.gii'))
-    surf_to_ply(nib.load(add_subject_dir('hippunfold/surf/sub-subject_hemi-R_space-T1w_den-0p5mm_label-dentate_midthickness.surf.gii')).agg_data(('pointset', 'triangle')), add_subject_dir('surfaces/hippunfold_R_dentate_middle.ply'), thickness = thickness, original_labels = labels)
+    thickness, labels = make_dentate_attributes(*add_output_dir(f'hippunfold/sub-{subject}/LABELS.txt', f'hippunfold/sub-{subject}/anat/sub-subject_hemi-L_space-cropT1w_desc-subfields_atlas-multihist7_dseg.nii.gz', f'hippunfold/sub-{subject}/surf/sub-subject_hemi-L_space-T1w_den-0p5mm_label-dentate_midthickness.surf.gii'))
+    surf_to_ply(nib.load(add_output_dir(f'hippunfold/sub-{subject}/surf/sub-subject_hemi-L_space-T1w_den-0p5mm_label-dentate_midthickness.surf.gii')).agg_data(('pointset', 'triangle')), add_output_dir(f'surfaces/sub-{subject}/hippunfold_L_dentate_middle.ply'), thickness = thickness, original_labels = labels)
+    thickness, labels = make_dentate_attributes(*add_output_dir(f'hippunfold/sub-{subject}/LABELS.txt', f'hippunfold/sub-{subject}/anat/sub-subject_hemi-R_space-cropT1w_desc-subfields_atlas-multihist7_dseg.nii.gz', f'hippunfold/sub-{subject}/surf/sub-subject_hemi-R_space-T1w_den-0p5mm_label-dentate_midthickness.surf.gii'))
+    surf_to_ply(nib.load(add_output_dir(f'hippunfold/sub-{subject}/surf/sub-subject_hemi-R_space-T1w_den-0p5mm_label-dentate_midthickness.surf.gii')).agg_data(('pointset', 'triangle')), add_output_dir(f'surfaces/sub-{subject}/hippunfold_R_dentate_middle.ply'), thickness = thickness, original_labels = labels)
 
     # cerebellum surfaces
-    surf_to_ply(read_vtk(add_subject_dir('cerebellum/nonlinear_Cerebellum_Surf_GM_Labels.vtk')), add_subject_dir('surfaces/cereb_gray.ply'))
-    surf_to_ply(read_vtk(add_subject_dir('cerebellum/nonlinear_Cerebellum_Surf_WM_Labels.vtk')), add_subject_dir('surfaces/cereb_white.ply'))
-    surf_to_ply(read_vtk(add_subject_dir('cerebellum/nonlinear_Cerebellum_Surf_WM_Labels.vtk')), add_subject_dir('surfaces/cereb_inner.ply'))
-    thickness, labels = make_cereb_attributes(add_subject_dir('cerebellum/nonlinear_manifold_Cerebellum_Inner_Surf_With_Features.vtk'))
-    surf_to_ply(read_vtk(add_subject_dir('cerebellum/nonlinear_manifold_Cerebellum_Inner_Surf_With_Features.vtk')), add_subject_dir('surfaces/cereb_inner_processed.ply'), thickness = thickness, original_labels = labels, process = False)
+    surf_to_ply(read_vtk(add_output_dir(f'cerebellum/sub-{subject}/nonlinear_Cerebellum_Surf_GM_Labels.vtk')), add_output_dir(f'surfaces/sub-{subject}/cereb_gray.ply'))
+    surf_to_ply(read_vtk(add_output_dir(f'cerebellum/sub-{subject}/nonlinear_Cerebellum_Surf_WM_Labels.vtk')), add_output_dir(f'surfaces/sub-{subject}/cereb_white.ply'))
+    surf_to_ply(read_vtk(add_output_dir(f'cerebellum/sub-{subject}/nonlinear_Cerebellum_Surf_WM_Labels.vtk')), add_output_dir(f'surfaces/sub-{subject}/cereb_inner.ply'))
+    thickness, labels = make_cereb_attributes(add_output_dir(f'cerebellum/sub-{subject}/nonlinear_manifold_Cerebellum_Inner_Surf_With_Features.vtk'))
+    surf_to_ply(read_vtk(add_output_dir(f'cerebellum/sub-{subject}/nonlinear_manifold_Cerebellum_Inner_Surf_With_Features.vtk')), add_output_dir(f'surfaces/sub-{subject}/cereb_inner_processed.ply'), thickness = thickness, original_labels = labels, process = False)

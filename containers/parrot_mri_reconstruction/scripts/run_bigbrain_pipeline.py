@@ -94,12 +94,19 @@ if __name__ == "__main__":
         formatter_class=argparse.RawTextHelpFormatter
     )
 
-    # 1. Define the Subject Folder Argument
+# 1. Define the Subject Folders Arguments
     parser.add_argument(
-        '--subject_dir', 
+        '--subject', 
         type=str,
         required=True,
-        help='Path to the subject folder (e.g., /SUBJECTS/<subjectname>/)'
+        help='Identifier of the subject (e.g., "01")'
+    )
+        
+    parser.add_argument(
+        '--output_dir', 
+        type=str,
+        required=True,
+        help='Path to the output folder (e.g., /derivatives/)'
     )
 
     # 2. Define the Template Folder Argument
@@ -123,31 +130,32 @@ if __name__ == "__main__":
 
     # set ants number of threads
     os.environ["ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS"] = args.threads
-    subject_folder = args.subject_dir
+    subject = args.subject
+    output_dir = args.output_dir
     bigbrain_scans_folder = args.template_dir
 
     ################## LOAD FILES ########################
     import ants
     
     # load brain stripped T1
-    subject_brain = ants.image_read(os.path.join(subject_folder,'synthstrip/T1_stripped.nii.gz'))
+    subject_brain = ants.image_read(os.path.join(output_dir,f'synthstrip/sub-{subject}/T1_stripped.nii.gz'))
 
     # apply bias field correction and reapply brain mask
     subject_brain = ants.n4_bias_field_correction(subject_brain)
-    subject_brain = subject_brain * ants.image_read(os.path.join(subject_folder,'synthstrip/T1_stripped_mask.nii.gz'))
+    subject_brain = subject_brain * ants.image_read(os.path.join(output_dir,f'synthstrip/sub-{subject}/T1_stripped_mask.nii.gz'))
 
     # save bias field corrected brain
-    ants.image_write(subject_brain, os.path.join(subject_folder,'bigbrain/T1_stripped_N4corrected.nii.gz'))
+    ants.image_write(subject_brain, os.path.join(output_dir,f'bigbrain/sub-{subject}/T1_stripped_N4corrected.nii.gz'))
 
     # load template files
     template_brain = ants.image_read(os.path.join(bigbrain_scans_folder, 'reference_brain.nii.gz'))
 
     ############## RUN REGISTRATIONS #################
     # run affine+nonlinear transform
-    os.mkdir(os.path.join(subject_folder, 'bigbrain/transform_files'))
+    os.mkdir(os.path.join(output_dir, f'bigbrain/sub-{subject}/transform_files'))
 
     print('Running nonlinear registration...')
-    run_multistage_registration(fixed=template_brain, moving=subject_brain, outprefix=os.path.join(subject_folder,'bigbrain/transform_files/'))
+    run_multistage_registration(fixed=template_brain, moving=subject_brain, outprefix=os.path.join(output_dir,f'bigbrain/sub-{subject}/transform_files/'))
 
     ################## APPLY TRANSFORM ###################
     bigbrain_100um_staining = ants.image_read(os.path.join(bigbrain_scans_folder, 'full16_100um_2009b_sym.nii.gz'))
@@ -155,9 +163,9 @@ if __name__ == "__main__":
     warped_bigbrain_100um_staining = ants.apply_transforms(
         fixed=subject_brain,
         moving=bigbrain_100um_staining,
-        transformlist=[os.path.join(subject_folder,'bigbrain/transform_files/0GenericAffine.mat'), os.path.join(subject_folder,'bigbrain/transform_files/1InverseWarp.nii.gz')],
+        transformlist=[os.path.join(output_dir,f'bigbrain/sub-{subject}/transform_files/0GenericAffine.mat'), os.path.join(output_dir,f'bigbrain/sub-{subject}/transform_files/1InverseWarp.nii.gz')],
         whichtoinvert=[True, False],
 	    interpolator='linear'
     )
 
-    ants.image_write(warped_bigbrain_100um_staining, os.path.join(subject_folder,"bigbrain/subject_full16_100um_2009b_sym.nii.gz"))
+    ants.image_write(warped_bigbrain_100um_staining, os.path.join(output_dir,f"bigbrain/sub-{subject}/subject_full16_100um_2009b_sym.nii.gz"))

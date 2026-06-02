@@ -18,9 +18,9 @@ def get_resampled_image(source_path, target_path):
 simnibs_electrical_conductivities = {'Background':0, 'White-Matter':0.126, 'Gray-Matter':0.275, 'CSF':1.654, 'Bone':0.01, 'Scalp':0.465, 'Eye_balls':0.5, 'Compact_bone':0.008, 'Spongy_bone':0.025, 'Blood':0.6, 'Muscle':0.16, 'Saline_or_gel':1.0}
 
 
-def read_charm_labels(subj_dir):
+def read_charm_labels(path):
     
-    with open(os.path.join(subj_dir, 'simnibs_charm/final_tissues_LUT.txt'), 'r') as f:
+    with open(path, 'r') as f:
         labels = f.readlines()
     
     # add background air
@@ -32,11 +32,11 @@ def read_charm_labels(subj_dir):
     
     return labels, LUT
 
-def convert_simnibs_labelfield(subj_dir):
-    labels, LUT = read_charm_labels(subj_dir)
+def convert_simnibs_labelfield():
+    labels, LUT = read_charm_labels(os.path.join(output_dir, f'simnibscharm/sub-{subject}/final_tissues_LUT.txt'))
     label_dict = {val:key for (key, val) in labels.items()}
 
-    label_field = nib.load(os.path.join(subj_dir, 'simnibs_charm/final_tissues.nii.gz'))
+    label_field = nib.load(os.path.join(output_dir, f'simnibscharm/sub-{subject}/final_tissues.nii.gz'))
     field_value = label_field.get_fdata().astype(int)
 
     original_labels = np.unique(field_value)
@@ -52,11 +52,11 @@ def convert_simnibs_labelfield(subj_dir):
     ####################################################
 
     # use white matter from cerebellum stream
-    cereb = get_resampled_image(os.path.join(subj_dir, 'cerebellum/nonlinear_white_labels.nii.gz'), os.path.join(subj_dir, 'simnibs_charm/final_tissues.nii.gz'))
+    cereb = get_resampled_image(os.path.join(output_dir, f'cerebellum/sub-{subject}/nonlinear_white_labels.nii.gz'), os.path.join(output_dir, f'simnibscharm/sub-{subject}/final_tissues.nii.gz'))
     field_value[cereb>0] = final_tissues.index('White-Matter')
 
     # use gray matter from main atlas streams
-    aggregated = get_resampled_image(os.path.join(subj_dir, 'atlas/atlas_aggregated.nii.gz'), os.path.join(subj_dir, 'simnibs_charm/final_tissues.nii.gz'))
+    aggregated = get_resampled_image(os.path.join(output_dir, f'atlas/sub-{subject}/atlas_aggregated.nii.gz'), os.path.join(output_dir, f'simnibscharm/sub-{subject}/final_tissues.nii.gz'))
     field_value[aggregated>0] = final_tissues.index('Gray-Matter') # gray matter
     
     ####################################################
@@ -64,21 +64,21 @@ def convert_simnibs_labelfield(subj_dir):
 
     # save the volume
     label_field = nib.Nifti1Image(field_value, label_field.affine, label_field.header)
-    nib.save(label_field, os.path.join(subj_dir, 'tissue_labels/electrical/simnibs.nii.gz'))
+    nib.save(label_field, os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/simnibs.nii.gz'))
 
     # save the corresponding label file
-    with open(os.path.join(subj_dir, 'tissue_labels/electrical/simnibs_labels.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/simnibs_labels.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             f.write(f'{idx},{tissue}\n')
 
     # save the corresponding LUT file
-    with open(os.path.join(subj_dir, 'tissue_labels/electrical/simnibs_LUT.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/simnibs_LUT.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             old_label = label_dict[tissue]
             f.write(f'{idx}\t{LUT[old_label]['name']}\t{LUT[old_label]['R']}\t{LUT[old_label]['G']}\t{LUT[old_label]['B']}\t{LUT[old_label]['A']}\n')
     
     # save the corresponding conductivities file
-    with open(os.path.join(subj_dir, 'tissue_labels/electrical/simnibs_conductivities.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/simnibs_conductivities.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             f.write(f'{idx},{simnibs_electrical_conductivities[tissue]}\n')
     return
@@ -110,11 +110,11 @@ conductivity_conversion_dict = {'Cerebrum_white_matter':'Brain (White Matter)', 
 # values from https://itis.swiss/virtual-population/tissue-properties/database/low-frequency-conductivity/
 electrical_conductivities = {'Background':	0.00E+0,'Air':	0.00E+0,'Blood':	6.62E-1,'Bone (Cancellous)':	8.05E-2,'Bone (Cortical)':	6.30E-3,'Brain (Grey Matter)':	4.19E-1,'Brain (Grey Matter) x - along':	7.33E-1,'Brain (Grey Matter) y - across':	2.31E-1,'Brain (White Matter)':	3.48E-1,'Brain (White Matter) across fibers':	2.31E-1,'Brain (White Matter) longitudinal (parallel to fibers)':	7.33E-1,'Cartilage':	7.39E-1,'Cerebellum':	5.77E-1,'Cerebrospinal Fluid':	1.88E+0,'Connective Tissue':	7.92E-2,'Dura':	6.00E-2,'Eye (Aqueous Humor)':	1.88E+0,'Eye (Choroid)':	6.62E-1,'Eye (Ciliary Body)':	4.61E-1,'Eye (Cornea)':	6.20E-1,'Eye (Iris)':	4.61E-1,'Eye (Lens)':	3.45E-1,'Eye (Retina)':	4.19E-1,'Eye (Sclera)':	6.20E-1,'Eye (Vitreous Humor)':	2.16E+0,'Eye Lens (Cortex)':	3.40E-1,'Eye Lens (Nucleus)':	1.90E-1,'Fat':	7.76E-2,'Hippocampus':	4.19E-1,'Hypophysis':	1.05E+0,'Hypothalamus':	4.19E-1,'Intervertebral Disc':	7.39E-1,'Midbrain':	3.50E-1,'Mucous Membrane':	4.61E-1,'Muscle':	4.61E-1,'Muscle Parallel':	4.47E-1,'Muscle Perpendicular':	1.21E-1,'Nerve':	3.48E-1,'Nerve - Across':	2.31E-1,'Nerve - Along':	7.33E-1,'SAT (Subcutaneous Fat)':	7.76E-2,'Salivary Gland':	5.59E-1,'Skin':	1.48E-1,'Skull':	1.79E-2,'Skull (Cancellous)':	9.98E-2,'Skull (Cortical)':	6.45E-3,'Skull (Suture Region)':	1.68E-2,'Spinal Cord':	6.11E-1,'Tendon\\Ligament':	3.68E-1,'Thalamus':	4.75E-1,'Thymus':	1.49E-1,'Thyroid Gland':	4.81E-1,'Tongue':	4.61E-1,'Tooth':	6.30E-3,'Tooth (Dentine)':	6.30E-3,'Tooth (Enamel)':	6.30E-3,'Trachea':	3.42E-1,'Vertebrae':	6.30E-3,'Water':	1.62E-3}
 
-def read_Sim4Life_labels(subj_dir, raise_error = True):
+def read_Sim4Life_labels(path, raise_error = True):
     # this function reads the labels of the segmentation and checks if they are as expected (i.e. in the right order)
     # raise_error flag is used to raise an error when the labels are not as expected
     
-    with open(os.path.join(subj_dir, 'tissue_labels/sim4life_raw/label_field.txt'), 'r') as f:
+    with open(path, 'r') as f:
         labels = f.readlines()
 
     # remove header
@@ -143,13 +143,13 @@ def read_Sim4Life_labels(subj_dir, raise_error = True):
 
     return labels, LUT
 
-def convert_sim4life_labelfield(subj_dir):
+def convert_sim4life_labelfield():
     # this function converts the label field generated with sim4life by joining some of the tissues into just one (bringing the total to at most 20 tissues)
     
-    labels, LUT = read_Sim4Life_labels(subj_dir, raise_error = True)
+    labels, LUT = read_Sim4Life_labels(os.path.join(output_dir, f'sim4life/sub-{subject}/label_field.txt'), raise_error = True)
     label_dict = {val:key for (key, val) in labels.items()}
     
-    label_field = nib.load(os.path.join(subj_dir, 'tissue_labels/sim4life_raw/label_field.nii.gz'))
+    label_field = nib.load(os.path.join(output_dir, f'sim4life/sub-{subject}/label_field.nii.gz'))
     field_value = label_field.get_fdata().astype(np.uint8)
     
     # removes some of the labels in the volume by joining it to other tissue types
@@ -173,11 +173,11 @@ def convert_sim4life_labelfield(subj_dir):
     ####################################################
 
     # use white matter from cerebellum stream
-    cereb = get_resampled_image(os.path.join(subj_dir, 'cerebellum/nonlinear_white_labels.nii.gz'), os.path.join(subj_dir, 'tissue_labels/sim4life_raw/label_field.nii.gz'))
+    cereb = get_resampled_image(os.path.join(output_dir, f'cerebellum/sub-{subject}/nonlinear_white_labels.nii.gz'), os.path.join(output_dir, f'sim4life/sub-{subject}/label_field.nii.gz'))
     field_value[cereb>0] = final_tissues.index('Cerebrum_white_matter')
 
     # use gray matter from main atlas streams
-    aggregated = get_resampled_image(os.path.join(subj_dir, 'atlas/atlas_aggregated.nii.gz'), os.path.join(subj_dir, 'tissue_labels/sim4life_raw/label_field.nii.gz'))
+    aggregated = get_resampled_image(os.path.join(output_dir, f'atlas/sub-{subject}/atlas_aggregated.nii.gz'), os.path.join(output_dir, f'sim4life/sub-{subject}/label_field.nii.gz'))
     field_value[aggregated>0] = final_tissues.index('Cerebrum_grey_matter') # gray matter
     field_value[np.isin(aggregated, [22,23])] = final_tissues.index('Thalamus') # thalamus
     field_value[np.isin(aggregated, [9,10])] = final_tissues.index('Hippocampus') # hippocampus
@@ -187,17 +187,17 @@ def convert_sim4life_labelfield(subj_dir):
 
     # save the volume
     label_field = nib.Nifti1Image(field_value, label_field.affine, label_field.header)
-    nib.save(label_field, os.path.join(subj_dir, 'tissue_labels/electrical/sim4life.nii.gz'))
+    nib.save(label_field, os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/sim4life.nii.gz'))
     
     # save the corresponding labels file
-    with open(os.path.join(subj_dir, 'tissue_labels/electrical/sim4life_labels.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/sim4life_labels.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             if tissue in conductivity_conversion_dict.keys():
                 tissue = conductivity_conversion_dict[tissue]
             f.write(f'{idx},{tissue}\n')
     
     # save the corresponding LUT file
-    with open(os.path.join(subj_dir, 'tissue_labels/electrical/sim4life_LUT.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/sim4life_LUT.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             old_label = label_dict[tissue]
             tissue = LUT[old_label]['name']
@@ -206,7 +206,7 @@ def convert_sim4life_labelfield(subj_dir):
             f.write(f'{idx}\t{tissue}\t{LUT[old_label]['R']}\t{LUT[old_label]['G']}\t{LUT[old_label]['B']}\t{LUT[old_label]['A']}\n')
     
     # save the corresponding conductivities file
-    with open(os.path.join(subj_dir, 'tissue_labels/electrical/sim4life_conductivities.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/sim4life_conductivities.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             if tissue in conductivity_conversion_dict.keys():
                 tissue = conductivity_conversion_dict[tissue]
@@ -225,27 +225,35 @@ if __name__ == "__main__":
 
     # 1. Define the Subject Folder Argument
     parser.add_argument(
-        '--subject_dir',
+        '--subject', 
         type=str,
         required=True,
-        help='Path to the subject folder (e.g., /SUBJECTS/<subjectname>/)'
+        help='Subject ID (e.g. "01")'
+    )
+    
+    parser.add_argument(
+        '--output_dir', 
+        type=str,
+        required=True,
+        help='Path to the output folder (e.g., /derivatives/)'
     )
 
     # Parse the arguments from the command line
     args = parser.parse_args()
 
     # Call your main processing function
-    subj_dir = args.subject_dir
+    subject = args.subject
+    output_dir = args.output_dir
 
-    convert_simnibs_labelfield(subj_dir)
+    convert_simnibs_labelfield()
 
-    if os.path.isdir(os.path.join(subj_dir, 'tissue_labels/sim4life_raw')):
+    if os.path.isdir(os.path.join(output_dir, f'sim4life/sub-{subject}')):
         print("Sim4Life tissue labels field folder detected, generating additional label field from it")
-        convert_sim4life_labelfield(subj_dir)
+        convert_sim4life_labelfield()
     else:
         print("Sim4Life tissue labels field folder not detected, will only generate SimNibs label field.")
 
     # save the full ITIS conductivities file
-    with open(os.path.join(subj_dir, 'tissue_labels/electrical/ITIS_conductivities.txt'), 'w') as f:
+    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/ITIS_conductivities.txt'), 'w') as f:
         for key,val in electrical_conductivities.items():
             f.write(f'{key},{val}\n')

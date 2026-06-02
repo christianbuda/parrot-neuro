@@ -11,10 +11,10 @@ import json
 # Force line buffering for standard output
 sys.stdout.reconfigure(line_buffering=True)
 
-def add_subject_dir(*paths):
+def add_output_dir(*paths):
     if len(paths)==1:
-        return os.path.join(subject_dir, paths[0])
-    return tuple([add_subject_dir(x) for x in paths])
+        return os.path.join(output_dir, paths[0])
+    return tuple([add_output_dir(x) for x in paths])
 
 def get_dipole_tissues(dipoles, nodes, elements, labels):
     """
@@ -215,17 +215,17 @@ def avg_ref(mat):
 
 def process_leadfield(leadfield, adjust_volume = True, adjust_density = True, neuronal_strength_dict = None, rereference = True):
     if adjust_volume:
-        volume = np.load(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/dipole_volume.npy'))/1e9 # convert from mm3 to m3, not needed though
+        volume = np.load(add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/dipole_volume.npy'))/1e9 # convert from mm3 to m3, not needed though
         volume = np.repeat(volume, 3)
         leadfield = leadfield*volume
         
     if adjust_density:
-        neuron_density = np.load(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/dipole_neural_density.npy'))
+        neuron_density = np.load(add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/dipole_neural_density.npy'))
         neuron_density = np.repeat(neuron_density, 3)
         leadfield = leadfield*neuron_density
         
     if neuronal_strength_dict is not None:
-        orient_type = np.load(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/orient_type.npy'))
+        orient_type = np.load(add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/orient_type.npy'))
         orient_type = np.repeat(orient_type, 3)
         assert not np.any(np.isin('U', orient_type)), 'ERROR: some orientation type are Unassigned, something went wrong during dipole generation.'
 
@@ -246,13 +246,18 @@ if __name__ == "__main__":
         formatter_class=argparse.RawTextHelpFormatter
     )
 
-    # Define the Subject Folder Argument
     parser.add_argument(
-        '--subject_dir',
+        '--subject',
         type=str,
-        required=False,
-        default='/subject/', # to be used inside container
-        help='Path to the subject folder (e.g., /SUBJECTS/<subjectname>/)'
+        required=True,
+        help='Subject ID (e.g. "01")'
+    )
+
+    parser.add_argument(
+        '--output_dir',
+        type=str,
+        required=True,
+        help='Path to the derivatives folder (e.g., /derivatives/)'
     )
 
     parser.add_argument(
@@ -310,8 +315,8 @@ if __name__ == "__main__":
     # Parse the arguments from the command line
     args = parser.parse_args()
 
-    # Get the base directory from the command line
-    subject_dir = args.subject_dir
+    subject = args.subject
+    output_dir = args.output_dir
     dipole_spacing = args.dipole_spacing
     mesh_path = args.mesh_path
     tissue_names = args.tissue_names
@@ -320,11 +325,11 @@ if __name__ == "__main__":
     valid_tissues = args.valid_tissues
     neuronal_strength_dict = args.neuronal_strength_dict
     
-    nodes, tetrahedra, tissue_label = read_mesh(add_subject_dir(mesh_path))
-    tissue_names = read_tissues(add_subject_dir(tissue_names))
-    conductivities = read_conductivities(add_subject_dir(cond_path))
-    electrodes = read_electrodes(add_subject_dir('electrodes/landmarks_10-5-full.csv'))
-    dipoles = get_dipoles(add_subject_dir(f'dipoles/spacing{dipole_spacing}mm/dipole_positions.npy'), nodes, tetrahedra, tissue_label, tissue_names, valid_tissues)
+    nodes, tetrahedra, tissue_label = read_mesh(mesh_path)
+    tissue_names = read_tissues(tissue_names)
+    conductivities = read_conductivities(cond_path)
+    electrodes = read_electrodes(add_output_dir(f'electrodes/sub-{subject}/landmarks_10-5-full.csv'))
+    dipoles = get_dipoles(add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/dipole_positions.npy'), nodes, tetrahedra, tissue_label, tissue_names, valid_tissues)
 
     config = {
         'type' : 'fitted',
@@ -378,11 +383,11 @@ if __name__ == "__main__":
     # transpose to make it (number_electrodes, number_dipoles)
     leadfield = np.array(leadfield).T
     
-    np.save(add_subject_dir(f'forward_solvers/raw_duneuro{outlabel}-{dipole_spacing}mm-leadfield.npy'), leadfield)
+    np.save(add_output_dir(f'forward_solvers/sub-{subject}/raw_duneuro{outlabel}-{dipole_spacing}mm-leadfield.npy'), leadfield)
     
     print('Processing leadfield...')
     with open(neuronal_strength_dict,'r') as f:
         neuronal_strength_dict = json.load(f)
     
     leadfield = process_leadfield(leadfield, adjust_volume = True, adjust_density = True, neuronal_strength_dict = neuronal_strength_dict, rereference = True)
-    np.save(add_subject_dir(f'leadfields/processed_duneuro{outlabel}-{dipole_spacing}mm-leadfield.npy'), leadfield)
+    np.save(add_output_dir(f'leadfields/sub-{subject}/processed_duneuro{outlabel}-{dipole_spacing}mm-leadfield.npy'), leadfield)

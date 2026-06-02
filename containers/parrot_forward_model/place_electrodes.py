@@ -15,32 +15,39 @@ if __name__ == "__main__":
 
     # 1. Define the Subject Folder Argument
     parser.add_argument(
-        '--subject_dir',
+        '--subject', 
         type=str,
-        required=False,
-        default='/subject/', # to be used inside container
-        help='Path to the subject folder (e.g., /SUBJECTS/<subjectname>/)'
+        required=True,
+        help='Subject ID (e.g. "01")'
+    )
+    
+    parser.add_argument(
+        '--output_dir', 
+        type=str,
+        required=True,
+        help='Path to the output folder (e.g., /derivatives/)'
     )
 
     # Parse the arguments from the command line
     args = parser.parse_args()
 
     # Get the base directory and dipole spacing from the command line
-    subject_dir = args.subject_dir
+    subject = args.subject
+    output_dir = args.output_dir
     
     # make output directory if needed
-    os.makedirs(os.path.join(subject_dir, 'electrodes/'), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, f'electrodes/sub-{subject}/'), exist_ok=True)
     
-    mesh = trimesh.load(os.path.join(subject_dir, 'surfaces/charm_scalp.ply'))
+    mesh = trimesh.load(os.path.join(output_dir, f'surfaces/sub-{subject}/charm_scalp.ply'))
     vertices = np.array(mesh.vertices)
     faces = np.array(mesh.faces)
     
-    if os.path.isfile(os.path.join(subject_dir, 'scalp_landmarks/fiducials.json')):
-        with open(os.path.join(subject_dir, 'scalp_landmarks/fiducials.json'), 'r') as f:
+    if os.path.isfile(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/fiducials.json')):
+        with open(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/fiducials.json'), 'r') as f:
             fiducials = json.load(f)
     else:
         # take simnibs fiducials and dump them in electrodes folder
-        fiducials = np.loadtxt(os.path.join(subject_dir, 'simnibs_charm/eeg_positions/Fiducials.csv'), delimiter=',', dtype=str)
+        fiducials = np.loadtxt(os.path.join(output_dir, f'simnibscharm/sub-{subject}/eeg_positions/Fiducials.csv'), delimiter=',', dtype=str)
         names = fiducials[:,-1].tolist()
         points = fiducials[:,1:-1].astype(float).tolist()
         
@@ -53,8 +60,8 @@ if __name__ == "__main__":
         if 'Iz' in fiducials.keys():
             fiducials['IN'] = fiducials.pop('Iz')
         
-        os.makedirs(os.path.join(subject_dir, 'scalp_landmarks/'), exist_ok=True)
-        with open(os.path.join(subject_dir, 'scalp_landmarks/fiducials.json'), 'w') as f:
+        os.makedirs(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/'), exist_ok=True)
+        with open(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/fiducials.json'), 'w') as f:
             json.dump(fiducials, f)
 
     points = [fiducials['RPA'], fiducials['LPA'], fiducials['NAS'], fiducials['IN']]
@@ -65,16 +72,16 @@ if __name__ == "__main__":
     # place electrodes
     newverts, newfac, all_landmarks = create_standard_montage(vertices, faces, fiducials = (RPA_idx, LPA_idx, NAS_idx, IN_idx), system = '10-5-full', return_indices = True)
 
-    if os.path.isfile(os.path.join(subject_dir, 'scalp_landmarks/outlines.npy')):
-        outlines = np.load(os.path.join(subject_dir, 'scalp_landmarks/outlines.npy'))
+    if os.path.isfile(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/outlines.npy')):
+        outlines = np.load(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/outlines.npy'))
         selected_landmarks = select_feasible_positions(newverts, newfac, outlines = outlines, landmarks = all_landmarks, positions = None, project_outlines = True)
     else:
         selected_landmarks = all_landmarks
 
 
-    with open(os.path.join(subject_dir, 'electrodes/landmarks_10-5-full.csv'), 'w') as f:
+    with open(os.path.join(output_dir, f'electrodes/sub-{subject}/landmarks_10-5-full.csv'), 'w') as f:
         for key, val in all_landmarks.items():
             f.write(f'{key}, {newverts[val][0]}, {newverts[val][1]}, {newverts[val][2]}\n')
 
-    with open(os.path.join(subject_dir, 'electrodes/selected_landmarks_10-5-full.json'), 'w') as f:
+    with open(os.path.join(output_dir, f'electrodes/sub-{subject}/selected_landmarks_10-5-full.json'), 'w') as f:
         json.dump([key for key in all_landmarks.keys() if key in selected_landmarks.keys()], f)
