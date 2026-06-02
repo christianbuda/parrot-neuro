@@ -760,6 +760,14 @@ if __name__ == "__main__":
         help='Spacing between dipoles, in mm (typical values range from 1 to 10)'
     )
 
+    parser.add_argument(
+        '--seed',
+        type=int,
+        required=False,
+        default=None,
+        help='Random seed for reproducible dipole sampling (omit for random)'
+    )
+
     # Parse the arguments from the command line
     args = parser.parse_args()
 
@@ -767,15 +775,15 @@ if __name__ == "__main__":
     subject = args.subject
     output_dir = args.output_dir
     dipole_spacing = args.dipole_spacing
-    
+
     # make output directory if needed
     os.makedirs(add_output_dir(f'dipoles/sub-{subject}/'), exist_ok=True)
-    
+
     if os.path.isdir(add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/')):
         print(f'WARNING: Dipoles at {dipole_spacing} mm spacing already detected in subject folder, skipped computation.')
     else:
         # load random number generator
-        generator = np.random.default_rng()
+        generator = np.random.default_rng(args.seed)
 
         # sample dipoles
         surface_dipoles_dict = sample_all_surfaces(get_instruction_files('surfaces'), dipole_spacing, generator = generator)

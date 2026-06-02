@@ -79,6 +79,7 @@ if __name__ == "__main__":
     nii_file = nib.load(input)
 
     label_field_data = nii_file.get_fdata().squeeze()
+    assert label_field_data.max() <= 255, f"Label IDs exceed uint8 range (max={int(label_field_data.max())}); INR conversion would corrupt data."
     label_field_data = label_field_data.astype(np.uint8)
 
     voxel_size = nii_file.header.get_zooms()

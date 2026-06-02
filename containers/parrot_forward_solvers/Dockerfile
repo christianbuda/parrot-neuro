@@ -32,9 +32,14 @@ WORKDIR /duneci/modules
 # Pull the stable 2.10 release of dune-pdelab
 RUN git clone --branch releases/2.10 https://gitlab.dune-project.org/pdelab/dune-pdelab.git 
 
-# Pull the latest duneuro and duneuro-py 
+# Pin duneuro and duneuro-py to specific tested commits for reproducibility.
+# duneuro:    8f344b4da9c128ddf3e47af5ec136d05a3aeb162
+# duneuro-py: bb9f5e609055001857b230d1c59c55e86799fabf
 RUN git clone https://gitlab.dune-project.org/duneuro/duneuro.git && \
-    git clone --recursive https://gitlab.dune-project.org/duneuro/duneuro-py.git
+    cd duneuro && git checkout 8f344b4da9c128ddf3e47af5ec136d05a3aeb162 && cd .. && \
+    git clone https://gitlab.dune-project.org/duneuro/duneuro-py.git && \
+    cd duneuro-py && git checkout bb9f5e609055001857b230d1c59c55e86799fabf && \
+    git submodule update --init --recursive
 
 # --- 4. Compile DUNEuro ---
 RUN ./dune-common/bin/dunecontrol --opts=/duneci/dune.opts --builddir=$(pwd)/build-release all

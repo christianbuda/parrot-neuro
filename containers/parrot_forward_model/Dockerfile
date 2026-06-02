@@ -1,5 +1,5 @@
 # --- Builder Stage ---
-FROM debian:trixie-slim AS builder
+FROM debian:trixie-20260518-slim AS builder
 
 # 1. Install system dependencies
 RUN apt-get update && apt-get install -y \

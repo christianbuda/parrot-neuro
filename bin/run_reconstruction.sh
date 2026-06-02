@@ -40,6 +40,7 @@ usage() {
     echo "  --spacing-openmeeg         Dipole spacing (mm) for the OpenMEEG BEM solver (Default: 4)."
     echo "  --spacing-duneuro-simnibs  Dipole spacing (mm) for DUNEuro FEM with SimNIBS mesh (Default: 3)."
     echo "  --spacing-duneuro-cgal     Dipole spacing (mm) for DUNEuro FEM with CGAL mesh (Default: 2)."
+    echo "  --dipole-seed              Integer seed for reproducible dipole sampling (Default: unset = random)."
     exit 1
 }
 
@@ -72,6 +73,7 @@ GPU_OPT="all"
 SPACING_OPENMEEG=4
 SPACING_DUNEURO_SIMNIBS=3
 SPACING_DUNEURO_CGAL=2
+DIPOLE_SEED=""
 
 while [[ $# -gt 0 ]]; do
     key="$1"
@@ -101,6 +103,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --spacing-duneuro-cgal)
             SPACING_DUNEURO_CGAL="$2"
+            shift 2
+            ;;
+        --dipole-seed)
+            DIPOLE_SEED="$2"
             shift 2
             ;;
         -h|--help)
@@ -619,13 +625,9 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
             echo "Placing dipoles at $spacing mm spacing..."
 
             step_start=$(date +%s)
-            run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}-${spacing}mm_log.txt" "$DOCKER_IMAGE" "python place_dipoles.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing"
+            run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}-${spacing}mm_log.txt" "$DOCKER_IMAGE" "python place_dipoles.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
             step_end=$(date +%s)
 
-
-            duration=$(( end - start ))
-            hours=$(( duration / 3600 ))
-            minutes=$(( (duration % 3600) / 60 ))
 
             echo "$NAME at $spacing mm spacing completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
         else
@@ -647,7 +649,13 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
 
         # parse parameters file
         if [ ! -f "$CONFIG_FILE" ]; then echo "Error: $CONFIG_FILE not found!"; exit 1; fi
-        eval $(awk '/^(ANGLE|DIST|DEF_SURF|DEF_VOL|RATIO|SMOOTH|OPT_TIME)/ {print $1"="$2}' "$CONFIG_FILE")
+        ANGLE=$(awk    '/^ANGLE[[:space:]]/    {print $2; exit}' "$CONFIG_FILE")
+        DIST=$(awk     '/^DIST[[:space:]]/     {print $2; exit}' "$CONFIG_FILE")
+        DEF_SURF=$(awk '/^DEF_SURF[[:space:]]/ {print $2; exit}' "$CONFIG_FILE")
+        DEF_VOL=$(awk  '/^DEF_VOL[[:space:]]/  {print $2; exit}' "$CONFIG_FILE")
+        RATIO=$(awk    '/^RATIO[[:space:]]/    {print $2; exit}' "$CONFIG_FILE")
+        SMOOTH=$(awk   '/^SMOOTH[[:space:]]/   {print $2; exit}' "$CONFIG_FILE")
+        OPT_TIME=$(awk '/^OPT_TIME[[:space:]]/ {print $2; exit}' "$CONFIG_FILE")
         TISSUE_ARGS=($(awk '/^[[:space:]]*[0-9]/ {print $1":"$2":"$3}' "$CONFIG_FILE"))
 
         step_start=$(date +%s)
