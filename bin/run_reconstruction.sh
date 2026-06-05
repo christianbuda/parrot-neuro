@@ -707,6 +707,46 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     fi
 
     # ---------------------------------------------------------
+    # CONNECTIVITY
+    # ---------------------------------------------------------
+    # No DWI  -> copy the group-average template connectome (no container).
+    # With DWI -> build the per-subject connectivity atlases here; tractography
+    #             (QSIRecon) and the connectome matrices (tck2connectome) are
+    #             produced by the following stages, each with its own log guard.
+    NAME="connectivity"
+    mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
+    if [ "$HAS_DWI" = false ]; then
+        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+            echo "Running $NAME (no DWI -> template connectome)..." | tee -a "$LOG_FILE"
+            step_start=$(date +%s)
+
+            cp "$PARROT_SCRIPT_DIR"/template_data/connectivity/* \
+               "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/" 2> "$LOG_DIR/${NAME}_log.txt"
+            check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt"
+            echo "Copied template connectome to sub-${SUBJECT}." >> "$LOG_DIR/${NAME}_log.txt"
+
+            step_end=$(date +%s)
+            echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+        else
+            echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+        fi
+    else
+        # Atlas preparation (subject atlas already in T1w space -> no registration).
+        if [ ! -f "$LOG_DIR/${NAME}-atlas_log.txt" ]; then
+            echo "Running $NAME atlas preparation..." | tee -a "$LOG_FILE"
+            step_start=$(date +%s)
+
+            run_in_docker_MRI "$NAME-atlas" "$LOG_DIR/${NAME}-atlas_log.txt" \
+                "micromamba run -n neuro python /scripts/prepare_connectivity_atlas.py --output_dir /derivatives --subject $SUBJECT"
+
+            step_end=$(date +%s)
+            echo "$NAME atlas preparation completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+        else
+            echo "$NAME atlas log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+        fi
+    fi
+
+    # ---------------------------------------------------------
     # ---------------------------------------------------------
     # PARROT FORWARD MODEL
     # ---------------------------------------------------------
