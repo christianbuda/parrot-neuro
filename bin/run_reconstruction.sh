@@ -41,6 +41,7 @@ usage() {
     echo "  --spacing-duneuro-simnibs  Dipole spacing (mm) for DUNEuro FEM with SimNIBS mesh (Default: 3)."
     echo "  --spacing-duneuro-cgal     Dipole spacing (mm) for DUNEuro FEM with CGAL mesh (Default: 2)."
     echo "  --dipole-seed              Integer seed for reproducible dipole sampling (Default: unset = random)."
+    echo "  --dwi-preprocessed         Treat the BIDS dwi/ data as already corrected and skip QSIPrep (e.g. HCP)."
     exit 1
 }
 
@@ -77,6 +78,7 @@ SPACING_OPENMEEG=4
 SPACING_DUNEURO_SIMNIBS=3
 SPACING_DUNEURO_CGAL=2
 DIPOLE_SEED=""
+DWI_PREPROCESSED=false
 
 while [[ $# -gt 0 ]]; do
     key="$1"
@@ -111,6 +113,10 @@ while [[ $# -gt 0 ]]; do
         --dipole-seed)
             DIPOLE_SEED="$2"
             shift 2
+            ;;
+        --dwi-preprocessed)
+            DWI_PREPROCESSED=true
+            shift
             ;;
         -h|--help)
             usage
@@ -264,6 +270,36 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     elif [ -n "$FLAIR_PATH" ]; then
         FLAIR_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$FLAIR_PATH")"
         fs_args=("-FLAIR" "$FLAIR_DOCKER" "-FLAIRpial")
+    fi
+
+    # ---------------------------------------------------------
+    # Auto-Discover Diffusion (DWI) — optional
+    # ---------------------------------------------------------
+    # DWI drives subject-specific structural connectivity. It is optional: with
+    # no usable DWI the pipeline degrades gracefully to the template connectome.
+    # Single user-facing input location is the BIDS dwi/ folder (the same whether
+    # or not --dwi-preprocessed is set); the flag only toggles whether QSIPrep
+    # correction runs.
+    DWI_PATH=$(find "$SUB_BIDS_DIR/dwi" -name "sub-${SUBJECT}*_dwi.nii.gz" 2>/dev/null | head -n 1)
+    HAS_DWI=false
+    if [ -n "$DWI_PATH" ]; then
+        BVAL_PATH="${DWI_PATH%.nii.gz}.bval"
+        BVEC_PATH="${DWI_PATH%.nii.gz}.bvec"
+        if [ -f "$BVAL_PATH" ] && [ -f "$BVEC_PATH" ]; then
+            HAS_DWI=true
+            DWI_DOCKER="/bids/sub-${SUBJECT}/dwi/$(basename "$DWI_PATH")"
+            if [ "$DWI_PREPROCESSED" = true ]; then
+                echo "Found DWI (flagged already-preprocessed): $DWI_PATH" | tee -a "$LOG_FILE"
+            else
+                echo "Found DWI: $DWI_PATH" | tee -a "$LOG_FILE"
+            fi
+        else
+            echo "[WARN] DWI found but .bval/.bvec missing alongside it; treating sub-${SUBJECT} as no-DWI." | tee -a "$LOG_FILE"
+        fi
+    fi
+
+    if [ "$DWI_PREPROCESSED" = true ] && [ "$HAS_DWI" = false ]; then
+        echo "[WARN] --dwi-preprocessed set but no usable DWI found for sub-${SUBJECT}; falling back to template connectome." | tee -a "$LOG_FILE"
     fi
 
     # TSV Overrides
