@@ -49,7 +49,11 @@ RUN wget -qO /tmp/fs.deb https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/
     && rm /tmp/fs.deb
 
 ENV FREESURFER_HOME=/usr/local/freesurfer/8.1.0
-RUN bash -c "yes y | $FREESURFER_HOME/bin/fs_install_cuda"
+
+RUN $FREESURFER_HOME/python/bin/python3 -m pip install --upgrade pip \
+    && bash -c "yes y | PIP_DEFAULT_TIMEOUT=1000 $FREESURFER_HOME/bin/fs_install_cuda"
+
+#RUN bash -c "yes y | $FREESURFER_HOME/bin/fs_install_cuda"
 
 # install fsl
 RUN wget -qO /tmp/getfsl.sh https://fsl.fmrib.ox.ac.uk/fsldownloads/fslconda/releases/getfsl.sh
@@ -98,6 +102,11 @@ RUN micromamba create -y -n neuro -c conda-forge \
     && micromamba clean --all --yes \
     && rm -rf /opt/conda/pkgs/*
 ENV PATH="/opt/conda/envs/neuro/bin:$PATH"
+
+RUN micromamba create -y -n mrtrix -c conda-forge -c MRtrix3 \
+    mrtrix3 libstdcxx-ng \
+    && micromamba clean --all --yes \
+    && rm -rf /opt/conda/pkgs/*
 
 # copy essential files
 RUN wget -qO /tmp/cerebellum.tar.gz "https://github.com/christianbuda/parrot-neuro/releases/download/cerebellum_template/cerebellum_template.tar.gz" \
