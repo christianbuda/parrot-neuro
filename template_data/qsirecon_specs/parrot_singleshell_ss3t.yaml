@@ -1,0 +1,51 @@
+# Parrot custom QSIRecon spec -- single-shell SS3T-CSD tractography.
+#
+# Derived from the built-in mrtrix_singleshell_ss3t_ACT-hsvs, with the
+# `connectivity` node removed (we run tck2connectome with the per-subject
+# Parrot atlas). The leading `select_gradients` node keeps the b0 + the single
+# highest non-zero shell, as SS3T requires. The tractography node carries a
+# `qsirecon_suffix`, which makes QSIRecon export the .tck.gz tractogram + SIFT2
+# streamline weights (.csv) + mu factor for tck2connectome.
+anatomical:
+  - mrtrix_5tt_hsvs
+name: parrot_singleshell_ss3t
+space: T1w
+nodes:
+  - action: select_gradients
+    input: qsirecon
+    name: select_single_shell
+    parameters:
+      requested_shells:
+        - 0
+        - highest
+      bval_distance_cutoff: 100
+  - action: csd
+    input: select_single_shell
+    name: ss3t_csd
+    software: MRTrix3
+    qsirecon_suffix: Parrot
+    parameters:
+      response:
+        algorithm: dhollander
+      fod:
+        algorithm: ss3t
+      mtnormalize: true
+  - action: tractography
+    input: ss3t_csd
+    name: track_ifod2
+    software: MRTrix3
+    qsirecon_suffix: Parrot
+    parameters:
+      use_5tt: true
+      method_5tt: hsvs
+      use_sift2: true
+      sift2: {}
+      tckgen:
+        algorithm: iFOD2
+        select: 10000000
+        backtrack: true
+        crop_at_gmwmi: true
+        max_length: 250
+        min_length: 30
+        power: 0.33
+        quiet: true

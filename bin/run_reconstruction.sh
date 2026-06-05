@@ -707,6 +707,89 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     fi
 
     # ---------------------------------------------------------
+    # QSIRECON (TRACTOGRAPHY)
+    # ---------------------------------------------------------
+    # Optional. Selects an MRtrix recon spec adaptively from the .bval shell
+    # scheme and exports the tractogram + SIFT2 weights for tck2connectome (run
+    # in the connectivity stage). A too-sparse scheme -> skip (template fallback).
+    # The --dwi-preprocessed (HCP, --input-type hcpya) path is not wired yet.
+    NAME="qsirecon"
+    if [ "$HAS_DWI" = true ] && [ "$DWI_PREPROCESSED" = false ]; then
+        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+            echo "Running $NAME (tractography)..." | tee -a "$LOG_FILE"
+            step_start=$(date +%s)
+
+            if [ ! -d "$OUTPUT_DIR/qsiprep/sub-${SUBJECT}" ]; then
+                echo "[WARN] $NAME: no QSIPrep output for sub-${SUBJECT}; skipping (template fallback)." | tee -a "$LOG_FILE"
+            else
+                # Adaptive recon-spec selection from the acquisition shell scheme:
+                # >=2 non-zero shells -> MSMT; 1 shell with >=28 dirs -> SS3T; else skip.
+                BVAL_DOCKER="${DWI_DOCKER%.nii.gz}.bval"
+                RECON_CHOICE=$(docker run --rm --entrypoint micromamba \
+                    -v "$BIDS_DIR":/bids:ro \
+                    "$IMG_MRI_RECONSTRUCTION" \
+                    run -n neuro python -c "
+import numpy as np
+b=np.atleast_1d(np.loadtxt('$BVAL_DOCKER'))
+nz=np.sort(b[b>=100]); sh=[]
+for v in nz:
+    if not sh or v-sh[-1][0]>100: sh.append([v])
+    else: sh[-1].append(v)
+print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 'none'))
+" 2>/dev/null)
+
+                case "$RECON_CHOICE" in
+                    msmt) SPEC=parrot_multishell_msmt.yaml ;;
+                    ss3t) SPEC=parrot_singleshell_ss3t.yaml ;;
+                    *)    SPEC="" ;;
+                esac
+
+                if [ -z "$SPEC" ]; then
+                    echo "[WARN] $NAME: shell scheme insufficient for tractography (choice='$RECON_CHOICE'); skipping (template fallback)." | tee -a "$LOG_FILE"
+                    echo "Skipped: insufficient shell scheme (choice='$RECON_CHOICE')." > "$LOG_DIR/${NAME}_log.txt"
+                else
+                    echo "Selected recon spec: $SPEC (shell choice '$RECON_CHOICE')." | tee -a "$LOG_FILE"
+                    mkdir -p "$WORK_DIR/qsirecon_out"
+
+                    # QSIRecon reuses our FreeSurfer (ACT-hsvs); persistent TemplateFlow
+                    # cache; --user avoids root-owned outputs. Output lands under the
+                    # ephemeral work dir, then we relocate the results into place.
+                    docker run --rm $DOCKER_GPU --user "$(id -u):$(id -g)" \
+                        -e TEMPLATEFLOW_HOME=/templateflow \
+                        -v "$TEMPLATEFLOW_DIR":/templateflow \
+                        -v "$PARROT_SCRIPT_DIR/template_data/qsirecon_specs":/specs:ro \
+                        -v "$BIDS_DIR":/bids:ro \
+                        -v "$OUTPUT_DIR":/derivatives \
+                        "$IMG_QSIRECON" \
+                        /derivatives/qsiprep "$WORK_DIR_DOCKER/qsirecon_out" participant \
+                        --participant-label "$SUBJECT" \
+                        --recon-spec "/specs/$SPEC" \
+                        --input-type qsiprep \
+                        --fs-subjects-dir /derivatives/freesurfer \
+                        --fs-license-file /bids/license.txt \
+                        --nprocs "$N_THREADS" \
+                        -w "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt" 2>&1
+                    check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME"
+
+                    # QSIRecon writes to <out>/derivatives/qsirecon-Parrot/; relocate the
+                    # results into derivatives/qsirecon/ (the rest -- logs, nested
+                    # derivatives -- stays in the ephemeral work dir and is swept on exit).
+                    rm -rf "$OUTPUT_DIR/$NAME"
+                    mv "$WORK_DIR/qsirecon_out/derivatives/qsirecon-Parrot" "$OUTPUT_DIR/$NAME"
+                    check_step $? "$NAME relocation" "$LOG_DIR/${NAME}_log.txt"
+                fi
+            fi
+
+            step_end=$(date +%s)
+            echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+        else
+            echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+        fi
+    elif [ "$HAS_DWI" = true ] && [ "$DWI_PREPROCESSED" = true ]; then
+        echo "$NAME skipped for sub-${SUBJECT} (--dwi-preprocessed HCP/hcpya path not yet implemented; template fallback)." | tee -a "$LOG_FILE"
+    fi
+
+    # ---------------------------------------------------------
     # CONNECTIVITY
     # ---------------------------------------------------------
     # No DWI  -> copy the group-average template connectome (no container).

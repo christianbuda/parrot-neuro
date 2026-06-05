@@ -13,6 +13,7 @@
 IMG_FASTSURFER="deepmi/fastsurfer:latest"
 IMG_HIPPUNFOLD="khanlab/hippunfold:latest"
 IMG_QSIPREP="pennlinc/qsiprep:latest"
+IMG_QSIRECON="pennlinc/qsirecon:latest"
 
 # Parrot images: built and published by bin/build.sh.
 IMG_MRI_RECONSTRUCTION="christianbuda/parrot_mri_reconstruction:latest"
@@ -27,6 +28,7 @@ EXTERNAL_IMAGES=(
     "$IMG_FASTSURFER"
     "$IMG_HIPPUNFOLD"
     "$IMG_QSIPREP"
+    "$IMG_QSIRECON"
 )
 
 # Parrot images as "image_tag|build_context"; the Dockerfile is taken from

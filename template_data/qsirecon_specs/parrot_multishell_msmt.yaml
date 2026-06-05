@@ -1,0 +1,45 @@
+# Parrot custom QSIRecon spec -- multi-shell MSMT-CSD tractography.
+#
+# Derived from the built-in mrtrix_multishell_msmt_ACT-hsvs, with the
+# `connectivity` node removed: we run tck2connectome ourselves with the
+# per-subject Parrot atlas (QSIRecon's connectivity node only targets its own
+# template atlases). The tractography node keeps a `qsirecon_suffix`, which is
+# what makes QSIRecon export the .tck.gz tractogram + the SIFT2 streamline
+# weights (.csv) + the mu normalisation factor -- exactly the inputs
+# tck2connectome needs.
+anatomical:
+  - mrtrix_5tt_hsvs
+name: parrot_multishell_msmt
+space: T1w
+nodes:
+  - action: csd
+    input: qsirecon
+    name: msmt_csd
+    software: MRTrix3
+    qsirecon_suffix: Parrot
+    parameters:
+      response:
+        algorithm: dhollander
+      fod:
+        algorithm: msmt_csd
+        max_sh: [8, 8, 8]
+      mtnormalize: true
+  - action: tractography
+    input: msmt_csd
+    name: track_ifod2
+    software: MRTrix3
+    qsirecon_suffix: Parrot
+    parameters:
+      use_5tt: true
+      method_5tt: hsvs
+      use_sift2: true
+      sift2: {}
+      tckgen:
+        algorithm: iFOD2
+        select: 10000000
+        backtrack: true
+        crop_at_gmwmi: true
+        max_length: 250
+        min_length: 30
+        power: 0.33
+        quiet: true
