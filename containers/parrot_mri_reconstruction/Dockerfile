@@ -103,11 +103,6 @@ RUN micromamba create -y -n neuro -c conda-forge \
     && rm -rf /opt/conda/pkgs/*
 ENV PATH="/opt/conda/envs/neuro/bin:$PATH"
 
-RUN micromamba create -y -n mrtrix -c conda-forge -c MRtrix3 \
-    mrtrix3 libstdcxx-ng \
-    && micromamba clean --all --yes \
-    && rm -rf /opt/conda/pkgs/*
-
 # copy essential files
 RUN wget -qO /tmp/cerebellum.tar.gz "https://github.com/christianbuda/parrot-neuro/releases/download/cerebellum_template/cerebellum_template.tar.gz" \
     && tar -xzf /tmp/cerebellum.tar.gz -C /home \

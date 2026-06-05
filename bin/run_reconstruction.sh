@@ -792,28 +792,21 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # ---------------------------------------------------------
     # CONNECTIVITY
     # ---------------------------------------------------------
-    # No DWI  -> copy the group-average template connectome (no container).
-    # With DWI -> build the per-subject connectivity atlases here; tractography
-    #             (QSIRecon) and the connectome matrices (tck2connectome) are
-    #             produced by the following stages, each with its own log guard.
+    # DWI present and tractography succeeded -> subject connectome:
+    #   atlas preparation  +  tck2connectome (run in the QSIRecon image).
+    # No DWI, or DWI too sparse for tractography -> group-average template
+    # connectome. Each sub-step has its own log guard.
     NAME="connectivity"
     mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
-    if [ "$HAS_DWI" = false ]; then
-        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-            echo "Running $NAME (no DWI -> template connectome)..." | tee -a "$LOG_FILE"
-            step_start=$(date +%s)
 
-            cp "$PARROT_SCRIPT_DIR"/template_data/connectivity/* \
-               "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/" 2> "$LOG_DIR/${NAME}_log.txt"
-            check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt"
-            echo "Copied template connectome to sub-${SUBJECT}." >> "$LOG_DIR/${NAME}_log.txt"
+    # Did QSIRecon produce a tractogram for this subject?
+    HAVE_TRACKS=false
+    if [ "$HAS_DWI" = true ] && \
+       compgen -G "$OUTPUT_DIR/qsirecon/sub-${SUBJECT}/dwi/"*streamlines.tck.gz > /dev/null 2>&1; then
+        HAVE_TRACKS=true
+    fi
 
-            step_end=$(date +%s)
-            echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
-        else
-            echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
-        fi
-    else
+    if [ "$HAS_DWI" = true ]; then
         # Atlas preparation (subject atlas already in T1w space -> no registration).
         if [ ! -f "$LOG_DIR/${NAME}-atlas_log.txt" ]; then
             echo "Running $NAME atlas preparation..." | tee -a "$LOG_FILE"
@@ -826,6 +819,43 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
             echo "$NAME atlas preparation completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
         else
             echo "$NAME atlas log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+        fi
+    fi
+
+    if [ "$HAVE_TRACKS" = true ]; then
+        # Connectome matrices via tck2connectome, run in the QSIRecon image (same
+        # MRtrix3 that generated the tracks). --user keeps outputs user-owned.
+        if [ ! -f "$LOG_DIR/${NAME}-matrices_log.txt" ]; then
+            echo "Running $NAME matrices (tck2connectome)..." | tee -a "$LOG_FILE"
+            step_start=$(date +%s)
+
+            docker run --rm --user "$(id -u):$(id -g)" \
+                -v "$OUTPUT_DIR":/derivatives \
+                -v "$PARROT_SCRIPT_DIR/bin/make_connectomes.sh":/make_connectomes.sh:ro \
+                --entrypoint bash "$IMG_QSIRECON" \
+                /make_connectomes.sh "$SUBJECT" > "$LOG_DIR/${NAME}-matrices_log.txt" 2>&1
+            check_step $? "$NAME matrices" "$LOG_DIR/${NAME}-matrices_log.txt"
+
+            step_end=$(date +%s)
+            echo "$NAME matrices completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+        else
+            echo "$NAME matrices log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+        fi
+    else
+        # No DWI, or DWI too sparse -> group-average template connectome.
+        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+            echo "Running $NAME (template connectome fallback)..." | tee -a "$LOG_FILE"
+            step_start=$(date +%s)
+
+            cp "$PARROT_SCRIPT_DIR"/template_data/connectivity/* \
+               "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/" 2> "$LOG_DIR/${NAME}_log.txt"
+            check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt"
+            echo "Copied template connectome to sub-${SUBJECT}." >> "$LOG_DIR/${NAME}_log.txt"
+
+            step_end=$(date +%s)
+            echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+        else
+            echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
         fi
     fi
 
