@@ -47,6 +47,9 @@ usage() {
 # Get the absolute directory of parrot
 PARROT_SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." &> /dev/null && pwd )"
 
+# Docker image definitions (single source of truth, shared with bin/build.sh)
+source "$PARROT_SCRIPT_DIR/bin/images.sh"
+
 # =============================================================================
 # 1. PARSE POSITIONAL BIDS ARGUMENTS
 # =============================================================================
@@ -141,6 +144,26 @@ else
     fi
 fi
 
+# Ensure required Docker images are present (pull any that are missing).
+# Image list comes from bin/images.sh; this replaces the old standalone setup.sh.
+ALL_IMAGES=("${EXTERNAL_IMAGES[@]}")
+for entry in "${PARROT_IMAGES[@]}"; do
+    ALL_IMAGES+=("${entry%%|*}")
+done
+
+echo "Checking required Docker images..."
+for img in "${ALL_IMAGES[@]}"; do
+    if [[ -z "$(docker images -q "$img" 2> /dev/null)" ]]; then
+        echo "  Missing $img - pulling (this may take a while)..."
+        if ! docker pull "$img"; then
+            echo "ERROR: Failed to pull $img"
+            exit 1
+        fi
+    else
+        echo "  Found $img"
+    fi
+done
+
 # Auto-discover participants if none were provided
 if [ ${#PARTICIPANTS[@]} -eq 0 ]; then
     echo "No participant labels provided. Scanning $BIDS_DIR for subjects..."
@@ -174,7 +197,7 @@ run_in_docker_MRI() {
     docker run --rm $DOCKER_GPU --entrypoint /bin/bash \
         -v "$BIDS_DIR":/bids:ro \
         -v "$OUTPUT_DIR":/derivatives \
-        "christianbuda/parrot_mri_reconstruction:latest" \
+        "$IMG_MRI_RECONSTRUCTION" \
         -c "source /scripts/source_env.sh && $cmd" > "$log_file" 2>&1
         
     check_step $? "$step_name" "$log_file"
@@ -276,7 +299,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         docker run $DOCKER_GPU --rm --user $(id -u):$(id -g) \
             -v "$BIDS_DIR":/data:ro \
             -v "$OUTPUT_DIR/$NAME":/output \
-            deepmi/fastsurfer:latest \
+            "$IMG_FASTSURFER" \
             --fs_license /data/license.txt \
             --t1 "/data/sub-${SUBJECT}/anat/$(basename "$T1_PATH")" \
             --sid "sub-${SUBJECT}" \
@@ -303,7 +326,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         docker run -it --rm \
             -v "$BIDS_DIR":/bids:ro \
             -v "$OUTPUT_DIR/$NAME":/output \
-            khanlab/hippunfold:latest \
+            "$IMG_HIPPUNFOLD" \
             /bids /output participant \
             --participant_label "$SUBJECT" \
             --modality T1w --cores "$N_THREADS" > "$LOG_DIR/${NAME}_log.txt" 2>&1
@@ -575,7 +598,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # PARROT FORWARD MODEL
     # ---------------------------------------------------------
     # ---------------------------------------------------------
-    DOCKER_IMAGE="christianbuda/parrot_forward_model:latest"
+    DOCKER_IMAGE="$IMG_FORWARD_MODEL"
 
     # check whether sim4life reconstruction is available or not
     VOLUME_TO_MESH="simnibs"
@@ -682,7 +705,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # PARROT FORWARD SOLVERS
     # ---------------------------------------------------------
     # ---------------------------------------------------------
-    DOCKER_IMAGE="christianbuda/parrot_forward_solvers:latest"
+    DOCKER_IMAGE="$IMG_FORWARD_SOLVERS"
 
     # ---------------------------------------------------------
     # SOLVE FORWARD PROBLEM
