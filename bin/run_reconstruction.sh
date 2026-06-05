@@ -170,6 +170,22 @@ for img in "${ALL_IMAGES[@]}"; do
     fi
 done
 
+# Scratch work directory for BIDS apps that need one (e.g. QSIPrep/nipype, which
+# can balloon to tens of GB). Placed inside the output dir so it shares the large
+# derivatives filesystem rather than a possibly RAM-backed /tmp, and removed when
+# the script exits (success, error, or interrupt). Ephemeral by design: a failed
+# QSIPrep run therefore restarts from scratch on re-run (no nipype resume cache).
+WORK_DIR=$(mktemp -d "$OUTPUT_DIR/.parrot_work.XXXXXX")
+WORK_DIR_DOCKER="/derivatives/$(basename "$WORK_DIR")"
+cleanup_work_dir() { [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR"; }
+trap cleanup_work_dir EXIT INT TERM
+
+# Persistent TemplateFlow cache (NOT swept on exit): QSIPrep fetches templates at
+# runtime and the image ships none, so caching here downloads them once and reuses
+# them across subjects/runs.
+TEMPLATEFLOW_DIR="$OUTPUT_DIR/.templateflow"
+mkdir -p "$TEMPLATEFLOW_DIR"
+
 # Auto-discover participants if none were provided
 if [ ${#PARTICIPANTS[@]} -eq 0 ]; then
     echo "No participant labels provided. Scanning $BIDS_DIR for subjects..."
@@ -629,6 +645,67 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     fi
 
         
+    # ---------------------------------------------------------
+    # QSIPREP (DWI PREPROCESSING)
+    # ---------------------------------------------------------
+    # Optional. Runs only when usable raw DWI is present and not flagged as
+    # already preprocessed. Produces corrected DWI (+ DTI) in subject anatomical
+    # space under derivatives/qsiprep/, the input contract for the recon stage.
+    # QSIPrep runs its own anatomical workflow (SynthStrip/TemplateFlow) and does
+    # not consume our FreeSurfer dir -- FreeSurfer reuse belongs to the recon stage.
+    NAME="qsiprep"
+    if [ "$HAS_DWI" = true ] && [ "$DWI_PREPROCESSED" = false ]; then
+        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+            echo "Running $NAME (DWI preprocessing)..." | tee -a "$LOG_FILE"
+            mkdir -p "$OUTPUT_DIR/$NAME"
+
+            step_start=$(date +%s)
+
+            # Output resolution: --output-resolution is mandatory and forces an
+            # ISOTROPIC grid. Policy = min(native smallest axis, 1.25): upsample
+            # coarse DWI toward the MRtrix-recommended ~1.25 mm for tractography,
+            # but never downsample finer-than-1.25 acquisitions. Read the native
+            # voxel size with nibabel from our MRI image (it has the env).
+            OUTPUT_RES=$(docker run --rm --entrypoint micromamba \
+                -v "$BIDS_DIR":/bids:ro \
+                "$IMG_MRI_RECONSTRUCTION" \
+                run -n neuro python -c "import nibabel as nib; z=nib.load('$DWI_DOCKER').header.get_zooms()[:3]; print(round(min(min(z),1.25),2))" 2>/dev/null)
+            if [ -z "$OUTPUT_RES" ]; then
+                echo "[ERROR] Could not read DWI voxel size for sub-${SUBJECT}." | tee -a "$LOG_FILE"
+                exit 1
+            fi
+            echo "Using --output-resolution $OUTPUT_RES mm." | tee -a "$LOG_FILE"
+
+            # --user avoids root-owned outputs in the NFS derivatives tree; the
+            # image's HOME (/home/qsiprep) is world-writable so we keep it as-is.
+            # TemplateFlow is cached persistently across runs.
+            docker run --rm $DOCKER_GPU --user "$(id -u):$(id -g)" \
+                -e TEMPLATEFLOW_HOME=/templateflow \
+                -v "$TEMPLATEFLOW_DIR":/templateflow \
+                -v "$BIDS_DIR":/bids:ro \
+                -v "$OUTPUT_DIR":/derivatives \
+                "$IMG_QSIPREP" \
+                /bids "/derivatives/$NAME" participant \
+                --participant-label "$SUBJECT" \
+                --fs-license-file /bids/license.txt \
+                --output-resolution "$OUTPUT_RES" \
+                --nprocs "$N_THREADS" \
+                --skip-bids-validation \
+                -w "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt" 2>&1
+
+            check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
+
+            step_end=$(date +%s)
+            echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+        else
+            echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+        fi
+    elif [ "$DWI_PREPROCESSED" = true ]; then
+        echo "$NAME skipped for sub-${SUBJECT} (--dwi-preprocessed): using DWI as-is." | tee -a "$LOG_FILE"
+    else
+        echo "$NAME skipped for sub-${SUBJECT} (no usable DWI)." | tee -a "$LOG_FILE"
+    fi
+
     # ---------------------------------------------------------
     # ---------------------------------------------------------
     # PARROT FORWARD MODEL
