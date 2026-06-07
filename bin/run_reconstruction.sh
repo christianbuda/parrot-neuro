@@ -135,6 +135,16 @@ SPACING_LIST=("$SPACING_OPENMEEG" "$SPACING_DUNEURO_SIMNIBS" "$SPACING_DUNEURO_C
 # 3. PRE-FLIGHT CHECKS
 # =============================================================================
 
+# FreeSurfer license: required by recon-all (and every downstream FreeSurfer tool)
+# as well as QSIPrep/QSIRecon. It must live at the BIDS dataset root as license.txt;
+# the containers reach it via the /bids mount. Fail fast with a clear message rather
+# than letting recon-all die deep in processing with a cryptic "license not found".
+if [ ! -f "$BIDS_DIR/license.txt" ]; then
+    echo "ERROR: FreeSurfer license not found at $BIDS_DIR/license.txt"
+    echo "       Place a valid FreeSurfer license file there (free: https://surfer.nmr.mgh.harvard.edu/registration.html)."
+    exit 1
+fi
+
 # GPU Configuration Logic
 if [ "$GPU_OPT" == "none" ]; then
     DOCKER_GPU=""
@@ -215,8 +225,12 @@ run_in_docker_MRI() {
     local cmd=$3
     
     echo "Running $step_name..."
-    # --entrypoint /bin/bash overrides any internal entrypoints so we can run raw commands
+    # --entrypoint /bin/bash overrides any internal entrypoints so we can run raw commands.
+    # FS_LICENSE override: the image bakes FS_LICENSE=/SUBJECTS/license.txt, but we only
+    # mount /bids and /derivatives. Point FreeSurfer at the license shipped in the BIDS
+    # dataset (same file QSIPrep uses) so all recon steps can find it.
     docker run --rm $DOCKER_GPU --entrypoint /bin/bash \
+        -e FS_LICENSE=/bids/license.txt \
         -v "$BIDS_DIR":/bids:ro \
         -v "$OUTPUT_DIR":/derivatives \
         "$IMG_MRI_RECONSTRUCTION" \
@@ -280,12 +294,16 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     fs_args=()
     simnibs_args=()
     if [ -n "$T2_PATH" ]; then
+        echo "Found T2w: $T2_PATH" | tee -a "$LOG_FILE"
         T2_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$T2_PATH")"
         fs_args=("-T2" "$T2_DOCKER" "-T2pial")
         simnibs_args=("$T2_DOCKER")
     elif [ -n "$FLAIR_PATH" ]; then
+        echo "Found FLAIR: $FLAIR_PATH" | tee -a "$LOG_FILE"
         FLAIR_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$FLAIR_PATH")"
         fs_args=("-FLAIR" "$FLAIR_DOCKER" "-FLAIRpial")
+    else
+        echo "No T2w/FLAIR found for sub-${SUBJECT}; running T1-only recon." | tee -a "$LOG_FILE"
     fi
 
     # ---------------------------------------------------------
@@ -406,11 +424,14 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
         mkdir -p "$OUTPUT_DIR/$NAME"
-        
+
         step_start=$(date +%s)
+        # NOTE: ${fs_args[*]} (not [@]) — this whole string is one command-string
+        # argument; [@] would split the array elements into separate positional
+        # args to run_in_docker_MRI, truncating the command. [*] joins with a space.
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
             "export SUBJECTS_DIR=/derivatives/freesurfer && \
-             recon-all -subject sub-${SUBJECT} -i $T1_DOCKER ${fs_args[@]} -all -threads $N_THREADS && \
+             recon-all -subject sub-${SUBJECT} -i $T1_DOCKER ${fs_args[*]} -all -threads $N_THREADS && \
              cp \$FREESURFER_HOME/FreeSurferColorLUT.txt /derivatives/freesurfer/sub-${SUBJECT}/FreeSurferColorLUT.txt && \
              cp -r /home/Schaefer2018_LocalGlobal/Parcellations/project_to_individual /derivatives/freesurfer/sub-${SUBJECT}/Schaefer_LUT"
 
@@ -491,7 +512,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         step_start=$(date +%s)
 
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "cd /home/simnibs_reconstructions && \
-                                                        /root/SimNIBS-4.5/bin/charm subject $T1_DOCKER ${simnibs_args[@]} --forcerun --fs-dir /derivatives/freesurfer/sub-${SUBJECT} --forcesform && \
+                                                        /root/SimNIBS-4.5/bin/charm subject $T1_DOCKER ${simnibs_args[*]} --forcerun --fs-dir /derivatives/freesurfer/sub-${SUBJECT} --forcesform && \
                                                         cd / && \
                                                         /root/SimNIBS-4.5/bin/simnibs_python /scripts/extract_charm_surf.py --charm_dir "/home/simnibs_reconstructions/m2m_subject/" && \
                                                         cp /scripts/simnibs_conductivities.txt /home/simnibs_reconstructions/m2m_subject/conductivities.txt && \
@@ -534,13 +555,13 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
 
         synth_flag=()
         if [ -n "$DOCKER_GPU" ] ; then
-            synth_flag="--gpu"
+            synth_flag=("--gpu")
         fi
 
         step_start=$(date +%s)
 
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "mri_synthstrip -i "$T1_DOCKER" -o $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1_stripped.nii.gz -m $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1_stripped_mask.nii.gz ${synth_flag[@]} && \
-	                                                    mri_synthstrip -i "$T1_DOCKER" -o $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1_noCSF_stripped.nii.gz -m $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1_noCSF_stripped_mask.nii.gz ${synth_flag[@]} --no-csf"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "mri_synthstrip -i "$T1_DOCKER" -o $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1_stripped.nii.gz -m $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1_stripped_mask.nii.gz ${synth_flag[*]} && \
+	                                                    mri_synthstrip -i "$T1_DOCKER" -o $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1_noCSF_stripped.nii.gz -m $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1_noCSF_stripped_mask.nii.gz ${synth_flag[*]} --no-csf"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -950,7 +971,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         step_start=$(date +%s)
 
         run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python nifti_to_inr.py --nifti_path /derivatives/tissuelabels/sub-${SUBJECT}/electrical/$VOLUME_TO_MESH.nii.gz --inr_path /derivatives/tetmesh/sub-${SUBJECT}/label_field.inr"
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "mesher $N_THREADS /derivatives/tetmesh/sub-${SUBJECT}/label_field.inr /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh $ANGLE $DIST $DEF_SURF $DEF_VOL $RATIO $SMOOTH $OPT_TIME ${TISSUE_ARGS[@]}"
+        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "mesher $N_THREADS /derivatives/tetmesh/sub-${SUBJECT}/label_field.inr /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh $ANGLE $DIST $DEF_SURF $DEF_VOL $RATIO $SMOOTH $OPT_TIME ${TISSUE_ARGS[*]}"
         run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python mesh_postprocessing.py --reference_nifti /derivatives/tissuelabels/sub-${SUBJECT}/electrical/$VOLUME_TO_MESH.nii.gz --mesh /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --output /derivatives/tetmesh/sub-${SUBJECT}/transformed_tetrahedral_mesh.mesh --export_vtu"
  
         mv "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/transformed_tetrahedral_mesh.mesh" "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh"
