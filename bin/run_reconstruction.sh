@@ -281,6 +281,9 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     T1_PATH=$(find "$SUB_BIDS_DIR/anat" -name "sub-${SUBJECT}*_T1w.nii.gz" | head -n 1)
     T2_PATH=$(find "$SUB_BIDS_DIR/anat" -name "sub-${SUBJECT}*_T2w.nii.gz" | head -n 1)
     FLAIR_PATH=$(find "$SUB_BIDS_DIR/anat" -name "sub-${SUBJECT}*_FLAIR.nii.gz" | head -n 1)
+    # MP2RAGE INV2: only consumed when the 'mp2rage' tsv column is set, where mp2rage_prep
+    # uses it as the bias-corrected soft weight to MPRAGEise the UNI before recon-all/charm.
+    INV2_PATH=$(find "$SUB_BIDS_DIR/anat" -name "sub-${SUBJECT}*_inv-2*.nii.gz" 2>/dev/null | head -n 1)
 
     if [ -z "$T1_PATH" ]; then
         echo "[ERROR] No T1w image found for sub-${SUBJECT}. Skipping..." | tee -a "$LOG_FILE"
@@ -336,15 +339,21 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         echo "[WARN] --dwi-preprocessed set but no usable DWI found for sub-${SUBJECT}; falling back to template connectome." | tee -a "$LOG_FILE"
     fi
 
-    # TSV Overrides
+    # TSV Overrides (positional columns: 4=skip-T2-reg, 5=no-neck, 6=mp2rage)
+    MP2RAGE_SUBJECT=false
     if [ -f "$BIDS_DIR/participants.tsv" ]; then
         SUB_ROW=$(grep "^sub-${SUBJECT}" "$BIDS_DIR/participants.tsv" 2>/dev/null)
         if [ -n "$SUB_ROW" ]; then
-            if [ "$(echo "$SUB_ROW" | awk '{print tolower($4)}')" == "true" ]; then 
+            if [ "$(echo "$SUB_ROW" | awk '{print tolower($4)}')" == "true" ]; then
                 simnibs_args+=("--skipregisterT2")
             fi
-            if [ "$(echo "$SUB_ROW" | awk '{print tolower($5)}')" == "true" ]; then 
+            if [ "$(echo "$SUB_ROW" | awk '{print tolower($5)}')" == "true" ]; then
                 simnibs_args+=("--noneck")
+            fi
+            # col6 mp2rage: T1 is an MP2RAGE UNI -> MPRAGEise it (+ SAMSEG-precondition the
+            # recon-all input, since the UNI breaks mri_normalize). Handled by mp2rage_prep below.
+            if [ "$(echo "$SUB_ROW" | awk '{print tolower($6)}')" == "true" ]; then
+                MP2RAGE_SUBJECT=true
             fi
         fi
     fi
@@ -356,6 +365,59 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # =========================================================================
 
     start_time=$(date +%s)
+
+    # ---------------------------------------------------------
+    # MP2RAGE PREP (optional, per-subject 'mp2rage' tsv column)
+    # ---------------------------------------------------------
+    # Runs FIRST, before any reconstruction, because it produces the T1 every later
+    # stage consumes. For an MP2RAGE UNI it:
+    #   1. MPRAGEises the UNI (needs INV2): N3-bias-corrects INV2, scales it to [0,1]
+    #      and uses it as a SOFT weight on the UNI -> the high-intensity background is
+    #      suppressed but interior CSF is kept. This full-head T1 REPLACES T1_DOCKER for
+    #      all stages (FastSurfer, HippUnfold, charm, MNE BEM, ...).
+    #   2. SAMSEG-corrects that T1 by dividing out its estimated bias field (field is 0
+    #      outside the brain -> guarded to identity, so the full head is kept while the
+    #      brain is homogenized). ONLY recon-all consumes this (RECON_T1_DOCKER): the raw
+    #      UNI otherwise breaks recon-all's mri_normalize ("not enough control points"),
+    #      and SAMSEG's own brain-masked output would break the MNE BEM watershed.
+    # No-op for non-MP2RAGE subjects (RECON_T1_DOCKER falls back to T1_DOCKER).
+    RECON_T1_DOCKER="$T1_DOCKER"
+    if [ "$MP2RAGE_SUBJECT" = true ]; then
+        NAME="mp2rage_prep"
+        if [ -z "$INV2_PATH" ]; then
+            echo "[ERROR] sub-${SUBJECT} flagged mp2rage but INV2 not found in anat/. Skipping subject." | tee -a "$LOG_FILE"
+            continue
+        fi
+        INV2_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$INV2_PATH")"
+        PREP_DIR_DOCKER="/derivatives/mp2rage_prep/sub-${SUBJECT}"
+        MPRAGEISED_T1_DOCKER="$PREP_DIR_DOCKER/T1_mprageised.nii.gz"
+        RECON_T1_DOCKER="$PREP_DIR_DOCKER/T1_recon.nii.gz"
+        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+            echo "Running $NAME (MP2RAGE MPRAGEise + SAMSEG preconditioning)..." | tee -a "$LOG_FILE"
+            mkdir -p "$OUTPUT_DIR/mp2rage_prep/sub-${SUBJECT}"
+            step_start=$(date +%s)
+            # Run under FreeSurfer's fspython (has nibabel) rather than the neuro env:
+            # mp2rage_prep shells out to mri_nu_correct.mni (N3) and run_samseg, and running
+            # those from inside the neuro conda env clashes its numpy/OpenBLAS with
+            # FreeSurfer's -> SIGSEGV. fspython keeps them in their native environment. Also
+            # cap threads: SAMSEG's OpenBLAS is precompiled for a low max and segfaults on
+            # exit above it (~32), so clamp SAMSEG + OpenBLAS/OMP to <=8 (it's ~4 min, not
+            # the bottleneck).
+            SAMSEG_THREADS=$(( N_THREADS < 8 ? N_THREADS : 8 ))
+            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
+                "export OPENBLAS_NUM_THREADS=$SAMSEG_THREADS OMP_NUM_THREADS=$SAMSEG_THREADS && \
+                 fspython /scripts/mp2rage_prep.py \
+                    --uni $T1_DOCKER --inv2 $INV2_DOCKER \
+                    --out-t1 $MPRAGEISED_T1_DOCKER --out-recon $RECON_T1_DOCKER \
+                    --samseg-dir $PREP_DIR_DOCKER/samseg --threads $SAMSEG_THREADS"
+            step_end=$(date +%s)
+            echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+        else
+            echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+        fi
+        # From here on, the MPRAGEised full-head T1 IS the subject's T1 for every stage.
+        T1_DOCKER="$MPRAGEISED_T1_DOCKER"
+    fi
 
     # ---------------------------------------------------------
     # FASTSURFER
@@ -431,7 +493,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         # args to run_in_docker_MRI, truncating the command. [*] joins with a space.
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
             "export SUBJECTS_DIR=/derivatives/freesurfer && \
-             recon-all -subject sub-${SUBJECT} -i $T1_DOCKER ${fs_args[*]} -all -threads $N_THREADS && \
+             recon-all -subject sub-${SUBJECT} -i $RECON_T1_DOCKER ${fs_args[*]} -all -threads $N_THREADS && \
              cp \$FREESURFER_HOME/FreeSurferColorLUT.txt /derivatives/freesurfer/sub-${SUBJECT}/FreeSurferColorLUT.txt && \
              cp -r /home/Schaefer2018_LocalGlobal/Parcellations/project_to_individual /derivatives/freesurfer/sub-${SUBJECT}/Schaefer_LUT"
 
