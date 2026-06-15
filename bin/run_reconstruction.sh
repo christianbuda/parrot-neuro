@@ -455,16 +455,33 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         mkdir -p "$OUTPUT_DIR/$NAME"
 
         step_start=$(date +%s)
-        docker run -it --rm \
+        # HippUnfold (:latest) writes its derivatives to <out>/hippunfold/sub-XXX and
+        # also litters <out> with work/, .snakemake/, config/. Pointing it straight at
+        # $OUTPUT_DIR/hippunfold would double-nest (hippunfold/hippunfold/sub-XXX) and
+        # leave scratch behind. So run it into a throwaway temp dir, then lift just the
+        # sub-XXX tree into $OUTPUT_DIR/hippunfold/sub-XXX where the pipeline expects it.
+        # No -it: a TTY isn't available in non-interactive/background runs and breaks
+        # with "the input device is not a TTY"; this batch BIDS app doesn't need one.
+        HIPPUNFOLD_TMP=$(mktemp -d "$OUTPUT_DIR/.hippunfold_tmp.XXXXXX")
+        docker run --rm \
             -v "$BIDS_DIR":/bids:ro \
-            -v "$OUTPUT_DIR/$NAME":/output \
+            -v "$HIPPUNFOLD_TMP":/output \
             "$IMG_HIPPUNFOLD" \
             /bids /output participant \
             --participant_label "$SUBJECT" \
             --modality T1w --cores "$N_THREADS" > "$LOG_DIR/${NAME}_log.txt" 2>&1
-            
-        check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
-        
+        hippunfold_rc=$?
+
+        # Lift the real derivatives out of the nested hippunfold/ subdir, drop the scratch.
+        if [ -d "$HIPPUNFOLD_TMP/hippunfold/sub-${SUBJECT}" ]; then
+            rm -rf "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
+            mkdir -p "$OUTPUT_DIR/$NAME"
+            mv "$HIPPUNFOLD_TMP/hippunfold/sub-${SUBJECT}" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
+        fi
+        rm -rf "$HIPPUNFOLD_TMP"
+
+        check_step $hippunfold_rc "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
+
         cp "$PARROT_SCRIPT_DIR/template_data/hippunfold_labels.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/LABELS.txt"
 
         step_end=$(date +%s)
@@ -579,7 +596,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
                                                         /root/SimNIBS-4.5/bin/simnibs_python /scripts/extract_charm_surf.py --charm_dir "/home/simnibs_reconstructions/m2m_subject/" && \
                                                         cp /scripts/simnibs_conductivities.txt /home/simnibs_reconstructions/m2m_subject/conductivities.txt && \
                                                         cp /scripts/simnibs_labels.txt /home/simnibs_reconstructions/m2m_subject/labels.txt && \
-                                                        mv /home/simnibs_reconstructions/m2m_subject $OUTPUT_DIR/$NAME/sub-${SUBJECT}"
+                                                        mv /home/simnibs_reconstructions/m2m_subject /derivatives/$NAME/sub-${SUBJECT}"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
