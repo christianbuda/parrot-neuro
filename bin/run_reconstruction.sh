@@ -614,9 +614,11 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
 
         step_start=$(date +%s)
 
-        # bias field correct image and then run FSL first
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "micromamba run -n neuro python /scripts/bias_correct.py $T1_DOCKER $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1.nii.gz && \
-	                                                    /scripts/run_first_all_sequential -i $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1.nii.gz -o $OUTPUT_DIR/$NAME/sub-${SUBJECT}/FSL -v"
+        # bias field correct image and then run FSL first. Paths are /derivatives/...
+        # (the in-container mount), not $OUTPUT_DIR (host path), which doesn't exist
+        # inside the container and made the writes fail with "cannot open output file".
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "micromamba run -n neuro python /scripts/bias_correct.py $T1_DOCKER /derivatives/$NAME/sub-${SUBJECT}/T1.nii.gz && \
+	                                                    /scripts/run_first_all_sequential -i /derivatives/$NAME/sub-${SUBJECT}/T1.nii.gz -o /derivatives/$NAME/sub-${SUBJECT}/FSL -v"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -639,8 +641,8 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
 
         step_start=$(date +%s)
 
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "mri_synthstrip -i "$T1_DOCKER" -o $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1_stripped.nii.gz -m $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1_stripped_mask.nii.gz ${synth_flag[*]} && \
-	                                                    mri_synthstrip -i "$T1_DOCKER" -o $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1_noCSF_stripped.nii.gz -m $OUTPUT_DIR/$NAME/sub-${SUBJECT}/T1_noCSF_stripped_mask.nii.gz ${synth_flag[*]} --no-csf"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "mri_synthstrip -i "$T1_DOCKER" -o /derivatives/$NAME/sub-${SUBJECT}/T1_stripped.nii.gz -m /derivatives/$NAME/sub-${SUBJECT}/T1_stripped_mask.nii.gz ${synth_flag[*]} && \
+	                                                    mri_synthstrip -i "$T1_DOCKER" -o /derivatives/$NAME/sub-${SUBJECT}/T1_noCSF_stripped.nii.gz -m /derivatives/$NAME/sub-${SUBJECT}/T1_noCSF_stripped_mask.nii.gz ${synth_flag[*]} --no-csf"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -659,7 +661,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
 
         step_start=$(date +%s)
 
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "cp /home/cerebellum_template/Cerebellar_Regions.csv $OUTPUT_DIR/$NAME/sub-${SUBJECT}/LABELS.csv && \
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "cp /home/cerebellum_template/Cerebellar_Regions.csv /derivatives/$NAME/sub-${SUBJECT}/LABELS.csv && \
                                                         micromamba run -n neuro python /scripts/run_cereb_pipeline.py --output_dir /derivatives --subject $SUBJECT --template_dir /home/cerebellum_template/ --threads $N_THREADS"
 
         step_end=$(date +%s)
@@ -733,8 +735,8 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
 
         step_start=$(date +%s)
 
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "cp /scripts/simnibs_mesher_parameters.txt $OUTPUT_DIR/$NAME/sub-${SUBJECT}/electrical/ && \
-                                                        cp /scripts/sim4life_mesher_parameters.txt $OUTPUT_DIR/$NAME/sub-${SUBJECT}/electrical/ && \
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "cp /scripts/simnibs_mesher_parameters.txt /derivatives/$NAME/sub-${SUBJECT}/electrical/ && \
+                                                        cp /scripts/sim4life_mesher_parameters.txt /derivatives/$NAME/sub-${SUBJECT}/electrical/ && \
                                                         micromamba run -n neuro python /scripts/gather_electrical_labelfields.py --T1_path $T1_DOCKER --output_dir /derivatives --subject $SUBJECT && \
                                                         micromamba run -n neuro python /scripts/gather_acoustic_labelfields.py --T1_path $T1_DOCKER --output_dir /derivatives --subject $SUBJECT"
  
