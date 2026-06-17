@@ -97,4 +97,6 @@ fi
 echo ""
 echo "Done. Built ${#built[@]} image(s):"
 printf '  %s\n' "${built[@]}"
-[ "$PUSH" = true ] && echo "All pushed to their registries."
+if [ "$PUSH" = true ]; then
+    echo "All pushed to their registries."
+fi
