@@ -74,6 +74,7 @@ parrot_forward_solvers      (DUNEuro 2.10 / OpenMEEG 2.4)
 | `bin/run_reconstruction.sh` | The entry point; ~720-line BIDS-app orchestrator for all stages |
 | `bin/images.sh` | **Single source of truth** for the Docker image tags + build contexts (sourced by `run_reconstruction.sh` and `build.sh`) |
 | `bin/build.sh` | Builds (and optionally `--push`es) the Parrot images |
+| `bin/stage.sh` + `utils/staging/` | Pre-pipeline cohort → Parrot-ready BIDS staging. `bin/stage.sh <cohort> <src> <out>` runs `utils/staging/<cohort>.py` inside the MRI image; `common.py` holds cohort-agnostic helpers (header hygiene, `participants.tsv` writer) |
 | `bin/legend_of_files.txt` | **Authoritative map of the output (derivatives) directory layout** |
 | `containers/parrot_mri_reconstruction/scripts/` | Reconstruction step scripts (atlas, surfaces, tissue labels, cerebellum, bigbrain, …) |
 | `containers/parrot_forward_model/place_dipoles.py` | Poisson-disk dipole sampling + orientation assignment |
@@ -102,8 +103,10 @@ parrot_forward_solvers      (DUNEuro 2.10 / OpenMEEG 2.4)
 
 ## Repo Layout Notes
 
-- `src/parrot_neuro/`, `tests/`, `utils/`, `examples/`, `external/` are **scaffolding,
-  currently empty** — the README's "Python API" is aspirational, not yet implemented.
+- `src/parrot_neuro/`, `tests/`, `examples/`, `external/` are **scaffolding, currently
+  empty** — the README's "Python API" is aspirational, not yet implemented.
+- `utils/staging/` holds the dataset-staging tooling (see Key Files); the rest of `utils/`
+  is still scaffolding. Run staging via `bin/stage.sh`, never on the host (needs nibabel).
 - `development/` is git-ignored scratch (JAX-TVB, tractography, US, EEG prototypes): where the
   next stages are prototyped, not part of the shipped pipeline.
 - Docker images are published on Docker Hub under `christianbuda/`. Build/publish them with
