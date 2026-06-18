@@ -16,9 +16,9 @@ IMG_QSIPREP="pennlinc/qsiprep:latest"
 IMG_QSIRECON="pennlinc/qsirecon:latest"
 
 # Parrot images: built and published by bin/build.sh.
-IMG_MRI_RECONSTRUCTION="christianbuda/parrot_mri_reconstruction:latest"
-IMG_FORWARD_MODEL="christianbuda/parrot_forward_model:latest"
-IMG_FORWARD_SOLVERS="christianbuda/parrot_forward_solvers:latest"
+IMG_MRI_RECONSTRUCTION="christianbuda/parrot_mri_reconstruction:test"
+IMG_FORWARD_MODEL="christianbuda/parrot_forward_model:test"
+IMG_FORWARD_SOLVERS="christianbuda/parrot_forward_solvers:test"
 
 # --- Derived collections -----------------------------------------------------
 # Used to pull (run_reconstruction.sh) and build (build.sh) in bulk.

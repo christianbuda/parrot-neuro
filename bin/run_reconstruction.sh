@@ -25,6 +25,13 @@ check_step() {
     fi
 }
 
+log_step() {
+    # Announce a pipeline step with a wall-clock start timestamp. Prints to the console
+    # and appends to the per-subject summary log; keeping the timestamp format here means
+    # it lives in one place instead of being repeated at every call site.
+    echo "[$(date '+%H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
 usage() {
     echo "Usage: $0 bids_dir output_dir participant [OPTIONS]"
     echo ""
@@ -35,7 +42,7 @@ usage() {
     echo ""
     echo "Options:"
     echo "  --participant-label        List of subject IDs to process (e.g., 01 02). If omitted, processes all."
-    echo "  --threads                  Number of threads to use for software that support it (Default: 8)."
+    echo "  --threads                  Number of threads to use for software that support it (Default: 32)."
     echo "  --gpus                     GPU configuration: 'all' (default), 'none', or specific devices (e.g., 'device=0,1' or '2')."
     echo "  --spacing-openmeeg         Dipole spacing (mm) for the OpenMEEG BEM solver (Default: 4)."
     echo "  --spacing-duneuro-simnibs  Dipole spacing (mm) for DUNEuro FEM with SimNIBS mesh (Default: 3)."
@@ -72,7 +79,7 @@ fi
 # 2. DEFAULT VARIABLES & PARSE OPTIONAL ARGUMENTS
 # =============================================================================
 PARTICIPANTS=()
-N_THREADS=8
+N_THREADS=32
 GPU_OPT="all"
 SPACING_OPENMEEG=4
 SPACING_DUNEURO_SIMNIBS=3
@@ -135,10 +142,10 @@ SPACING_LIST=("$SPACING_OPENMEEG" "$SPACING_DUNEURO_SIMNIBS" "$SPACING_DUNEURO_C
 # 3. PRE-FLIGHT CHECKS
 # =============================================================================
 
-# FreeSurfer license: required by recon-all (and every downstream FreeSurfer tool)
+# FreeSurfer license: required by FastSurfer (and every downstream FreeSurfer tool)
 # as well as QSIPrep/QSIRecon. It must live at the BIDS dataset root as license.txt;
 # the containers reach it via the /bids mount. Fail fast with a clear message rather
-# than letting recon-all die deep in processing with a cryptic "license not found".
+# than letting a stage die deep in processing with a cryptic "license not found".
 if [ ! -f "$BIDS_DIR/license.txt" ]; then
     echo "ERROR: FreeSurfer license not found at $BIDS_DIR/license.txt"
     echo "       Place a valid FreeSurfer license file there (free: https://surfer.nmr.mgh.harvard.edu/registration.html)."
@@ -187,8 +194,32 @@ done
 # QSIPrep run therefore restarts from scratch on re-run (no nipype resume cache).
 WORK_DIR=$(mktemp -d "$OUTPUT_DIR/.parrot_work.XXXXXX")
 WORK_DIR_DOCKER="/derivatives/$(basename "$WORK_DIR")"
-cleanup_work_dir() { [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR"; }
-trap cleanup_work_dir EXIT INT TERM
+
+# Re-own a subject's container-created outputs back to the host user, from inside a
+# root container (so no host sudo is needed). The Parrot MRI/forward images and
+# HippUnfold run as root, so without this they leave root-owned files in the
+# derivatives tree -- a pain to manage or delete later. Every root-owned output lives
+# under /derivatives/<stage>/sub-<ID>, so that one glob covers them all (logs/ and
+# leadfields/ included); nullglob makes a subject with no outputs yet a clean no-op.
+normalize_ownership() {
+    local subject=$1
+    [ -n "$subject" ] || return 0
+    docker run --rm --entrypoint bash \
+        -v "$OUTPUT_DIR":/derivatives \
+        "$IMG_MRI_RECONSTRUCTION" \
+        -c "shopt -s nullglob; t=(/derivatives/*/sub-${subject}); [ \${#t[@]} -gt 0 ] && chown -R $(id -u):$(id -g) \"\${t[@]}\"" \
+        || echo "[WARN] ownership normalization failed for sub-${subject} (some files may remain root-owned)."
+}
+
+# Cleanup on exit: sweep the scratch work dir and re-own the in-flight subject's
+# outputs (covers aborts/errors mid-subject; cleanly completed subjects are re-owned
+# at the end of their loop iteration). CURRENT_SUBJECT is set at the top of each loop.
+CURRENT_SUBJECT=""
+cleanup() {
+    [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR"
+    normalize_ownership "$CURRENT_SUBJECT"
+}
+trap cleanup EXIT INT TERM
 
 # Persistent TemplateFlow cache (NOT swept on exit): QSIPrep fetches templates at
 # runtime and the image ships none, so caching here downloads them once and reuses
@@ -224,7 +255,6 @@ run_in_docker_MRI() {
     local log_file=$2
     local cmd=$3
     
-    echo "Running $step_name..."
     # --entrypoint /bin/bash overrides any internal entrypoints so we can run raw commands.
     # FS_LICENSE override: the image bakes FS_LICENSE=/SUBJECTS/license.txt, but we only
     # mount /bids and /derivatives. Point FreeSurfer at the license shipped in the BIDS
@@ -245,7 +275,6 @@ run_in_docker_FWD() {
     local image=$3
     local cmd=$4
     
-    echo "Running $step_name..."
     # --entrypoint /bin/bash overrides any internal entrypoints so we can run raw commands
     docker run --rm $DOCKER_GPU --entrypoint /bin/bash \
         -v "$BIDS_DIR":/bids:ro \
@@ -264,7 +293,9 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     echo "====================================================================="
     echo " Processing sub-${SUBJECT}"
     echo "====================================================================="
-    
+
+    CURRENT_SUBJECT="$SUBJECT"
+
     # Subject BIDS input directory
     SUB_BIDS_DIR="$BIDS_DIR/sub-${SUBJECT}"
        
@@ -280,9 +311,8 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     T1_PATH=$(find "$SUB_BIDS_DIR/anat" -name "sub-${SUBJECT}*_T1w.nii.gz" | head -n 1)
     T2_PATH=$(find "$SUB_BIDS_DIR/anat" -name "sub-${SUBJECT}*_T2w.nii.gz" | head -n 1)
-    FLAIR_PATH=$(find "$SUB_BIDS_DIR/anat" -name "sub-${SUBJECT}*_FLAIR.nii.gz" | head -n 1)
     # MP2RAGE INV2: only consumed when the 'mp2rage' tsv column is set, where mp2rage_prep
-    # uses it as the bias-corrected soft weight to MPRAGEise the UNI before recon-all/charm.
+    # uses it as the bias-corrected soft weight to MPRAGEise the UNI before FastSurfer/charm.
     INV2_PATH=$(find "$SUB_BIDS_DIR/anat" -name "sub-${SUBJECT}*_inv-2*.nii.gz" 2>/dev/null | head -n 1)
 
     if [ -z "$T1_PATH" ]; then
@@ -294,19 +324,15 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # Map paths for inside the container
     T1_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$T1_PATH")"
 
-    fs_args=()
+    # T2 (if present) feeds SimNIBS charm. FastSurfer surfaces are T1-only, so the old
+    # recon-all T2/FLAIR pial refinement is gone -- FLAIR is no longer consulted at all.
     simnibs_args=()
     if [ -n "$T2_PATH" ]; then
-        echo "Found T2w: $T2_PATH" | tee -a "$LOG_FILE"
+        echo "Found T2w: $T2_PATH (used by SimNIBS charm)" | tee -a "$LOG_FILE"
         T2_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$T2_PATH")"
-        fs_args=("-T2" "$T2_DOCKER" "-T2pial")
         simnibs_args=("$T2_DOCKER")
-    elif [ -n "$FLAIR_PATH" ]; then
-        echo "Found FLAIR: $FLAIR_PATH" | tee -a "$LOG_FILE"
-        FLAIR_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$FLAIR_PATH")"
-        fs_args=("-FLAIR" "$FLAIR_DOCKER" "-FLAIRpial")
     else
-        echo "No T2w/FLAIR found for sub-${SUBJECT}; running T1-only recon." | tee -a "$LOG_FILE"
+        echo "No T2w found for sub-${SUBJECT}." | tee -a "$LOG_FILE"
     fi
 
     # ---------------------------------------------------------
@@ -350,15 +376,13 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
             if [ "$(echo "$SUB_ROW" | awk '{print tolower($5)}')" == "true" ]; then
                 simnibs_args+=("--noneck")
             fi
-            # col6 mp2rage: T1 is an MP2RAGE UNI -> MPRAGEise it (+ SAMSEG-precondition the
-            # recon-all input, since the UNI breaks mri_normalize). Handled by mp2rage_prep below.
+            # col6 mp2rage: T1 is an MP2RAGE UNI -> MPRAGEise it (FastSurfer/charm can't
+            # consume the raw UNI's high-intensity background). Handled by mp2rage_prep below.
             if [ "$(echo "$SUB_ROW" | awk '{print tolower($6)}')" == "true" ]; then
                 MP2RAGE_SUBJECT=true
             fi
         fi
     fi
-
-    fs_args+=(--threads "$N_THREADS")
 
     # =========================================================================
     # 5. EXECUTE PIPELINE STEPS (With Robust Idempotency)
@@ -370,18 +394,11 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # MP2RAGE PREP (optional, per-subject 'mp2rage' tsv column)
     # ---------------------------------------------------------
     # Runs FIRST, before any reconstruction, because it produces the T1 every later
-    # stage consumes. For an MP2RAGE UNI it:
-    #   1. MPRAGEises the UNI (needs INV2): N3-bias-corrects INV2, scales it to [0,1]
-    #      and uses it as a SOFT weight on the UNI -> the high-intensity background is
-    #      suppressed but interior CSF is kept. This full-head T1 REPLACES T1_DOCKER for
-    #      all stages (FastSurfer, HippUnfold, charm, MNE BEM, ...).
-    #   2. SAMSEG-corrects that T1 by dividing out its estimated bias field (field is 0
-    #      outside the brain -> guarded to identity, so the full head is kept while the
-    #      brain is homogenized). ONLY recon-all consumes this (RECON_T1_DOCKER): the raw
-    #      UNI otherwise breaks recon-all's mri_normalize ("not enough control points"),
-    #      and SAMSEG's own brain-masked output would break the MNE BEM watershed.
-    # No-op for non-MP2RAGE subjects (RECON_T1_DOCKER falls back to T1_DOCKER).
-    RECON_T1_DOCKER="$T1_DOCKER"
+    # stage consumes. For an MP2RAGE UNI it MPRAGEises (needs INV2): N3-bias-corrects
+    # INV2, scales it to [0,1] and uses it as a SOFT weight on the UNI -> the
+    # high-intensity background is suppressed but interior CSF is kept. This full-head
+    # T1 REPLACES T1_DOCKER for all stages (FastSurfer, HippUnfold, charm, MNE BEM, ...).
+    # No-op for non-MP2RAGE subjects.
     if [ "$MP2RAGE_SUBJECT" = true ]; then
         NAME="mp2rage_prep"
         if [ -z "$INV2_PATH" ]; then
@@ -391,25 +408,15 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         INV2_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$INV2_PATH")"
         PREP_DIR_DOCKER="/derivatives/mp2rage_prep/sub-${SUBJECT}"
         MPRAGEISED_T1_DOCKER="$PREP_DIR_DOCKER/T1_mprageised.nii.gz"
-        RECON_T1_DOCKER="$PREP_DIR_DOCKER/T1_recon.nii.gz"
         if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-            echo "Running $NAME (MP2RAGE MPRAGEise + SAMSEG preconditioning)..." | tee -a "$LOG_FILE"
+            log_step "Running $NAME (MP2RAGE MPRAGEise)..."
             mkdir -p "$OUTPUT_DIR/mp2rage_prep/sub-${SUBJECT}"
             step_start=$(date +%s)
-            # Run under FreeSurfer's fspython (has nibabel) rather than the neuro env:
-            # mp2rage_prep shells out to mri_nu_correct.mni (N3) and run_samseg, and running
-            # those from inside the neuro conda env clashes its numpy/OpenBLAS with
-            # FreeSurfer's -> SIGSEGV. fspython keeps them in their native environment. Also
-            # cap threads: SAMSEG's OpenBLAS is precompiled for a low max and segfaults on
-            # exit above it (~32), so clamp SAMSEG + OpenBLAS/OMP to <=8 (it's ~4 min, not
-            # the bottleneck).
-            SAMSEG_THREADS=$(( N_THREADS < 8 ? N_THREADS : 8 ))
+            # Run under FreeSurfer's fspython: mp2rage_prep shells out to mri_nu_correct.mni
+            # (N3) and imports nibabel, both in FreeSurfer's env (source_env.sh sources it).
             run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
-                "export OPENBLAS_NUM_THREADS=$SAMSEG_THREADS OMP_NUM_THREADS=$SAMSEG_THREADS && \
-                 fspython /scripts/mp2rage_prep.py \
-                    --uni $T1_DOCKER --inv2 $INV2_DOCKER \
-                    --out-t1 $MPRAGEISED_T1_DOCKER --out-recon $RECON_T1_DOCKER \
-                    --samseg-dir $PREP_DIR_DOCKER/samseg --threads $SAMSEG_THREADS"
+                "fspython /scripts/mp2rage_prep.py \
+                    --uni $T1_DOCKER --inv2 $INV2_DOCKER --out-t1 $MPRAGEISED_T1_DOCKER"
             step_end=$(date +%s)
             echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
         else
@@ -420,11 +427,18 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     fi
 
     # ---------------------------------------------------------
-    # FASTSURFER
+    # FASTSURFER (segmentation + surfaces; replaces recon-all)
     # ---------------------------------------------------------
+    # Full seg+surf run: the CNN segmentation gives the CerebNet/HypVINN subsegs AND a
+    # FreeSurfer-format SUBJECTS_DIR (surf/, label/, mri/, ?h.sphere.reg) that every
+    # downstream stage (MNE BEM, Schaefer projection, segment_subregions, charm,
+    # QSIRecon) consumes -- so this single stage replaces both the old seg-only run and
+    # recon-all. NOTE: inputs must be cleanly <=1mm; FastSurfer's surf-stage conform
+    # rejects vox_size > 1.0, so a float32 voxel-size header artifact silently kills the
+    # surfaces (it still exits 0). The LEMON staging cleans this; see the surface guard.
     NAME="fastsurfer"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction (seg + surfaces)..."
         mkdir -p "$OUTPUT_DIR/$NAME"
 
         step_start=$(date +%s)
@@ -436,10 +450,28 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
             --t1 "/data/sub-${SUBJECT}/anat/$(basename "$T1_PATH")" \
             --sid "sub-${SUBJECT}" \
             --sd /output \
-            --3T --threads "$N_THREADS" --seg_only > "$LOG_DIR/${NAME}_log.txt" 2>&1
-            
-        check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
-        
+            --3T --threads "$N_THREADS" --parallel > "$LOG_DIR/${NAME}_log.txt" 2>&1
+        fastsurfer_rc=$?
+
+        # FastSurfer can exit 0 even when the surf stage dies (e.g. a rejected vox_size),
+        # so $? alone is not enough -- assert the surfaces were actually produced.
+        if [ "$fastsurfer_rc" -eq 0 ] && [ ! -f "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/surf/lh.white" ]; then
+            echo "[ERROR] FastSurfer exited 0 but produced no surfaces (surf/lh.white missing)." | tee -a "$LOG_FILE"
+            echo "        Most likely the input voxel size is > 1mm (header artifact); it must be <= 1mm." | tee -a "$LOG_FILE"
+            fastsurfer_rc=1
+        fi
+        check_step "$fastsurfer_rc" "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
+
+        # LUTs the atlas stage later reads from the subject dir (recon-all used to copy
+        # these in). Run in the MRI image -- the Schaefer LUT ships there, not in the
+        # FastSurfer image. Append to the same log; FREESURFER_HOME is set in that image.
+        docker run --rm --entrypoint /bin/bash -v "$OUTPUT_DIR":/derivatives \
+            "$IMG_MRI_RECONSTRUCTION" -c \
+            "cp \$FREESURFER_HOME/FreeSurferColorLUT.txt /derivatives/fastsurfer/sub-${SUBJECT}/FreeSurferColorLUT.txt && \
+             cp -r /home/Schaefer2018_LocalGlobal/Parcellations/project_to_individual /derivatives/fastsurfer/sub-${SUBJECT}/Schaefer_LUT" \
+            >> "$LOG_DIR/${NAME}_log.txt" 2>&1 \
+            || { echo "[ERROR] failed to copy LUTs into fastsurfer/sub-${SUBJECT}" | tee -a "$LOG_FILE"; exit 1; }
+
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
     else
@@ -451,7 +483,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     NAME="hippunfold"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME"
 
         step_start=$(date +%s)
@@ -496,40 +528,17 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     # ---------------------------------------------------------
 
-    # ---------------------------------------------------------
-    # FREESURFER RECON-ALL
-    # ---------------------------------------------------------
-    NAME="freesurfer"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
-        mkdir -p "$OUTPUT_DIR/$NAME"
-
-        step_start=$(date +%s)
-        # NOTE: ${fs_args[*]} (not [@]) — this whole string is one command-string
-        # argument; [@] would split the array elements into separate positional
-        # args to run_in_docker_MRI, truncating the command. [*] joins with a space.
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
-            "export SUBJECTS_DIR=/derivatives/freesurfer && \
-             recon-all -subject sub-${SUBJECT} -i $RECON_T1_DOCKER ${fs_args[*]} -all -threads $N_THREADS && \
-             cp \$FREESURFER_HOME/FreeSurferColorLUT.txt /derivatives/freesurfer/sub-${SUBJECT}/FreeSurferColorLUT.txt && \
-             cp -r /home/Schaefer2018_LocalGlobal/Parcellations/project_to_individual /derivatives/freesurfer/sub-${SUBJECT}/Schaefer_LUT"
-
-        step_end=$(date +%s)
-        echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
-    else
-        echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
-    fi
 
     # ---------------------------------------------------------
     # MNE BEM SURFACES
     # ---------------------------------------------------------
     NAME="mne"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         
         step_start=$(date +%s)
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
-            "ln -sf /derivatives/freesurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && \
+            "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && \
              micromamba run -n neuro python /scripts/make_bem_surfaces.py --subject $SUBJECT --subjects_dir \$FREESURFER_HOME/subjects"
 
         step_end=$(date +%s)
@@ -543,16 +552,16 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     NAME="schaefer"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         
         step_start=$(date +%s)
 
         for n_parcels in {100..1000..100}; do
             ATLAS_NAME="Schaefer2018_${n_parcels}Parcels_17Networks_order"
 
-            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/freesurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_surf2surf --hemi lh --srcsubject fsaverage --trgsubject $SUBJECT --sval-annot /home/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label/lh.${ATLAS_NAME}.annot --tval \$SUBJECTS_DIR/$SUBJECT/label/lh.${ATLAS_NAME}.annot"
-            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/freesurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_surf2surf --hemi rh --srcsubject fsaverage --trgsubject $SUBJECT --sval-annot /home/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label/rh.${ATLAS_NAME}.annot --tval \$SUBJECTS_DIR/$SUBJECT/label/rh.${ATLAS_NAME}.annot"
-            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/freesurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_aparc2aseg --s $SUBJECT --o \$SUBJECTS_DIR/$SUBJECT/mri/schaefer${n_parcels}_aparc+aseg.mgz --annot $ATLAS_NAME"
+            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_surf2surf --hemi lh --srcsubject fsaverage --trgsubject $SUBJECT --sval-annot /home/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label/lh.${ATLAS_NAME}.annot --tval \$SUBJECTS_DIR/$SUBJECT/label/lh.${ATLAS_NAME}.annot"
+            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_surf2surf --hemi rh --srcsubject fsaverage --trgsubject $SUBJECT --sval-annot /home/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label/rh.${ATLAS_NAME}.annot --tval \$SUBJECTS_DIR/$SUBJECT/label/rh.${ATLAS_NAME}.annot"
+            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_aparc2aseg --s $SUBJECT --o \$SUBJECTS_DIR/$SUBJECT/mri/schaefer${n_parcels}_aparc+aseg.mgz --annot $ATLAS_NAME"
         done
 
         step_end=$(date +%s)
@@ -566,13 +575,13 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     NAME="freesurfersubcortical"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         
         step_start=$(date +%s)
 
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/freesurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions thalamus --cross $SUBJECT --threads $N_THREADS"
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/freesurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions hippo-amygdala --cross $SUBJECT --threads $N_THREADS"
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/freesurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions brainstem --cross $SUBJECT --threads $N_THREADS"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions thalamus --cross $SUBJECT --threads $N_THREADS"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions hippo-amygdala --cross $SUBJECT --threads $N_THREADS"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions brainstem --cross $SUBJECT --threads $N_THREADS"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -585,13 +594,13 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     NAME="simnibscharm"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME"
 
         step_start=$(date +%s)
 
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "cd /home/simnibs_reconstructions && \
-                                                        /root/SimNIBS-4.5/bin/charm subject $T1_DOCKER ${simnibs_args[*]} --forcerun --fs-dir /derivatives/freesurfer/sub-${SUBJECT} --forcesform && \
+                                                        /root/SimNIBS-4.5/bin/charm subject $T1_DOCKER ${simnibs_args[*]} --forcerun --fs-dir /derivatives/fastsurfer/sub-${SUBJECT} --forcesform && \
                                                         cd / && \
                                                         /root/SimNIBS-4.5/bin/simnibs_python /scripts/extract_charm_surf.py --charm_dir "/home/simnibs_reconstructions/m2m_subject/" && \
                                                         cp /scripts/simnibs_conductivities.txt /home/simnibs_reconstructions/m2m_subject/conductivities.txt && \
@@ -609,7 +618,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     NAME="fslfirst"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
         step_start=$(date +%s)
@@ -631,7 +640,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     NAME="synthstrip"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
         synth_flag=()
@@ -656,7 +665,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     NAME="cerebellum"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
         step_start=$(date +%s)
@@ -675,7 +684,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     NAME="bigbrain"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
         step_start=$(date +%s)
@@ -693,7 +702,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     NAME="surfaces"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
         step_start=$(date +%s)
@@ -711,7 +720,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     NAME="atlas"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
         step_start=$(date +%s)
@@ -729,7 +738,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     NAME="tissuelabels"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/electrical"
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/acoustic"
 
@@ -758,7 +767,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     NAME="qsiprep"
     if [ "$HAS_DWI" = true ] && [ "$DWI_PREPROCESSED" = false ]; then
         if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-            echo "Running $NAME (DWI preprocessing)..." | tee -a "$LOG_FILE"
+            log_step "Running $NAME (DWI preprocessing)..."
             mkdir -p "$OUTPUT_DIR/$NAME"
 
             step_start=$(date +%s)
@@ -818,7 +827,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     NAME="qsirecon"
     if [ "$HAS_DWI" = true ] && [ "$DWI_PREPROCESSED" = false ]; then
         if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-            echo "Running $NAME (tractography)..." | tee -a "$LOG_FILE"
+            log_step "Running $NAME (tractography)..."
             step_start=$(date +%s)
 
             if [ ! -d "$OUTPUT_DIR/qsiprep/sub-${SUBJECT}" ]; then
@@ -867,7 +876,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
                         --participant-label "$SUBJECT" \
                         --recon-spec "/specs/$SPEC" \
                         --input-type qsiprep \
-                        --fs-subjects-dir /derivatives/freesurfer \
+                        --fs-subjects-dir /derivatives/fastsurfer \
                         --fs-license-file /bids/license.txt \
                         --nprocs "$N_THREADS" \
                         -w "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt" 2>&1
@@ -911,7 +920,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     if [ "$HAS_DWI" = true ]; then
         # Atlas preparation (subject atlas already in T1w space -> no registration).
         if [ ! -f "$LOG_DIR/${NAME}-atlas_log.txt" ]; then
-            echo "Running $NAME atlas preparation..." | tee -a "$LOG_FILE"
+            log_step "Running $NAME atlas preparation..."
             step_start=$(date +%s)
 
             run_in_docker_MRI "$NAME-atlas" "$LOG_DIR/${NAME}-atlas_log.txt" \
@@ -928,7 +937,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         # Connectome matrices via tck2connectome, run in the QSIRecon image (same
         # MRtrix3 that generated the tracks). --user keeps outputs user-owned.
         if [ ! -f "$LOG_DIR/${NAME}-matrices_log.txt" ]; then
-            echo "Running $NAME matrices (tck2connectome)..." | tee -a "$LOG_FILE"
+            log_step "Running $NAME matrices (tck2connectome)..."
             step_start=$(date +%s)
 
             docker run --rm --user "$(id -u):$(id -g)" \
@@ -946,7 +955,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     else
         # No DWI, or DWI too sparse -> group-average template connectome.
         if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-            echo "Running $NAME (template connectome fallback)..." | tee -a "$LOG_FILE"
+            log_step "Running $NAME (template connectome fallback)..."
             step_start=$(date +%s)
 
             cp "$PARROT_SCRIPT_DIR"/template_data/connectivity/* \
@@ -979,7 +988,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # ---------------------------------------------------------
     NAME="electrodes"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
         step_start=$(date +%s)
@@ -996,7 +1005,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # PLACE DIPOLES
     # ---------------------------------------------------------
     NAME="dipoles"
-    echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+    log_step "Running $NAME reconstruction..."
     mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
     echo "Each folder contains the sampled dipoles at the specified spacing." > "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/legend.txt"
@@ -1032,7 +1041,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # ---------------------------------------------------------
     NAME="tetmesh"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
         CONFIG_FILE="$OUTPUT_DIR"/tissuelabels/sub-${SUBJECT}/electrical/"$VOLUME_TO_MESH"_mesher_parameters.txt
@@ -1080,7 +1089,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # ---------------------------------------------------------
     NAME="forwardsolvers"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        echo "Running $NAME reconstruction..." | tee -a "$LOG_FILE"
+        log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
         mkdir -p "$OUTPUT_DIR/leadfields/sub-${SUBJECT}"
 
@@ -1105,6 +1114,11 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     fi    
 
 
+    # All stages done for this subject -- re-own its outputs now (don't wait for the
+    # whole batch). Clear CURRENT_SUBJECT so the exit trap won't redundantly re-chown
+    # a subject that already completed cleanly.
+    normalize_ownership "$SUBJECT"
+    CURRENT_SUBJECT=""
 done
 
 echo ""

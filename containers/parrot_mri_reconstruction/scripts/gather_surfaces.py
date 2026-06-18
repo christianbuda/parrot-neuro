@@ -331,8 +331,8 @@ if __name__ == "__main__":
     subject = args.subject
     output_dir = args.output_dir
 
-    vox2ras_tkr = nib.load(add_output_dir(f"freesurfer/sub-{subject}/mri/T1.mgz")).header.get_vox2ras_tkr()
-    fs_T1_affine = nib.load(add_output_dir(f'freesurfer/sub-{subject}/mri/T1.mgz')).affine
+    vox2ras_tkr = nib.load(add_output_dir(f"fastsurfer/sub-{subject}/mri/T1.mgz")).header.get_vox2ras_tkr()
+    fs_T1_affine = nib.load(add_output_dir(f'fastsurfer/sub-{subject}/mri/T1.mgz')).affine
     orig_T1 = nib.load(add_output_dir(f'raw/sub-{subject}/T1.nii.gz'))
 
 
@@ -384,31 +384,31 @@ if __name__ == "__main__":
 
 
     # freesurfer surfaces
-    Lwhite = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/surf/lh.white")))
+    Lwhite = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"fastsurfer/sub-{subject}/surf/lh.white")))
     surf_to_ply(Lwhite, add_output_dir(f'surfaces/sub-{subject}/freesurfer_lh_white.ply'))
 
-    Rwhite = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/surf/rh.white")))
+    Rwhite = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"fastsurfer/sub-{subject}/surf/rh.white")))
     surf_to_ply(Rwhite, add_output_dir(f'surfaces/sub-{subject}/freesurfer_rh_white.ply'))
 
-    Lgray = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/surf/lh.pial")))
+    Lgray = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"fastsurfer/sub-{subject}/surf/lh.pial")))
     surf_to_ply(Lgray, add_output_dir(f'surfaces/sub-{subject}/freesurfer_lh_pial.ply'))
 
-    Rgray = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/surf/rh.pial")))
+    Rgray = fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"fastsurfer/sub-{subject}/surf/rh.pial")))
     surf_to_ply(Rgray, add_output_dir(f'surfaces/sub-{subject}/freesurfer_rh_pial.ply'))
 
     Lmiddle = ((Lwhite[0]+Lgray[0])/2, Lwhite[1])
     kwargs = {}
     for nparcels in [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]:
-        labels, _, _ = nib.freesurfer.read_annot(add_output_dir(f'freesurfer/sub-{subject}/label/lh.Schaefer2018_{nparcels}Parcels_17Networks_order.annot'))
+        labels, _, _ = nib.freesurfer.read_annot(add_output_dir(f'fastsurfer/sub-{subject}/label/lh.Schaefer2018_{nparcels}Parcels_17Networks_order.annot'))
         kwargs[f'original_labels_{nparcels}'] = labels
-    surf_to_ply(Lmiddle, add_output_dir(f'surfaces/sub-{subject}/freesurfer_lh_middle.ply'), volume = nib.freesurfer.io.read_morph_data(add_output_dir(f'freesurfer/sub-{subject}/surf/lh.volume')).astype(float), thickness = nib.freesurfer.io.read_morph_data(add_output_dir(f'freesurfer/sub-{subject}/surf/lh.thickness')).astype(float), **kwargs)
+    surf_to_ply(Lmiddle, add_output_dir(f'surfaces/sub-{subject}/freesurfer_lh_middle.ply'), volume = nib.freesurfer.io.read_morph_data(add_output_dir(f'fastsurfer/sub-{subject}/surf/lh.volume')).astype(float), thickness = nib.freesurfer.io.read_morph_data(add_output_dir(f'fastsurfer/sub-{subject}/surf/lh.thickness')).astype(float), **kwargs)
 
     Rmiddle = ((Rwhite[0]+Rgray[0])/2, Rwhite[1])
     kwargs = {}
     for nparcels in [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]:
-        labels, _, _ = nib.freesurfer.read_annot(add_output_dir(f'freesurfer/sub-{subject}/label/rh.Schaefer2018_{nparcels}Parcels_17Networks_order.annot'))
+        labels, _, _ = nib.freesurfer.read_annot(add_output_dir(f'fastsurfer/sub-{subject}/label/rh.Schaefer2018_{nparcels}Parcels_17Networks_order.annot'))
         kwargs[f'original_labels_{nparcels}'] = labels
-    surf_to_ply(Rmiddle, add_output_dir(f'surfaces/sub-{subject}/freesurfer_rh_middle.ply'), volume = nib.freesurfer.io.read_morph_data(add_output_dir(f'freesurfer/sub-{subject}/surf/rh.volume')).astype(float), thickness = nib.freesurfer.io.read_morph_data(add_output_dir(f'freesurfer/sub-{subject}/surf/rh.thickness')).astype(float), **kwargs)
+    surf_to_ply(Rmiddle, add_output_dir(f'surfaces/sub-{subject}/freesurfer_rh_middle.ply'), volume = nib.freesurfer.io.read_morph_data(add_output_dir(f'fastsurfer/sub-{subject}/surf/rh.volume')).astype(float), thickness = nib.freesurfer.io.read_morph_data(add_output_dir(f'fastsurfer/sub-{subject}/surf/rh.thickness')).astype(float), **kwargs)
     
     
     # BEM surfaces
@@ -420,22 +420,22 @@ if __name__ == "__main__":
     
     # NOTE that this fix is not smart, it does not know where the anatomy is
     # it just inflates enough to get numerical stability in the BEM solver, the surfaces will likely still be crooked
-    brain = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/bem/brain.surf"))))
+    brain = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"fastsurfer/sub-{subject}/bem/brain.surf"))))
     surf_to_ply(brain, add_output_dir(f'surfaces/sub-{subject}/freesurfer_BEM_brain.ply'))
 
-    inner_skull = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/bem/inner_skull.surf"))))
+    inner_skull = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"fastsurfer/sub-{subject}/bem/inner_skull.surf"))))
     surf_to_ply(inner_skull, add_output_dir(f'surfaces/sub-{subject}/freesurfer_BEM_inner_skull.ply'))
 
-    outer_skull = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/bem/outer_skull.surf"))))
+    outer_skull = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"fastsurfer/sub-{subject}/bem/outer_skull.surf"))))
     outer_skull = fix_intersection(inner_skull, outer_skull, min_dist = 4, step_size = 0.1)
     surf_to_ply(outer_skull, add_output_dir(f'surfaces/sub-{subject}/freesurfer_BEM_outer_skull.ply'))
 
-    outer_skin = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"freesurfer/sub-{subject}/bem/outer_skin.surf"))))
+    outer_skin = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"fastsurfer/sub-{subject}/bem/outer_skin.surf"))))
     outer_skin = fix_intersection(outer_skull, outer_skin, min_dist = 3, step_size = 0.1)
     surf_to_ply(outer_skin, add_output_dir(f'surfaces/sub-{subject}/freesurfer_BEM_outer_skin.ply'))
     
     # MNE scalp
-    scalp = (np.load(add_output_dir(f"freesurfer/sub-{subject}/bem/vertices-scalp.npy")), np.load(add_output_dir(f"freesurfer/sub-{subject}/bem/faces-scalp.npy")))
+    scalp = (np.load(add_output_dir(f"fastsurfer/sub-{subject}/bem/vertices-scalp.npy")), np.load(add_output_dir(f"fastsurfer/sub-{subject}/bem/faces-scalp.npy")))
     scalp = fix_freesurfer_mesh(scalp)
     scalp = repair_mesh_topology(scalp)
     surf_to_ply(scalp, add_output_dir(f'surfaces/sub-{subject}/MNE_scalp.ply'))
