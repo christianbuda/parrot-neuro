@@ -86,6 +86,7 @@ SPACING_DUNEURO_SIMNIBS=3
 SPACING_DUNEURO_CGAL=2
 DIPOLE_SEED=""
 DWI_PREPROCESSED=false
+FIX_INPUTS=false
 
 while [[ $# -gt 0 ]]; do
     key="$1"
@@ -123,6 +124,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dwi-preprocessed)
             DWI_PREPROCESSED=true
+            shift
+            ;;
+        --fix-inputs)
+            FIX_INPUTS=true
             shift
             ;;
         -h|--help)
@@ -311,8 +316,8 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     T1_PATH=$(find "$SUB_BIDS_DIR/anat" -name "sub-${SUBJECT}*_T1w.nii.gz" | head -n 1)
     T2_PATH=$(find "$SUB_BIDS_DIR/anat" -name "sub-${SUBJECT}*_T2w.nii.gz" | head -n 1)
-    # MP2RAGE INV2: only consumed when the 'mp2rage' tsv column is set, where mp2rage_prep
-    # uses it as the bias-corrected soft weight to MPRAGEise the UNI before FastSurfer/charm.
+    # MP2RAGE INV2: consumed by the ingest stage (below) to MPRAGEise the UNI when the
+    # 'mp2rage' tsv column is set.
     INV2_PATH=$(find "$SUB_BIDS_DIR/anat" -name "sub-${SUBJECT}*_inv-2*.nii.gz" 2>/dev/null | head -n 1)
 
     if [ -z "$T1_PATH" ]; then
@@ -321,15 +326,22 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     fi
     echo "Found T1w: $T1_PATH" | tee -a "$LOG_FILE"
 
-    # Map paths for inside the container
-    T1_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$T1_PATH")"
+    # BIDS inputs (read-only) the ingest stage consumes...
+    T1_BIDS_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$T1_PATH")"
+    [ -n "$T2_PATH" ] && T2_BIDS_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$T2_PATH")"
+    [ -n "$INV2_PATH" ] && INV2_BIDS_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$INV2_PATH")"
+
+    # ...and the standardized working inputs the ingest stage WRITES, which every later
+    # stage reads. T1_DOCKER is MPRAGEised for MP2RAGE, a clean copy otherwise.
+    RAW_DIR_DOCKER="/derivatives/raw/sub-${SUBJECT}"
+    T1_DOCKER="$RAW_DIR_DOCKER/T1.nii.gz"
 
     # T2 (if present) feeds SimNIBS charm. FastSurfer surfaces are T1-only, so the old
     # recon-all T2/FLAIR pial refinement is gone -- FLAIR is no longer consulted at all.
     simnibs_args=()
     if [ -n "$T2_PATH" ]; then
         echo "Found T2w: $T2_PATH (used by SimNIBS charm)" | tee -a "$LOG_FILE"
-        T2_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$T2_PATH")"
+        T2_DOCKER="$RAW_DIR_DOCKER/T2.nii.gz"
         simnibs_args=("$T2_DOCKER")
     else
         echo "No T2w found for sub-${SUBJECT}." | tee -a "$LOG_FILE"
@@ -377,7 +389,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
                 simnibs_args+=("--noneck")
             fi
             # col6 mp2rage: T1 is an MP2RAGE UNI -> MPRAGEise it (FastSurfer/charm can't
-            # consume the raw UNI's high-intensity background). Handled by mp2rage_prep below.
+            # consume the raw UNI's high-intensity background). Handled by ingest below.
             if [ "$(echo "$SUB_ROW" | awk '{print tolower($6)}')" == "true" ]; then
                 MP2RAGE_SUBJECT=true
             fi
@@ -391,39 +403,35 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     start_time=$(date +%s)
 
     # ---------------------------------------------------------
-    # MP2RAGE PREP (optional, per-subject 'mp2rage' tsv column)
+    # INGEST (stage 0): validate inputs + standardize into raw/
     # ---------------------------------------------------------
-    # Runs FIRST, before any reconstruction, because it produces the T1 every later
-    # stage consumes. For an MP2RAGE UNI it MPRAGEises (needs INV2): N3-bias-corrects
-    # INV2, scales it to [0,1] and uses it as a SOFT weight on the UNI -> the
-    # high-intensity background is suppressed but interior CSF is kept. This full-head
-    # T1 REPLACES T1_DOCKER for all stages (FastSurfer, HippUnfold, charm, MNE BEM, ...).
-    # No-op for non-MP2RAGE subjects.
-    if [ "$MP2RAGE_SUBJECT" = true ]; then
-        NAME="mp2rage_prep"
-        if [ -z "$INV2_PATH" ]; then
-            echo "[ERROR] sub-${SUBJECT} flagged mp2rage but INV2 not found in anat/. Skipping subject." | tee -a "$LOG_FILE"
-            continue
-        fi
-        INV2_DOCKER="/bids/sub-${SUBJECT}/anat/$(basename "$INV2_PATH")"
-        PREP_DIR_DOCKER="/derivatives/mp2rage_prep/sub-${SUBJECT}"
-        MPRAGEISED_T1_DOCKER="$PREP_DIR_DOCKER/T1_mprageised.nii.gz"
-        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-            log_step "Running $NAME (MP2RAGE MPRAGEise)..."
-            mkdir -p "$OUTPUT_DIR/mp2rage_prep/sub-${SUBJECT}"
-            step_start=$(date +%s)
-            # Run under FreeSurfer's fspython: mp2rage_prep shells out to mri_nu_correct.mni
-            # (N3) and imports nibabel, both in FreeSurfer's env (source_env.sh sources it).
-            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
-                "fspython /scripts/mp2rage_prep.py \
-                    --uni $T1_DOCKER --inv2 $INV2_DOCKER --out-t1 $MPRAGEISED_T1_DOCKER"
-            step_end=$(date +%s)
-            echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
-        else
-            echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
-        fi
-        # From here on, the MPRAGEised full-head T1 IS the subject's T1 for every stage.
-        T1_DOCKER="$MPRAGEISED_T1_DOCKER"
+    # Runs FIRST, for EVERY subject. Validates each anatomical input (loadable .nii.gz,
+    # genuinely 3D, sane voxel size) and writes the standardized working inputs every
+    # later stage reads: /derivatives/raw/sub-X/{T1,T2}.nii.gz + per-volume JSON
+    # provenance sidecars. T1 is MPRAGEised for MP2RAGE (N3-corrected INV2 soft-weight),
+    # a clean copy otherwise. --fix-inputs lets it auto-repair flagged issues (squeeze a
+    # singleton 4D, snap a float32 voxel-size artifact); without it those are flagged,
+    # and a bad shape is fatal. (DWI stays on the BIDS dwi/ path for QSIPrep.)
+    NAME="ingest"
+    if [ "$MP2RAGE_SUBJECT" = true ] && [ -z "$INV2_PATH" ]; then
+        echo "[ERROR] sub-${SUBJECT} flagged mp2rage but INV2 not found in anat/. Skipping subject." | tee -a "$LOG_FILE"
+        continue
+    fi
+    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+        log_step "Running $NAME (validate + standardize inputs -> raw/)..."
+        mkdir -p "$OUTPUT_DIR/raw/sub-${SUBJECT}"
+        step_start=$(date +%s)
+        # Under FreeSurfer's fspython: ingest shells out to mri_nu_correct.mni (N3, for
+        # MPRAGEise) and imports nibabel, both in FreeSurfer's env.
+        INGEST_CMD="fspython /scripts/ingest.py --out-dir $RAW_DIR_DOCKER --t1 $T1_BIDS_DOCKER"
+        [ -n "$T2_PATH" ] && INGEST_CMD="$INGEST_CMD --t2 $T2_BIDS_DOCKER"
+        [ "$MP2RAGE_SUBJECT" = true ] && INGEST_CMD="$INGEST_CMD --mp2rage --inv2 $INV2_BIDS_DOCKER"
+        [ "$FIX_INPUTS" = true ] && INGEST_CMD="$INGEST_CMD --fix-inputs"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "$INGEST_CMD"
+        step_end=$(date +%s)
+        echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+    else
+        echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
     fi
 
     # ---------------------------------------------------------
@@ -535,11 +543,22 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     NAME="mne"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
-        
+
         step_start=$(date +%s)
+        # MP2RAGE: run watershed on INV2, not the UNI/MPRAGEised T1. INV2 keeps the
+        # whole-head contrast (bright scalp/fat, dark skull, dark air) that mri_watershed
+        # needs and the UNI optimizes away -> on the UNI, watershed collapses to a cube.
+        # Conform INV2 onto the subject's mri grid first; the dense scalp still comes from
+        # T1.mgz (its head/air boundary is clean). No-op for non-MP2RAGE subjects.
+        bem_prep=""
+        bem_vol=""
+        if [ "$MP2RAGE_SUBJECT" = true ]; then
+            bem_prep="mri_convert --conform $INV2_BIDS_DOCKER \$FREESURFER_HOME/subjects/$SUBJECT/mri/INV2.mgz && "
+            bem_vol="--volume INV2"
+        fi
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
             "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && \
-             micromamba run -n neuro python /scripts/make_bem_surfaces.py --subject $SUBJECT --subjects_dir \$FREESURFER_HOME/subjects"
+             ${bem_prep}micromamba run -n neuro python /scripts/make_bem_surfaces.py --subject $SUBJECT --subjects_dir \$FREESURFER_HOME/subjects $bem_vol"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
