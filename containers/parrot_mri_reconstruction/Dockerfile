@@ -94,6 +94,7 @@ RUN micromamba create -y -n neuro -c conda-forge \
     pymeshfix \
     antspyx \
     trimesh \
+    networkx \
     nibabel \
     scipy \
     numpy \
