@@ -133,7 +133,11 @@ Here is detailed what each reconstructed folder contains. For convenience, only 
 │   │   ├── simnibs.nii.gz: Label field extracted using simnibs charm.
 │   │   ├── simnibs_LUT.txt: LUT for the above volume.
 │   │   ├── simnibs_labels.txt: Labels for the above volume.
-│   │   └── simnibs_conductivities.txt: Conductivities (from simnibs website) for the above volume.
+│   │   ├── simnibs_conductivities.txt: Conductivities (from simnibs website) for the above volume.
+│   │   ├── simnibs_itis.nii.gz: Same segmentation as simnibs.nii.gz, re-labelled with ITIS tissue names (meshed by the CGAL stream when no sim4life volume is available).
+│   │   ├── simnibs_itis_LUT.txt: LUT for the above volume.
+│   │   ├── simnibs_itis_labels.txt: Labels for the above volume.
+│   │   └── simnibs_itis_conductivities.txt: Conductivities (from ITIS) for the above volume.
 │   └── acoustic/: Tissue labels with acoustic properties.
 │       ├── ITIS_attenuation_constant.txt: Attenuation constant of tissues extracted from the ITIS database.
 │       ├── ITIS_density.txt: Density of tissues extracted from the ITIS database.

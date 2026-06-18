@@ -17,6 +17,16 @@ def get_resampled_image(source_path, target_path):
 # conductivities from https://simnibs.github.io/simnibs/build/html/documentation/conductivity.html
 simnibs_electrical_conductivities = {'Background':0, 'White-Matter':0.126, 'Gray-Matter':0.275, 'CSF':1.654, 'Bone':0.01, 'Scalp':0.465, 'Eye_balls':0.5, 'Compact_bone':0.008, 'Spongy_bone':0.025, 'Blood':0.6, 'Muscle':0.16, 'Saline_or_gel':1.0}
 
+# maps each SimNIBS final-tissue name to the closest ITIS conductivity-table entry (see
+# electrical_conductivities below). Used to build the "simnibs_itis" label field: the SimNIBS
+# segmentation re-labelled with ITIS conductivities, so the CGAL FEM leadfield can use ITIS
+# values even when no Sim4Life segmentation is available (the SimNIBS-charm FEM leadfield keeps
+# the native SimNIBS conductivities). Lumped 'Bone' -> homogenized whole-skull 'Skull'; the
+# detailed split maps to the cortical/cancellous layers. 'Eye_balls' matches the Sim4Life stream's
+# 'Eyes' -> 'Eye (Aqueous Humor)' choice. 'Saline_or_gel' is intentionally omitted: it only
+# appears with explicit electrode modelling in charm, which this pipeline does not use.
+simnibs_to_itis_names = {'Background':'Background', 'White-Matter':'Brain (White Matter)', 'Gray-Matter':'Brain (Grey Matter)', 'CSF':'Cerebrospinal Fluid', 'Scalp':'Skin', 'Blood':'Blood', 'Muscle':'Muscle', 'Bone':'Skull', 'Compact_bone':'Skull (Cortical)', 'Spongy_bone':'Skull (Cancellous)', 'Eye_balls':'Eye (Aqueous Humor)'}
+
 
 def read_charm_labels(path):
     
@@ -32,7 +42,10 @@ def read_charm_labels(path):
     
     return labels, LUT
 
-def convert_simnibs_labelfield():
+def build_simnibs_labelfield():
+    # reads the charm output and builds the contiguous-relabelled SimNIBS tissue field with
+    # GM/WM refinement. Returns the field plus the metadata shared by every conductivity flavour
+    # (native SimNIBS, ITIS, ...) written from it.
     labels, LUT = read_charm_labels(os.path.join(output_dir, f'simnibscharm/sub-{subject}/final_tissues_LUT.txt'))
     label_dict = {val:key for (key, val) in labels.items()}
 
@@ -58,29 +71,54 @@ def convert_simnibs_labelfield():
     # use gray matter from main atlas streams
     aggregated = get_resampled_image(os.path.join(output_dir, f'atlas/sub-{subject}/atlas_aggregated.nii.gz'), os.path.join(output_dir, f'simnibscharm/sub-{subject}/final_tissues.nii.gz'))
     field_value[aggregated>0] = final_tissues.index('Gray-Matter') # gray matter
-    
+
     ####################################################
     ####################################################
+
+    return field_value, label_field, final_tissues, label_dict, LUT
+
+
+def write_electrical_labelfield(basename, field_value, label_field, final_tissues, label_dict, LUT, name_map, conductivities):
+    # writes the {basename}.nii.gz volume and its labels/LUT/conductivities txt files.
+    # name_map maps each SimNIBS tissue name to the output (conductivity-table) name, and
+    # conductivities is the table keyed by those output names. The same segmentation can thus be
+    # written under different naming/conductivity conventions (e.g. native SimNIBS vs ITIS).
+    out_dir = os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical')
 
     # save the volume
-    label_field = nib.Nifti1Image(field_value, label_field.affine, label_field.header)
-    nib.save(label_field, os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/simnibs.nii.gz'))
+    nib.save(nib.Nifti1Image(field_value, label_field.affine, label_field.header), os.path.join(out_dir, f'{basename}.nii.gz'))
 
     # save the corresponding label file
-    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/simnibs_labels.txt'), 'w') as f:
+    with open(os.path.join(out_dir, f'{basename}_labels.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
-            f.write(f'{idx},{tissue}\n')
+            f.write(f'{idx},{name_map[tissue]}\n')
 
-    # save the corresponding LUT file
-    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/simnibs_LUT.txt'), 'w') as f:
+    # save the corresponding LUT file (colours from charm, name from the chosen convention)
+    with open(os.path.join(out_dir, f'{basename}_LUT.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
             old_label = label_dict[tissue]
-            f.write(f'{idx}\t{LUT[old_label]['name']}\t{LUT[old_label]['R']}\t{LUT[old_label]['G']}\t{LUT[old_label]['B']}\t{LUT[old_label]['A']}\n')
-    
+            f.write(f'{idx}\t{name_map[tissue]}\t{LUT[old_label]["R"]}\t{LUT[old_label]["G"]}\t{LUT[old_label]["B"]}\t{LUT[old_label]["A"]}\n')
+
     # save the corresponding conductivities file
-    with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/simnibs_conductivities.txt'), 'w') as f:
+    with open(os.path.join(out_dir, f'{basename}_conductivities.txt'), 'w') as f:
         for idx, tissue in enumerate(final_tissues):
-            f.write(f'{idx},{simnibs_electrical_conductivities[tissue]}\n')
+            f.write(f'{idx},{conductivities[name_map[tissue]]}\n')
+    return
+
+
+def convert_simnibs_labelfields():
+    # builds the SimNIBS segmentation once and writes it under two conductivity conventions:
+    #   - "simnibs":      native SimNIBS names + conductivities (parity with the charm FEM stream)
+    #   - "simnibs_itis": same segmentation re-labelled with ITIS names + conductivities, used by
+    #                     the CGAL FEM stream when no Sim4Life volume is available
+    field_value, label_field, final_tissues, label_dict, LUT = build_simnibs_labelfield()
+
+    # native SimNIBS convention: names map to themselves
+    identity_map = {tissue: tissue for tissue in simnibs_electrical_conductivities}
+    write_electrical_labelfield('simnibs', field_value, label_field, final_tissues, label_dict, LUT, identity_map, simnibs_electrical_conductivities)
+
+    # ITIS convention on the same segmentation
+    write_electrical_labelfield('simnibs_itis', field_value, label_field, final_tissues, label_dict, LUT, simnibs_to_itis_names, electrical_conductivities)
     return
 
 
@@ -232,7 +270,7 @@ if __name__ == "__main__":
     )
     
     parser.add_argument(
-        '--output_dir', 
+        '--output_dir',
         type=str,
         required=True,
         help='Path to the output folder (e.g., /derivatives/)'
@@ -245,7 +283,7 @@ if __name__ == "__main__":
     subject = args.subject
     output_dir = args.output_dir
 
-    convert_simnibs_labelfield()
+    convert_simnibs_labelfields()
 
     if os.path.isdir(os.path.join(output_dir, f'sim4life/sub-{subject}')):
         print("Sim4Life tissue labels field folder detected, generating additional label field from it")

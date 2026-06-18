@@ -745,9 +745,10 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         step_start=$(date +%s)
 
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "cp /scripts/simnibs_mesher_parameters.txt /derivatives/$NAME/sub-${SUBJECT}/electrical/ && \
+                                                        cp /scripts/simnibs_mesher_parameters.txt /derivatives/$NAME/sub-${SUBJECT}/electrical/simnibs_itis_mesher_parameters.txt && \
                                                         cp /scripts/sim4life_mesher_parameters.txt /derivatives/$NAME/sub-${SUBJECT}/electrical/ && \
-                                                        micromamba run -n neuro python /scripts/gather_electrical_labelfields.py --T1_path $T1_DOCKER --output_dir /derivatives --subject $SUBJECT && \
-                                                        micromamba run -n neuro python /scripts/gather_acoustic_labelfields.py --T1_path $T1_DOCKER --output_dir /derivatives --subject $SUBJECT"
+                                                        micromamba run -n neuro python /scripts/gather_electrical_labelfields.py --output_dir /derivatives --subject $SUBJECT && \
+                                                        micromamba run -n neuro python /scripts/gather_acoustic_labelfields.py --output_dir /derivatives --subject $SUBJECT"
  
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -977,10 +978,16 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # ---------------------------------------------------------
     DOCKER_IMAGE="$IMG_FORWARD_MODEL"
 
-    # check whether sim4life reconstruction is available or not
-    VOLUME_TO_MESH="simnibs"
-    if [ -f "$OUTPUT_DIR/tissue_labels/sub-${SUBJECT}/electrical/sim4life.nii.gz" ]; then
+    # Pick the volume meshed by the CGAL stream (and the valid generator tissues for its FEM
+    # leadfield). Prefer Sim4Life if present; otherwise fall back to "simnibs_itis" -- the SimNIBS
+    # segmentation carrying ITIS conductivities -- so the CGAL leadfield uses ITIS values while the
+    # SimNIBS-charm leadfield keeps native SimNIBS conductivities. Unlike Sim4Life, the SimNIBS
+    # segmentation has no separate thalamus/hippocampus, so grey matter is the only generator tissue.
+    VOLUME_TO_MESH="simnibs_itis"
+    CGAL_VALID_TISSUES='"Brain (Grey Matter)"'
+    if [ -f "$OUTPUT_DIR/tissuelabels/sub-${SUBJECT}/electrical/sim4life.nii.gz" ]; then
         VOLUME_TO_MESH="sim4life"
+        CGAL_VALID_TISSUES='"Brain (Grey Matter)" Thalamus Hippocampus'
     fi
 
     # ---------------------------------------------------------
@@ -1105,7 +1112,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
 
         spacing=$(printf "%.1f" "$SPACING_DUNEURO_CGAL")
         echo "Solving forward problem with DUNEuro using CGAL mesh, at $spacing mm dipole spacing"
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "/scripts/make_leadfield_duneuro.py --dipole_spacing $spacing --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --label CGAL --valid_tissues \"Brain (Grey Matter)\" Thalamus Hippocampus"
+        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "/scripts/make_leadfield_duneuro.py --dipole_spacing $spacing --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --label CGAL --valid_tissues $CGAL_VALID_TISSUES"
  
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"

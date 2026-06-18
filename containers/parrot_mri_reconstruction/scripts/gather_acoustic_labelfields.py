@@ -99,7 +99,7 @@ def convert_simnibs_labelfield():
     ####################################################
 
     # use white matter from cerebellum stream
-    cereb = get_resampled_image(os.path.join(output_dir, f'cerebellum/sub-{subject}/nonlinear_white_labels.nii.gz'), os.path.join(subj_output_dirdir, f'simnibscharm/sub-{subject}/final_tissues.nii.gz'))
+    cereb = get_resampled_image(os.path.join(output_dir, f'cerebellum/sub-{subject}/nonlinear_white_labels.nii.gz'), os.path.join(output_dir, f'simnibscharm/sub-{subject}/final_tissues.nii.gz'))
     field_value[cereb>0] = final_tissues.index('White-Matter')
 
     # use gray matter from main atlas streams
@@ -286,7 +286,7 @@ if __name__ == "__main__":
     )
     
     parser.add_argument(
-        '--output_dir', 
+        '--output_dir',
         type=str,
         required=True,
         help='Path to the output folder (e.g., /derivatives/)'
