@@ -305,7 +305,7 @@ if __name__ == "__main__":
         
         ######################################################## HIPPOCAMPUS ATLAS
         ################ LEFT
-        Lhipp = get_resampled_image(os.path.join(output_dir, f'hippunfold/sub-{subject}/anat/sub-subject_hemi-L_space-cropT1w_desc-subfields_atlas-multihist7_dseg.nii.gz'))
+        Lhipp = get_resampled_image(os.path.join(output_dir, f'hippunfold/sub-{subject}/anat/sub-{subject}_hemi-L_space-cropT1w_desc-subfields_atlas-multihist7_dseg.nii.gz'))
 
         old_labels = [(x, 'Left-'+get_hippocampus_labels(os.path.join(output_dir, f'hippunfold/sub-{subject}/LABELS.txt'))[x]) for x in get_hippocampus_labels(os.path.join(output_dir, f'hippunfold/sub-{subject}/LABELS.txt')).keys() if get_hippocampus_labels(os.path.join(output_dir, f'hippunfold/sub-{subject}/LABELS.txt'))[x]!='Unknown']
         old_labels = list(zip(*old_labels))
@@ -330,7 +330,7 @@ if __name__ == "__main__":
         atlas[np.isin(Lhipp, list(range(193, 193+len(old_labels[0]))))] = Lhipp[np.isin(Lhipp, list(range(193, 193+len(old_labels[0]))))]
 
         ############### RIGHT
-        Rhipp = get_resampled_image(os.path.join(output_dir, f'hippunfold/sub-{subject}/anat/sub-subject_hemi-R_space-cropT1w_desc-subfields_atlas-multihist7_dseg.nii.gz'))
+        Rhipp = get_resampled_image(os.path.join(output_dir, f'hippunfold/sub-{subject}/anat/sub-{subject}_hemi-R_space-cropT1w_desc-subfields_atlas-multihist7_dseg.nii.gz'))
 
         old_labels = [(x, 'Right-'+get_hippocampus_labels(os.path.join(output_dir, f'hippunfold/sub-{subject}/LABELS.txt'))[x]) for x in get_hippocampus_labels(os.path.join(output_dir, f'hippunfold/sub-{subject}/LABELS.txt')).keys() if get_hippocampus_labels(os.path.join(output_dir, f'hippunfold/sub-{subject}/LABELS.txt'))[x]!='Unknown']
         old_labels = list(zip(*old_labels))
