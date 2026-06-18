@@ -2,7 +2,7 @@ Here is detailed what each reconstructed folder contains. For convenience, only 
 
 .
 ├── pipeline_config.env: Config file used to store the parameters that run the reconstruction.
-├── raw/: Raw input volumes (renamed to be standard across subjects: T1.nii.gz, T2.nii.gz, DTI.nii.gz)
+├── raw/: Standardized working inputs written by the ingest stage (T1 MPRAGEised for MP2RAGE, else copied; T2 copied), each with a .json provenance sidecar (Sources, GeneratedBy, Operations). DWI stays on the BIDS dwi/ path.
 │   └── T1.nii.gz
 ├── fastsurfer/: Output of the volumetric stream in the fastsurfer tool. Mainly used to generate finer atlases.
 │   └── mri/

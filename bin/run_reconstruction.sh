@@ -49,6 +49,7 @@ usage() {
     echo "  --spacing-duneuro-cgal     Dipole spacing (mm) for DUNEuro FEM with CGAL mesh (Default: 2)."
     echo "  --dipole-seed              Integer seed for reproducible dipole sampling (Default: unset = random)."
     echo "  --dwi-preprocessed         Treat the BIDS dwi/ data as already corrected and skip QSIPrep (e.g. HCP)."
+    echo "  --fix-inputs               Auto-repair flagged input issues (squeeze singleton 4D, snap voxel-size artifacts). Default: flag only, never mutate."
     exit 1
 }
 
