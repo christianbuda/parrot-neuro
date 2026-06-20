@@ -808,13 +808,35 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
             fi
             echo "Using --output-resolution $OUTPUT_RES mm." | tee -a "$LOG_FILE"
 
+            # Expose only a RAW view of /bids -- dataset metadata + this
+            # subject's raw folder -- never the derivatives tree. qsiprep's
+            # pybids indexer (qsiprep/config.py) is built with an explicit
+            # `ignore` list that does NOT skip derivatives; that explicit list
+            # replaces pybids' default (which would). So if $OUTPUT_DIR is
+            # nested inside $BIDS_DIR (the BIDS-standard derivatives/ layout)
+            # and we mount the whole $BIDS_DIR, pybids walks our derivatives and
+            # crashes on Parrot JSON that isn't a sidecar -- e.g.
+            # atlas_to_aggregated.json is a top-level JSON array, so
+            # dict.update(list) -> "unhashable type: list". Binding only raw
+            # inputs sidesteps this regardless of where the output dir lives.
+            QSIPREP_BIDS_MOUNTS=(
+                -v "$BIDS_DIR/dataset_description.json":/bids/dataset_description.json:ro
+                -v "$BIDS_DIR/license.txt":/bids/license.txt:ro
+                -v "$BIDS_DIR/sub-${SUBJECT}":/bids/sub-${SUBJECT}:ro
+            )
+            # participants.tsv is optional; bind it only if present -- a missing
+            # bind source makes Docker silently create an empty dir at /bids.
+            if [ -f "$BIDS_DIR/participants.tsv" ]; then
+                QSIPREP_BIDS_MOUNTS+=( -v "$BIDS_DIR/participants.tsv":/bids/participants.tsv:ro )
+            fi
+
             # --user avoids root-owned outputs in the NFS derivatives tree; the
             # image's HOME (/home/qsiprep) is world-writable so we keep it as-is.
             # TemplateFlow is cached persistently across runs.
             docker run --rm $DOCKER_GPU --user "$(id -u):$(id -g)" \
                 -e TEMPLATEFLOW_HOME=/templateflow \
                 -v "$TEMPLATEFLOW_DIR":/templateflow \
-                -v "$BIDS_DIR":/bids:ro \
+                "${QSIPREP_BIDS_MOUNTS[@]}" \
                 -v "$OUTPUT_DIR":/derivatives \
                 "$IMG_QSIPREP" \
                 /bids "/derivatives/$NAME" participant \
@@ -886,11 +908,15 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
                     # QSIRecon reuses our FreeSurfer (ACT-hsvs); persistent TemplateFlow
                     # cache; --user avoids root-owned outputs. Output lands under the
                     # ephemeral work dir, then we relocate the results into place.
+                    # qsirecon's pybids input is /derivatives/qsiprep (a clean
+                    # tree), so it doesn't hit the derivatives-walk crash above.
+                    # We still bind only license.txt from $BIDS_DIR (not the whole
+                    # dataset) to avoid needlessly exposing the derivatives tree.
                     docker run --rm $DOCKER_GPU --user "$(id -u):$(id -g)" \
                         -e TEMPLATEFLOW_HOME=/templateflow \
                         -v "$TEMPLATEFLOW_DIR":/templateflow \
                         -v "$PARROT_SCRIPT_DIR/template_data/qsirecon_specs":/specs:ro \
-                        -v "$BIDS_DIR":/bids:ro \
+                        -v "$BIDS_DIR/license.txt":/bids/license.txt:ro \
                         -v "$OUTPUT_DIR":/derivatives \
                         "$IMG_QSIRECON" \
                         /derivatives/qsiprep "$WORK_DIR_DOCKER/qsirecon_out" participant \
