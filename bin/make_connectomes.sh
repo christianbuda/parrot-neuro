@@ -24,10 +24,23 @@ SUB="$1"
 CONN="/derivatives/connectivity/sub-${SUB}"
 DWI_DIR="/derivatives/qsirecon/sub-${SUB}/dwi"
 
-TCK=$(ls "$DWI_DIR"/*streamlines.tck.gz | head -n 1)
+TCK_GZ=$(ls "$DWI_DIR"/*streamlines.tck.gz | head -n 1)
 WEIGHTS=$(ls "$DWI_DIR"/*streamlineweights.csv | head -n 1)
-echo "Tractogram   : $TCK"
+echo "Tractogram   : $TCK_GZ"
 echo "SIFT2 weights: $WEIGHTS"
+
+# QSIRecon stores the tractogram gzipped, but MRtrix `tck2connectome` cannot
+# read a .tck.gz: it locates the binary track data via a byte-offset recorded in
+# the .tck header and then seeks to it, which a gzip stream can't satisfy (hence
+# "not a valid track file"). So decompress ONCE to a temporary plain .tck that
+# every resolution/metric below reuses, and remove it on exit -- the file is
+# large (~15 GB; the gz barely compresses high-entropy streamline coordinates).
+# It lives under $CONN (already created by the orchestrator) on the roomy
+# derivatives volume, not in a possibly RAM-backed container /tmp.
+TCK="$CONN/.streamlines_tmp.tck"
+trap 'rm -f "$TCK"' EXIT INT TERM
+echo "Decompressing tractogram -> $TCK ..."
+gunzip -c "$TCK_GZ" > "$TCK"
 
 for N in 100 200 300 400 500 600 700 800 900 1000; do
     NODES="$CONN/atlas${N}_connectivity.nii.gz"
