@@ -781,7 +781,8 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # QSIPREP (DWI PREPROCESSING)
     # ---------------------------------------------------------
     # Optional. Runs only when usable raw DWI is present and not flagged as
-    # already preprocessed. Produces corrected DWI (+ DTI) in subject anatomical
+    # already preprocessed. Produces the corrected/aligned DWI (no diffusion
+    # model fit -- modeling belongs to the recon stage) in subject anatomical
     # space under derivatives/qsiprep/, the input contract for the recon stage.
     # QSIPrep runs its own anatomical workflow (SynthStrip/TemplateFlow) and does
     # not consume our FreeSurfer dir -- FreeSurfer reuse belongs to the recon stage.
