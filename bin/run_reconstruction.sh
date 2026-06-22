@@ -981,27 +981,11 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         fi
     fi
 
-    if [ "$HAVE_TRACKS" = true ]; then
-        # Connectome matrices via tck2connectome, run in the QSIRecon image (same
-        # MRtrix3 that generated the tracks). --user keeps outputs user-owned.
-        if [ ! -f "$LOG_DIR/${NAME}-matrices_log.txt" ]; then
-            log_step "Running $NAME matrices (tck2connectome)..."
-            step_start=$(date +%s)
-
-            docker run --rm --user "$(id -u):$(id -g)" \
-                -v "$OUTPUT_DIR":/derivatives \
-                -v "$PARROT_SCRIPT_DIR/bin/make_connectomes.sh":/make_connectomes.sh:ro \
-                --entrypoint bash "$IMG_QSIRECON" \
-                /make_connectomes.sh "$SUBJECT" > "$LOG_DIR/${NAME}-matrices_log.txt" 2>&1
-            check_step $? "$NAME matrices" "$LOG_DIR/${NAME}-matrices_log.txt"
-
-            step_end=$(date +%s)
-            echo "$NAME matrices completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
-        else
-            echo "$NAME matrices log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
-        fi
-    else
-        # No DWI, or DWI too sparse -> group-average template connectome.
+    # Tractography present -> the subject connectome is built later, AFTER dwi2t1
+    # registers the tracts into the atlas's T1/mesh space (see the connectome
+    # matrices block below the DWI-tensor stages). No usable tractography here ->
+    # fall back to the group-average template connectome.
+    if [ "$HAVE_TRACKS" = false ]; then
         if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
             log_step "Running $NAME (template connectome fallback)..."
             step_start=$(date +%s)
@@ -1046,6 +1030,66 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
             echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
         else
             echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+        fi
+    fi
+
+    # ---------------------------------------------------------
+    # DWI -> T1 SPACE  (registration + tensor refit + tracts), WIP
+    # ---------------------------------------------------------
+    # Step [B]: register the QSIPrep DWI (ACPC space) to Parrot T1/mesh space and
+    # carry the derivatives over -- MRtrix-native in the QSIRecon image. Tensor is
+    # reoriented the institutional way (mrtransform rotates the DW gradients, then
+    # re-fit in T1), and the tractogram is transformed so it shares the atlas's
+    # space (which lets the connectome step below run correctly). Fatal on failure
+    # like every other step.
+    NAME="dwi2t1"
+    if [ "$HAS_DWI" = true ] && \
+       compgen -G "$OUTPUT_DIR/qsiprep/sub-${SUBJECT}/dwi/"*space-ACPC_desc-preproc_dwi.nii.gz > /dev/null 2>&1; then
+        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+            log_step "Running $NAME (register DWI derivatives to T1 space)..."
+            step_start=$(date +%s)
+
+            # Heavy scratch (resampled 4D DWI, decompressed tractogram, warp) goes
+            # to the swept WORK_DIR, not the derivatives tree. Products land under
+            # dwitensor/ (tensor + transform) and qsirecon/ (T1 tractogram); this
+            # stage has no output folder of its own.
+            docker run --rm --user "$(id -u):$(id -g)" \
+                -v "$OUTPUT_DIR":/derivatives \
+                -v "$PARROT_SCRIPT_DIR/bin/dwi_to_t1.sh":/dwi_to_t1.sh:ro \
+                --entrypoint bash "$IMG_QSIRECON" \
+                /dwi_to_t1.sh "$SUBJECT" "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt" 2>&1
+            check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt"
+
+            step_end=$(date +%s)
+            echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+        else
+            echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+        fi
+    fi
+
+    # ---------------------------------------------------------
+    # CONNECTOME MATRICES  (tck2connectome, in T1 space)
+    # ---------------------------------------------------------
+    # Runs after dwi2t1 so the tractogram is in the atlas's T1/mesh space. Same
+    # MRtrix3 that generated the tracks (QSIRecon image). Builds the subject
+    # connectome from the T1 tractogram + native T1 atlas.
+    NAME="connectivity"
+    if [ "$HAVE_TRACKS" = true ]; then
+        if [ ! -f "$LOG_DIR/${NAME}-matrices_log.txt" ]; then
+            log_step "Running $NAME matrices (tck2connectome)..."
+            step_start=$(date +%s)
+
+            docker run --rm --user "$(id -u):$(id -g)" \
+                -v "$OUTPUT_DIR":/derivatives \
+                -v "$PARROT_SCRIPT_DIR/bin/make_connectomes.sh":/make_connectomes.sh:ro \
+                --entrypoint bash "$IMG_QSIRECON" \
+                /make_connectomes.sh "$SUBJECT" > "$LOG_DIR/${NAME}-matrices_log.txt" 2>&1
+            check_step $? "$NAME matrices" "$LOG_DIR/${NAME}-matrices_log.txt"
+
+            step_end=$(date +%s)
+            echo "$NAME matrices completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+        else
+            echo "$NAME matrices log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
         fi
     fi
 

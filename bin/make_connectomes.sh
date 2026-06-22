@@ -24,7 +24,11 @@ SUB="$1"
 CONN="/derivatives/connectivity/sub-${SUB}"
 DWI_DIR="/derivatives/qsirecon/sub-${SUB}/dwi"
 
-TCK_GZ=$(ls "$DWI_DIR"/*streamlines.tck.gz | head -n 1)
+# Use the T1-space tractogram: the Parrot atlas (NODES below) lives in T1/mesh
+# space, so tracts must be there too or tck2connectome mis-assigns endpoints by
+# the ACPC<->mesh rigid offset (the connectome registration gap). The dwi2t1
+# stage produces this from the native ACPC tractogram.
+TCK_GZ=$(ls "$DWI_DIR"/*space-T1*streamlines.tck.gz | head -n 1)
 WEIGHTS=$(ls "$DWI_DIR"/*streamlineweights.csv | head -n 1)
 echo "Tractogram   : $TCK_GZ"
 echo "SIFT2 weights: $WEIGHTS"
