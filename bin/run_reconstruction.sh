@@ -1019,6 +1019,37 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     fi
 
     # ---------------------------------------------------------
+    # DWI TENSOR  (anisotropic-conductivity front end, WIP)
+    # ---------------------------------------------------------
+    # Fit a diffusion tensor from the QSIPrep-preprocessed DWI -- step [A] of the
+    # WM-anisotropy feature. Runs in the QSIRecon image (MRtrix), same pattern as
+    # the connectome step. Output stays in QSIPrep's ACPC space; resampling +
+    # eigenvector reorientation onto the FEM mesh is a separate, not-yet-built
+    # step. Needs only the qsiprep DWI (not the tractogram). The tensor will be
+    # consumed by the anisotropic FEM leadfield, so a failure is fatal like every
+    # other step (check_step exits + cleans the partial output dir).
+    NAME="dwitensor"
+    if [ "$HAS_DWI" = true ] && \
+       compgen -G "$OUTPUT_DIR/qsiprep/sub-${SUBJECT}/dwi/"*space-ACPC_desc-preproc_dwi.nii.gz > /dev/null 2>&1; then
+        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+            log_step "Running $NAME (DTI fit for anisotropic conductivity)..."
+            step_start=$(date +%s)
+
+            docker run --rm --user "$(id -u):$(id -g)" \
+                -v "$OUTPUT_DIR":/derivatives \
+                -v "$PARROT_SCRIPT_DIR/bin/make_dwitensor.sh":/make_dwitensor.sh:ro \
+                --entrypoint bash "$IMG_QSIRECON" \
+                /make_dwitensor.sh "$SUBJECT" > "$LOG_DIR/${NAME}_log.txt" 2>&1
+            check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
+
+            step_end=$(date +%s)
+            echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+        else
+            echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+        fi
+    fi
+
+    # ---------------------------------------------------------
     # ---------------------------------------------------------
     # PARROT FORWARD MODEL
     # ---------------------------------------------------------
