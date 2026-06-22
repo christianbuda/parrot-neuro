@@ -157,6 +157,32 @@ Here is detailed what each reconstructed folder contains. For convenience, only 
 │       ├── simnibs_density.txt: Density (from ITIS) for the simnibs volume.
 │       ├── simnibs_nonlinearity_parameter.txt: Nonlinearity parameter (from ITIS) for the simnibs volume (nan is used when not available).
 │       └── simnibs_speed_of_sound.txt: Speed of sound (from ITIS) for the simnibs volume.
+├── qsiprep/: QSIPrep DWI-preprocessing output (BIDS-derivatives). DWI is motion/eddy/SDC-corrected and resampled into AC-PC-aligned subject space (space-ACPC); gradients are rotated to match.
+│   └── sub-subject/
+│       ├── dwi/sub-subject_space-ACPC_desc-preproc_dwi.nii.gz (+ .bval/.bvec): preprocessed DWI and (rotated) gradient table.
+│       ├── dwi/sub-subject_space-ACPC_desc-brain_mask.nii.gz: DWI brain mask.
+│       └── anat/sub-subject_from-ACPC_to-anat_mode-image_xfm.mat: rigid ACPC<->T1 transform, reused by the dwi2t1 stage (QSIPrep "anat" space is bit-identical to raw/T1).
+├── qsirecon/: QSIRecon tractography output (MRtrix3, adaptive SS3T/MSMT recon spec, ACT-hsvs from FastSurfer).
+│   └── sub-subject/dwi/
+│       ├── sub-subject_space-ACPC_model-ifod2_streamlines.tck.gz: whole-brain tractogram (10M streamlines, ACPC space).
+│       ├── sub-subject_space-T1_model-ifod2_streamlines.tck.gz: same tractogram carried into T1/mesh space by the dwi2t1 stage (the connectome is built from this).
+│       └── sub-subject_space-ACPC_model-sift2_streamlineweights.csv: SIFT2 per-streamline weights (+ mu factor).
+├── connectivity/: Subject structural connectome (tck2connectome, in T1/mesh space) or, when DWI is absent/too sparse, the group-average template fallback.
+│   └── sub-subject/
+│       ├── atlas*_connectivity.nii.gz: per-resolution node parcellations (Parrot atlas, T1 space).
+│       ├── weights_*.txt: SIFT2-weighted streamline-count connectomes (TVB coupling).
+│       ├── weights_invnodevol_*.txt: node-volume-normalised variant (graph-theory metrics).
+│       ├── distances_*.txt: mean streamline-length connectomes (TVB conduction delays).
+│       └── assignments_*.txt: per-streamline node assignments (re-derive edges without re-tracking).
+├── dwitensor/: Diffusion tensor for white-matter anisotropic conductivity (MRtrix dwi2tensor + tensor2metric). Also holds the DWI->T1 registration artefacts (the dwi2t1 stage has no folder of its own).
+│   └── sub-subject/
+│       ├── sub-subject_space-ACPC_model-dti_tensor.nii.gz: 6-vol tensor fit in native ACPC space.
+│       ├── sub-subject_space-T1_model-dti_tensor.nii.gz: tensor re-fit in T1/mesh space (ANTs-resampled DWI + gradient rotation; via the dwi2t1 stage).
+│       ├── sub-subject_space-T1_model-dti_param-eigvecs.nii.gz: eigenframe v1|v2|v3 (orthotropic axes).
+│       ├── sub-subject_space-T1_model-dti_param-eigvals.nii.gz: eigenvalues (lambda1>=2>=3).
+│       ├── sub-subject_space-T1_model-dti_param-fa.nii.gz: fractional anisotropy.
+│       ├── sub-subject_space-T1_desc-brain_mask.nii.gz: DWI brain mask in T1 space.
+│       └── sub-subject_from-ACPC_to-T1_ras.txt: RAS 4x4 transform used to carry the DWI products into T1/mesh space (reused from QSIPrep; no re-registration).
 ├── scalp_landmarks/: Subject landmarks built on surfaces/charm_scalp.stl
 │   ├── fiducials.json: RPA, LPA, NAS, IN positions.
 │   └── outlines.npy: Right ear, left ear, and eyes outline, used to exclude electrodes.

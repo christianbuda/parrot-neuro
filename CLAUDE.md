@@ -52,6 +52,13 @@ parrot_mri_reconstruction   (CUDA 12.4 / Ubuntu 22.04)
   · MNE BEM · Schaefer atlases (100–1000) · cerebellum + BigBrain registration
   → surfaces, tissue label volumes (electrical + acoustic), atlases, electrodes
     │
+    ▼  (when DWI present — consumes FastSurfer ACT, the atlas, and raw/T1)
+pennlinc/qsiprep · pennlinc/qsirecon   (external; MRtrix3 / ANTs)
+  QSIPrep DWI preproc (→ AC-PC space) · QSIRecon SS3T/MSMT tractography (ACT-hsvs)
+  · make_dwitensor.sh (DTI fit) · dwi_to_t1.sh (reuse QSIPrep xfm → T1/mesh space)
+  · make_connectomes.sh (tck2connectome, T1 space)
+  → structural connectome (TVB), diffusion tensor (for WM anisotropy)
+    │
     ▼
 parrot_forward_model        (CGAL 6.1.1 / Python 3.12)
   place_electrodes.py · place_dipoles.py (Poisson-disk) · nifti_to_inr.py
@@ -81,7 +88,11 @@ parrot_forward_solvers      (DUNEuro 2.10 / OpenMEEG 2.4)
 | `containers/parrot_forward_model/mesher.cpp` | CGAL tetrahedral mesher (C++) |
 | `containers/parrot_forward_solvers/make_leadfield_duneuro.py` | FEM leadfield (DUNEuro) |
 | `containers/parrot_forward_solvers/make_leadfield_openmeeg.py` | BEM leadfield (OpenMEEG) |
-| `template_data/connectivity/` | Group-average TVB connectivity (100 & 1000 regions); inputs to the planned sim stage |
+| `bin/make_dwitensor.sh` | DTI tensor fit (MRtrix `dwi2tensor`), run inside the QSIRecon image |
+| `bin/dwi_to_t1.sh` | Carry DWI tensor + tractogram from QSIPrep's ACPC space into T1/mesh space, reusing QSIPrep's `from-ACPC_to-anat` transform (ANTs resample + world-frame gradient rotation + `dwi2tensor` refit; `tcktransform`) |
+| `bin/make_connectomes.sh` | Subject connectome via `tck2connectome` (T1 space), run inside the QSIRecon image |
+| `containers/parrot_mri_reconstruction/scripts/prepare_connectivity_atlas.py` | Collapse the Parrot atlas into the connectivity node parcellations |
+| `template_data/connectivity/` | Group-average TVB connectivity (100 & 1000 regions); template fallback when no subject DWI |
 
 ## Conventions & Gotchas
 
@@ -100,6 +111,14 @@ parrot_forward_solvers      (DUNEuro 2.10 / OpenMEEG 2.4)
 - **sim4life is optional/manual.** If a `sim4life.nii.gz` tissue volume exists it is preferred
   for meshing; otherwise the SimNIBS labels are used.
 - **GPU auto-detection.** `--gpus` falls back to CPU-only if `nvidia-smi` is missing.
+- **DWI stages (optional, external images).** QSIPrep/QSIRecon (`pennlinc/*`) run only when DWI
+  is present. The `bin/make_*.sh` and `bin/dwi_to_t1.sh` scripts run *inside* the QSIRecon image
+  (MRtrix3 + ANTs) and are bind-mounted, so editing them needs no image rebuild. Gotchas:
+  QSIPrep gets a **raw-only `/bids`** (subject + dataset metadata only — its pybids indexer
+  crashes on the nested derivatives tree); MRtrix **cannot read `.tck.gz`** (decompress first);
+  and QSIPrep works in **AC-PC space**, which is *not* the mesh/T1 space — `dwi2t1` reuses
+  QSIPrep's own `from-ACPC_to-anat` transform (its "anat" == `raw/T1`), applied with ANTs, to
+  reach mesh space. We do **not** re-register (`mrregister` diverged; reuse is correct + robust).
 
 ## Repo Layout Notes
 
@@ -117,7 +136,11 @@ parrot_forward_solvers      (DUNEuro 2.10 / OpenMEEG 2.4)
 
 Branch `feat/dwi-connectivity-anisotropy-hartmut` and beyond — keep these in mind when planning:
 
-- DWI preprocessing + tractography → subject-specific structural connectivity.
-- Anisotropic conductivity tensors (from DWI) for the FEM leadfield.
+- DWI preprocessing + tractography → subject-specific structural connectivity. **[done]**
+  (QSIPrep → QSIRecon → `connectivity`; connectome built in T1/mesh space).
+- Anisotropic conductivity tensors (from DWI) for the FEM leadfield. **[in progress]** DTI fit
+  (`dwitensor`) and registration into mesh space (`dwi2t1`) are done; remaining: map eigenvalues →
+  per-element conductivity tensors (shape-preserving orthotropic) and feed full 3×3 tensors to
+  DUNEuro in `make_leadfield_duneuro.py` (which currently uses isotropic per-label conductivities).
 - EEG noise modeling.
 - JAX-accelerated TVB simulation stage with TVB-optim parameter fitting.
