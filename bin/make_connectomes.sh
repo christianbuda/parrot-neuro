@@ -54,21 +54,21 @@ for N in 100 200 300 400 500 600 700 800 900 1000; do
         -assignment_radial_search 2 \
         -symmetric -zero_diagonal \
         -out_assignments "$CONN/assignments_${N}.txt" \
-        -force
+        -quiet -force
 
     # SIFT2-weighted, node-volume normalised (graph-theory variant).
     tck2connectome "$TCK" "$NODES" "$CONN/weights_invnodevol_${N}.txt" \
         -tck_weights_in "$WEIGHTS" \
         -assignment_radial_search 2 \
         -symmetric -zero_diagonal -scale_invnodevol \
-        -force
+        -quiet -force
 
     # Mean streamline length per edge (TVB conduction delays; not Euclidean).
     tck2connectome "$TCK" "$NODES" "$CONN/distances_${N}.txt" \
         -tck_weights_in "$WEIGHTS" \
         -assignment_radial_search 2 \
         -symmetric -zero_diagonal -scale_length -stat_edge mean \
-        -force
+        -quiet -force
 done
 
 echo "All connectomes generated for sub-${SUB}."
