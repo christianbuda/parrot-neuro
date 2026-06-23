@@ -24,6 +24,7 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
     trimesh \
     pymeshlab \
     meshio \
+    nibabel \
     rtree
 
 # --- 3. Setup DUNEuro Workspace ---
@@ -59,7 +60,8 @@ RUN apt-get update && apt-get install -y curl jq && \
 ENV PYTHONPATH="/duneci/modules/build-release/duneuro-py/src:${PYTHONPATH}"
 
 RUN mkdir /scripts
-COPY make_leadfield_openmeeg.py make_leadfield_duneuro.py /scripts/
+COPY make_leadfield_openmeeg.py make_leadfield_duneuro.py \
+     dti_to_conductivity_tensors.py mesh_io.py /scripts/
 
 WORKDIR /pipeline
 

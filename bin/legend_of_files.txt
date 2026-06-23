@@ -77,6 +77,7 @@ Here is detailed what each reconstructed folder contains. For convenience, only 
 │   ├── affine_*.nii.gz: Affine transformed (to subject space) cerebellar volumes.
 │   ├── nonlinear_*.vtk: Nonlinearly transformed (to subject space) cerebellar surfaces.
 │   ├── nonlinear_*.nii.gz: Nonlinearly transformed (to subject space) cerebellar volumes.
+│   ├── nonlinear_DTI.nii.gz: Cerebellar diffusion tensor warped from the template (PPD tensor reorientation), in MRtrix component order; fills cerebellar WM for the anisotropic-conductivity model. Optional (only when the cerebellum template ships a DTI).
 │   └── transform_files/: Computed transformation files, from Subject to Template.
 ├── surfaces/: Surface files from various tools converted to world space and aggregated here.
 │   ├── cereb_gray.stl: Pial cerebellar surface (nonlinearly transformed from template).
@@ -183,6 +184,10 @@ Here is detailed what each reconstructed folder contains. For convenience, only 
 │       ├── sub-subject_space-T1_model-dti_param-fa.nii.gz: fractional anisotropy.
 │       ├── sub-subject_space-T1_desc-brain_mask.nii.gz: DWI brain mask in T1 space.
 │       └── sub-subject_from-ACPC_to-T1_ras.txt: RAS 4x4 transform used to carry the DWI products into T1/mesh space (reused from QSIPrep; no re-registration).
+├── anisotropy/: White-matter anisotropic conductivity tensors for the CGAL FEM leadfield (from the subject DTI + optional cerebellar template DTI). Present only when a subject DTI exists.
+│   └── sub-subject/
+│       ├── conductivity_tensors.npy: (M,3,3) per-WM-tetrahedron anisotropic conductivity tensors (shape-preserving orthotropic; geometric mean = isotropic WM sigma). M = number of WM tetrahedra.
+│       └── wm_element_indices.npy: (M,) indices of those WM tetrahedra in the CGAL mesh, mapping each tensor to its element (feeds the duneuro hybrid-label config).
 ├── scalp_landmarks/: Subject landmarks built on surfaces/charm_scalp.stl
 │   ├── fiducials.json: RPA, LPA, NAS, IN positions.
 │   └── outlines.npy: Right ear, left ear, and eyes outline, used to exclude electrodes.

@@ -1,12 +1,15 @@
 import duneuropy as dp
 import numpy as np
-import meshio
 import argparse
 import os
 from scipy.spatial import cKDTree
 from mpi4py import MPI
 import sys
 import json
+
+# Mesh/label-table readers are shared with the anisotropy front-end
+# (dti_to_conductivity_tensors.py) so both read the mesh identically.
+from mesh_io import read_mesh, read_conductivities, read_tissues
 
 # Force line buffering for standard output
 sys.stdout.reconfigure(line_buffering=True)
@@ -115,38 +118,6 @@ def adjust_dipoles(dipoles, dipole_labels, valid_tissues, nodes, elements, label
 
     return distances, np.where(dipoles_to_adjust)[0]
 
-def read_mesh(filename):
-    mesh = meshio.read(filename)
-    
-    # convert units to meters
-    points = np.ascontiguousarray(mesh.points.astype(np.dtype('float64'))/1000)
-    tetrahedra = np.ascontiguousarray(mesh.cells_dict['tetra'].astype(np.dtype('int64')))
-    if filename[-4:] == '.msh':
-        labels = np.ascontiguousarray(mesh.cell_data['gmsh:physical'][1].astype(np.dtype('int64')))
-    elif filename[-5:] == '.mesh':
-        labels = np.ascontiguousarray(mesh.cell_data['medit:ref'][1].astype(np.dtype('int64')))
-    else:
-        raise ValueError('Wrong mesh input type (this is not a general reader!).')
-    
-    assert len(tetrahedra) == len(labels), 'Labels don\'t match tetrahedra, check reader!'
-    return points, tetrahedra, labels
-
-def read_conductivities(filename):
-    with open(filename, 'r') as f:
-        cond = f.readlines()
-    
-    cond = np.array(list(map(lambda x: float(x.split(',')[-1]), cond)))
-    
-    # Replace any absolute 0.0 conductivity with a tiny, safe number
-    cond[np.isclose(cond, 0)] = 1e-6
-    return(cond)
-
-def read_tissues(filename):
-    with open(filename, 'r') as f:
-        names = f.readlines()
-    names = list(map(lambda x: x.split(',')[-1].strip().lower(), names))
-    return(names)
-
 def read_electrodes(filename):
     with open(filename, 'r') as f:
         el = f.readlines()
@@ -236,8 +207,49 @@ def process_leadfield(leadfield, adjust_volume = True, adjust_density = True, ne
     
     if rereference:
         leadfield = avg_ref(leadfield)
-    
+
     return leadfield
+
+def build_conductivity_config(tissue_label, conductivities, dti_tensors_path=None):
+    """Build the duneuro `volume_conductor['tensors']` sub-dict.
+
+    Returns the *conductor* labeling (which must NOT be used for dipole
+    placement -- that uses the original per-element tissue_label).
+
+    Without anisotropy: the original per-label scalar path -- duneuro builds
+    value*I internally. Byte-identical to the historical behaviour.
+
+    With anisotropy (--dti_tensors_path): a hybrid per-element tensor path.
+    Non-WM tissues keep their shared tissue label (one isotropic sigma*I each);
+    every WM tetrahedron gets a *unique* label pointing at its own 3x3
+    conductivity tensor (from dti_to_conductivity_tensors.py). So the tensor
+    list has length n_tissues + n_WM_tets rather than one entry per element --
+    far smaller than a full per-element list. duneuro indexes tensors by label
+    (`tensors[labels[element]]`), reading each as a full 3x3 (no Voigt packing).
+    """
+    if dti_tensors_path is None:
+        # scalar per-label; duneuro forms sigma*I internally
+        return {'labels': tissue_label, 'conductivities': conductivities}
+
+    # WM-only conductivity tensors + their element indices (written side by side)
+    wm_tensors = np.load(dti_tensors_path)                                  # (M, 3, 3)
+    wm_indices = np.load(os.path.join(os.path.dirname(dti_tensors_path),
+                                      'wm_element_indices.npy'))            # (M,)
+    assert len(wm_tensors) == len(wm_indices), 'tensor/index length mismatch'
+
+    n_tissues = len(conductivities)
+    # one isotropic 3x3 per tissue label, then one anisotropic 3x3 per WM tet
+    tensor_list = [float(c) * np.eye(3) for c in conductivities]
+    tensor_list.extend(np.asarray(wm_tensors, dtype=np.float64))
+
+    # conductor labels: copy tissue labels, then give WM tets unique labels
+    # that index into the appended tensors (n_tissues + 0 .. n_tissues + M-1).
+    conductor_labels = tissue_label.copy()
+    conductor_labels[wm_indices] = n_tissues + np.arange(len(wm_indices))
+
+    print(f"Anisotropy ON: {len(wm_indices)} WM tetrahedra get per-element tensors "
+          f"({len(tensor_list)} total tensors = {n_tissues} tissues + {len(wm_indices)} WM).")
+    return {'labels': conductor_labels, 'tensors': tensor_list}
 
 if __name__ == "__main__":
     ################ input parsing ##############
@@ -311,7 +323,23 @@ if __name__ == "__main__":
         default='./neuronal_strength_dict.json',
         help="Dictionary that maps dipole orientation type ('N', 'G', 'P', 'R') to base strength. Default values are an heuristics from Murakami and Okada (2006)."
     )
-    
+
+    parser.add_argument(
+        '--dti_tensors_path',
+        type=str,
+        required=False,
+        default=None,
+        help='Optional path to per-WM-tet conductivity tensors (anisotropy/.../conductivity_tensors.npy from dti_to_conductivity_tensors.py; wm_element_indices.npy must sit beside it). When given, white matter uses anisotropic per-element tensors; when omitted, behaviour is identical to the isotropic solver.'
+    )
+
+    parser.add_argument(
+        '--threads',
+        type=int,
+        required=False,
+        default=0,
+        help='Threads for the (TBB-parallel) transfer-matrix solve. Each thread holds its own solver/AMG hierarchy, so on many-core machines the default (0 = all cores) can exhaust memory on large meshes. Set a modest number (e.g. 32). 0 keeps DUNEuro\'s automatic (all-cores) behaviour.'
+    )
+
     # Parse the arguments from the command line
     args = parser.parse_args()
 
@@ -324,11 +352,16 @@ if __name__ == "__main__":
     outlabel = args.label
     valid_tissues = args.valid_tissues
     neuronal_strength_dict = args.neuronal_strength_dict
-    
+    dti_tensors_path = args.dti_tensors_path
+
     nodes, tetrahedra, tissue_label = read_mesh(mesh_path)
     tissue_names = read_tissues(tissue_names)
     conductivities = read_conductivities(cond_path)
     electrodes = read_electrodes(add_output_dir(f'electrodes/sub-{subject}/landmarks_10-5-full.csv'))
+    # NOTE: dipole placement classifies dipoles by ORIGINAL tissue identity, so it
+    # must receive the unmodified per-element tissue_label -- never the per-element
+    # conductor labeling built below. Keeping White-Matter out of valid_tissues is
+    # what guarantees no dipole lands in an anisotropic WM tet (Venant-safe).
     dipoles = get_dipoles(add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/dipole_positions.npy'), nodes, tetrahedra, tissue_label, tissue_names, valid_tissues)
 
     config = {
@@ -338,8 +371,7 @@ if __name__ == "__main__":
         'volume_conductor' : {
             'grid' : {'nodes' : nodes,
                       'elements' : tetrahedra},
-            'tensors' : {'labels' : tissue_label,
-                        'conductivities' : conductivities}
+            'tensors' : build_conductivity_config(tissue_label, conductivities, dti_tensors_path)
         },
         # 'solver' : {'verbose' : 1}
     }
@@ -349,7 +381,12 @@ if __name__ == "__main__":
         'codims': [3]
     }
 
+    # numberOfThreads is read at the TOP level of tm_config (only 'reduction' lives
+    # under 'solver'); omitting it makes DUNEuro use all cores, which can blow up
+    # memory (one solver/AMG hierarchy per thread) on large meshes + many cores.
     tm_config = {'solver' : {'reduction' : 1e-10}}
+    if args.threads and args.threads > 0:
+        tm_config['numberOfThreads'] = args.threads
 
     source_model_config = {
         # Average-referencing the EEG is standard practice
