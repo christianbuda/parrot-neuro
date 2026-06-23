@@ -502,14 +502,16 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         mkdir -p "$OUTPUT_DIR/$NAME"
 
         step_start=$(date +%s)
+        # Use the standardized, MPRAGEised T1 from ingest (T1_DOCKER), not the raw
+        # BIDS T1 -- so MP2RAGE subjects get the same conditioned input recon-all uses.
         docker run $DOCKER_GPU --rm --user $(id -u):$(id -g) \
             -v "$BIDS_DIR":/data:ro \
-            -v "$OUTPUT_DIR/$NAME":/output \
+            -v "$OUTPUT_DIR":/derivatives \
             "$IMG_FASTSURFER" \
             --fs_license /data/license.txt \
-            --t1 "/data/sub-${SUBJECT}/anat/$(basename "$T1_PATH")" \
+            --t1 "$T1_DOCKER" \
             --sid "sub-${SUBJECT}" \
-            --sd /output \
+            --sd /derivatives/$NAME \
             --3T --threads "$N_THREADS" "${FS_MODE[@]}" > "$LOG_DIR/${NAME}_log.txt" 2>&1
         fastsurfer_rc=$?
 
@@ -579,18 +581,25 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # Optional surface backend: full recon-all into freesurfer/sub-X. Skipped for
     # the default FastSurfer backend, and skipped-via-placeholder-log for HCP (whose
     # FreeSurfer recon is staged in directly). Uses the standardized, MPRAGEised
-    # T1_DOCKER from ingest; the old T2/FLAIR pial refinement is intentionally gone
-    # (FastSurfer is the default surface source and is T1-only).
+    # T1_DOCKER from ingest. Unlike FastSurfer (T1-only), recon-all refines the pial
+    # surface with the T2 when one is available (-T2 ... -T2pial); FLAIR refinement
+    # stays dropped.
     NAME="freesurfer"
     if [ "$SURF_DIR" = "freesurfer" ]; then
         if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
             log_step "Running $NAME recon-all (surface reconstruction)..."
             mkdir -p "$OUTPUT_DIR/$NAME"
 
+            # T2 pial refinement when a (standardized) T2 is present.
+            fs_t2_args=""
+            if [ -n "$T2_PATH" ]; then
+                fs_t2_args="-T2 $T2_DOCKER -T2pial"
+            fi
+
             step_start=$(date +%s)
             run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
                 "export SUBJECTS_DIR=/derivatives/freesurfer && \
-                 recon-all -subject sub-${SUBJECT} -i $T1_DOCKER -all -threads $N_THREADS"
+                 recon-all -subject sub-${SUBJECT} -i $T1_DOCKER $fs_t2_args -all -threads $N_THREADS"
 
             step_end=$(date +%s)
             echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
