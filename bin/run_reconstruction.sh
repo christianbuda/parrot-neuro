@@ -59,7 +59,9 @@ usage() {
     echo "  --spacing-duneuro-simnibs  Dipole spacing (mm) for DUNEuro FEM with SimNIBS mesh (Default: 3)."
     echo "  --spacing-duneuro-cgal     Dipole spacing (mm) for DUNEuro FEM with CGAL mesh (Default: 2)."
     echo "  --dipole-seed              Integer seed for reproducible dipole sampling (Default: unset = random)."
-    echo "  --dwi-preprocessed         Treat the BIDS dwi/ data as already corrected and skip QSIPrep (e.g. HCP)."
+    echo "  --dwi-preprocessed FORMAT  DWI is already preprocessed; skip QSIPrep. FORMAT is 'qsiprep' (a qsiprep-"
+    echo "                             derivatives tree already at <output_dir>/qsiprep/) or 'hcp' (HCP-YA, staged under"
+    echo "                             <bids_dir>/sourcedata/hcp/<ID>/; uses QSIRecon --input-type hcpya)."
     echo "  --fix-inputs               Auto-repair flagged input issues (squeeze singleton 4D, snap voxel-size artifacts). Default: flag only, never mutate."
     echo "  --recon                    Surface recon backend: 'fastsurfer' (default, seg+surf) or 'freesurfer' (recon-all surfaces + FastSurfer --seg_only for CNN subsegs)."
     exit 1
@@ -98,7 +100,7 @@ SPACING_OPENMEEG=4
 SPACING_DUNEURO_SIMNIBS=3
 SPACING_DUNEURO_CGAL=2
 DIPOLE_SEED=""
-DWI_PREPROCESSED=false
+DWI_FORMAT=""           # "" = raw DWI in BIDS dwi/ (run QSIPrep); else a preprocessed format
 FIX_INPUTS=false
 RECON_BACKEND=fastsurfer
 
@@ -137,8 +139,8 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --dwi-preprocessed)
-            DWI_PREPROCESSED=true
-            shift
+            DWI_FORMAT="$2"
+            shift 2
             ;;
         --fix-inputs)
             FIX_INPUTS=true
@@ -164,6 +166,12 @@ SPACING_LIST=("$SPACING_OPENMEEG" "$SPACING_DUNEURO_SIMNIBS" "$SPACING_DUNEURO_C
 # Validate the recon backend selection.
 if [ "$RECON_BACKEND" != "fastsurfer" ] && [ "$RECON_BACKEND" != "freesurfer" ]; then
     echo "ERROR: --recon must be 'fastsurfer' or 'freesurfer' (got '$RECON_BACKEND')."
+    usage
+fi
+
+# Validate the preprocessed-DWI format selection ("" = raw / run QSIPrep).
+if [ -n "$DWI_FORMAT" ] && [ "$DWI_FORMAT" != "qsiprep" ] && [ "$DWI_FORMAT" != "hcp" ]; then
+    echo "ERROR: --dwi-preprocessed must be 'qsiprep' or 'hcp' (got '$DWI_FORMAT')."
     usage
 fi
 
@@ -374,31 +382,46 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     # Auto-Discover Diffusion (DWI) — optional
     # ---------------------------------------------------------
-    # DWI drives subject-specific structural connectivity. It is optional: with
-    # no usable DWI the pipeline degrades gracefully to the template connectome.
-    # Single user-facing input location is the BIDS dwi/ folder (the same whether
-    # or not --dwi-preprocessed is set); the flag only toggles whether QSIPrep
-    # correction runs.
-    DWI_PATH=$(find "$SUB_BIDS_DIR/dwi" -name "sub-${SUBJECT}*_dwi.nii.gz" 2>/dev/null | head -n 1)
+    # DWI drives subject-specific structural connectivity + WM anisotropy. Optional:
+    # with no usable DWI the pipeline degrades to the template connectome + isotropic
+    # FEM. Three sources, selected by --dwi-preprocessed:
+    #   "" (raw) : BIDS dwi/  -> QSIPrep -> QSIRecon (--input-type qsiprep)
+    #   qsiprep  : a qsiprep-derivatives tree already at <out>/qsiprep/ (skip QSIPrep)
+    #   hcp      : HCP-YA native tree at <bids>/sourcedata/hcp/<ID>/ (QSIRecon hcpya)
     HAS_DWI=false
-    if [ -n "$DWI_PATH" ]; then
-        BVAL_PATH="${DWI_PATH%.nii.gz}.bval"
-        BVEC_PATH="${DWI_PATH%.nii.gz}.bvec"
-        if [ -f "$BVAL_PATH" ] && [ -f "$BVEC_PATH" ]; then
+    BVAL_DOCKER=""        # bval source for adaptive recon-spec selection (per format)
+    if [ "$DWI_FORMAT" = "hcp" ]; then
+        HCP_SRC="$BIDS_DIR/sourcedata/hcp/${SUBJECT}"
+        if [ -f "$HCP_SRC/T1w/Diffusion/data.nii.gz" ] && [ -f "$HCP_SRC/T1w/Diffusion/bvals" ] && [ -f "$HCP_SRC/T1w/Diffusion/bvecs" ]; then
             HAS_DWI=true
-            DWI_DOCKER="/bids/sub-${SUBJECT}/dwi/$(basename "$DWI_PATH")"
-            if [ "$DWI_PREPROCESSED" = true ]; then
-                echo "Found DWI (flagged already-preprocessed): $DWI_PATH" | tee -a "$LOG_FILE"
-            else
+            BVAL_DOCKER="/bids/sourcedata/hcp/${SUBJECT}/T1w/Diffusion/bvals"
+            echo "Found HCP DWI: $HCP_SRC/T1w/Diffusion/data.nii.gz" | tee -a "$LOG_FILE"
+        fi
+    elif [ "$DWI_FORMAT" = "qsiprep" ]; then
+        QP_DWI=$(find "$OUTPUT_DIR/qsiprep/sub-${SUBJECT}/dwi" -name "*space-ACPC_desc-preproc_dwi.nii.gz" 2>/dev/null | head -n 1)
+        if [ -n "$QP_DWI" ]; then
+            HAS_DWI=true
+            BVAL_DOCKER="/derivatives/qsiprep/sub-${SUBJECT}/dwi/$(basename "${QP_DWI%.nii.gz}").bval"
+            echo "Found preprocessed QSIPrep DWI: $QP_DWI" | tee -a "$LOG_FILE"
+        fi
+    else
+        DWI_PATH=$(find "$SUB_BIDS_DIR/dwi" -name "sub-${SUBJECT}*_dwi.nii.gz" 2>/dev/null | head -n 1)
+        if [ -n "$DWI_PATH" ]; then
+            BVAL_PATH="${DWI_PATH%.nii.gz}.bval"
+            BVEC_PATH="${DWI_PATH%.nii.gz}.bvec"
+            if [ -f "$BVAL_PATH" ] && [ -f "$BVEC_PATH" ]; then
+                HAS_DWI=true
+                DWI_DOCKER="/bids/sub-${SUBJECT}/dwi/$(basename "$DWI_PATH")"
+                BVAL_DOCKER="${DWI_DOCKER%.nii.gz}.bval"
                 echo "Found DWI: $DWI_PATH" | tee -a "$LOG_FILE"
+            else
+                echo "[WARN] DWI found but .bval/.bvec missing alongside it; treating sub-${SUBJECT} as no-DWI." | tee -a "$LOG_FILE"
             fi
-        else
-            echo "[WARN] DWI found but .bval/.bvec missing alongside it; treating sub-${SUBJECT} as no-DWI." | tee -a "$LOG_FILE"
         fi
     fi
 
-    if [ "$DWI_PREPROCESSED" = true ] && [ "$HAS_DWI" = false ]; then
-        echo "[WARN] --dwi-preprocessed set but no usable DWI found for sub-${SUBJECT}; falling back to template connectome." | tee -a "$LOG_FILE"
+    if [ -n "$DWI_FORMAT" ] && [ "$HAS_DWI" = false ]; then
+        echo "[WARN] --dwi-preprocessed $DWI_FORMAT set but no usable DWI found for sub-${SUBJECT}; falling back to template connectome." | tee -a "$LOG_FILE"
     fi
 
     # TSV Overrides (positional columns: 4=skip-T2-reg, 5=no-neck, 6=mp2rage)
@@ -881,7 +904,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # QSIPrep runs its own anatomical workflow (SynthStrip/TemplateFlow) and does
     # not consume our FreeSurfer dir -- FreeSurfer reuse belongs to the recon stage.
     NAME="qsiprep"
-    if [ "$HAS_DWI" = true ] && [ "$DWI_PREPROCESSED" = false ]; then
+    if [ "$HAS_DWI" = true ] && [ -z "$DWI_FORMAT" ]; then
         if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
             log_step "Running $NAME (DWI preprocessing)..."
             mkdir -p "$OUTPUT_DIR/$NAME"
@@ -949,8 +972,8 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         else
             echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
         fi
-    elif [ "$DWI_PREPROCESSED" = true ]; then
-        echo "$NAME skipped for sub-${SUBJECT} (--dwi-preprocessed): using DWI as-is." | tee -a "$LOG_FILE"
+    elif [ "$HAS_DWI" = true ] && [ -n "$DWI_FORMAT" ]; then
+        echo "$NAME skipped for sub-${SUBJECT} (--dwi-preprocessed $DWI_FORMAT): DWI already preprocessed." | tee -a "$LOG_FILE"
     else
         echo "$NAME skipped for sub-${SUBJECT} (no usable DWI)." | tee -a "$LOG_FILE"
     fi
@@ -958,24 +981,42 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ---------------------------------------------------------
     # QSIRECON (TRACTOGRAPHY)
     # ---------------------------------------------------------
-    # Optional. Selects an MRtrix recon spec adaptively from the .bval shell
-    # scheme and exports the tractogram + SIFT2 weights for tck2connectome (run
-    # in the connectivity stage). A too-sparse scheme -> skip (template fallback).
-    # The --dwi-preprocessed (HCP, --input-type hcpya) path is not wired yet.
+    # Optional. Selects an MRtrix recon spec adaptively from the bval shell scheme
+    # and exports the tractogram + SIFT2 weights for tck2connectome (run in the
+    # connectivity stage). A too-sparse scheme -> skip (template fallback). Input
+    # source depends on --dwi-preprocessed: qsiprep-derivatives (raw/qsiprep) via
+    # --input-type qsiprep, or HCP-YA native tree via --input-type hcpya.
     NAME="qsirecon"
-    if [ "$HAS_DWI" = true ] && [ "$DWI_PREPROCESSED" = false ]; then
+    if [ "$HAS_DWI" = true ]; then
         if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
             log_step "Running $NAME (tractography)..."
             step_start=$(date +%s)
 
-            if [ ! -d "$OUTPUT_DIR/qsiprep/sub-${SUBJECT}" ]; then
-                echo "[WARN] $NAME: no QSIPrep output for sub-${SUBJECT}; skipping (template fallback)." | tee -a "$LOG_FILE"
+            # Per-source recon input: dir, --input-type, an optional extra mount, and
+            # whether the input is actually present.
+            RECON_INPUT_MOUNT=()
+            recon_ready=true
+            if [ "$DWI_FORMAT" = "hcp" ]; then
+                # HCP-YA native tree; ingress2qsirecon converts it internally. Bind only
+                # this subject so QSIRecon doesn't index the whole HCP cohort.
+                RECON_INPUT_MOUNT=(-v "$BIDS_DIR/sourcedata/hcp/${SUBJECT}":/hcp_in/${SUBJECT}:ro)
+                RECON_INPUT_DIR="/hcp_in"
+                RECON_INPUT_TYPE="hcpya"
+            else
+                # raw or qsiprep: consume the qsiprep-derivatives tree.
+                RECON_INPUT_DIR="/derivatives/qsiprep"
+                RECON_INPUT_TYPE="qsiprep"
+                [ -d "$OUTPUT_DIR/qsiprep/sub-${SUBJECT}" ] || recon_ready=false
+            fi
+
+            if [ "$recon_ready" != true ]; then
+                echo "[WARN] $NAME: no recon input for sub-${SUBJECT}; skipping (template fallback)." | tee -a "$LOG_FILE"
             else
                 # Adaptive recon-spec selection from the acquisition shell scheme:
                 # >=2 non-zero shells -> MSMT; 1 shell with >=28 dirs -> SS3T; else skip.
-                BVAL_DOCKER="${DWI_DOCKER%.nii.gz}.bval"
+                # BVAL_DOCKER (set during detection) may live under /bids or /derivatives.
                 RECON_CHOICE=$(docker run --rm --entrypoint micromamba \
-                    -v "$BIDS_DIR":/bids:ro \
+                    -v "$BIDS_DIR":/bids:ro -v "$OUTPUT_DIR":/derivatives \
                     "$IMG_MRI_RECONSTRUCTION" \
                     run -n neuro python -c "
 import numpy as np
@@ -997,27 +1038,26 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
                     echo "[WARN] $NAME: shell scheme insufficient for tractography (choice='$RECON_CHOICE'); skipping (template fallback)." | tee -a "$LOG_FILE"
                     echo "Skipped: insufficient shell scheme (choice='$RECON_CHOICE')." > "$LOG_DIR/${NAME}_log.txt"
                 else
-                    echo "Selected recon spec: $SPEC (shell choice '$RECON_CHOICE')." | tee -a "$LOG_FILE"
+                    echo "Selected recon spec: $SPEC (shell choice '$RECON_CHOICE', input-type $RECON_INPUT_TYPE)." | tee -a "$LOG_FILE"
                     mkdir -p "$WORK_DIR/qsirecon_out"
 
                     # QSIRecon reuses our FreeSurfer (ACT-hsvs); persistent TemplateFlow
                     # cache; --user avoids root-owned outputs. Output lands under the
-                    # ephemeral work dir, then we relocate the results into place.
-                    # qsirecon's pybids input is /derivatives/qsiprep (a clean
-                    # tree), so it doesn't hit the derivatives-walk crash above.
-                    # We still bind only license.txt from $BIDS_DIR (not the whole
-                    # dataset) to avoid needlessly exposing the derivatives tree.
+                    # ephemeral work dir, then we relocate the results into place. We bind
+                    # only license.txt from $BIDS_DIR (plus the HCP subject tree for hcpya)
+                    # to avoid needlessly exposing the whole dataset/derivatives tree.
                     docker run --rm $DOCKER_GPU --user "$(id -u):$(id -g)" \
                         -e TEMPLATEFLOW_HOME=/templateflow \
                         -v "$TEMPLATEFLOW_DIR":/templateflow \
                         -v "$PARROT_SCRIPT_DIR/template_data/qsirecon_specs":/specs:ro \
                         -v "$BIDS_DIR/license.txt":/bids/license.txt:ro \
                         -v "$OUTPUT_DIR":/derivatives \
+                        "${RECON_INPUT_MOUNT[@]}" \
                         "$IMG_QSIRECON" \
-                        /derivatives/qsiprep "$WORK_DIR_DOCKER/qsirecon_out" participant \
+                        "$RECON_INPUT_DIR" "$WORK_DIR_DOCKER/qsirecon_out" participant \
                         --participant-label "$SUBJECT" \
                         --recon-spec "/specs/$SPEC" \
-                        --input-type qsiprep \
+                        --input-type "$RECON_INPUT_TYPE" \
                         --fs-subjects-dir /derivatives/$SURF_DIR \
                         --fs-license-file /bids/license.txt \
                         --nprocs "$N_THREADS" \
@@ -1038,8 +1078,6 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         else
             echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
         fi
-    elif [ "$HAS_DWI" = true ] && [ "$DWI_PREPROCESSED" = true ]; then
-        echo "$NAME skipped for sub-${SUBJECT} (--dwi-preprocessed HCP/hcpya path not yet implemented; template fallback)." | tee -a "$LOG_FILE"
     fi
 
     # ---------------------------------------------------------
@@ -1106,9 +1144,23 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # step. Needs only the qsiprep DWI (not the tractogram). The tensor will be
     # consumed by the anisotropic FEM leadfield, so a failure is fatal like every
     # other step (check_step exits + cleans the partial output dir).
+    # HCP fits directly from the staged HCP DWI (already in T1 space -> labelled
+    # space-T1, no dwi2t1 needed); raw/qsiprep fit the QSIPrep ACPC DWI (-> space-ACPC,
+    # carried to T1 by dwi2t1 below).
     NAME="dwitensor"
-    if [ "$HAS_DWI" = true ] && \
-       compgen -G "$OUTPUT_DIR/qsiprep/sub-${SUBJECT}/dwi/"*space-ACPC_desc-preproc_dwi.nii.gz > /dev/null 2>&1; then
+    dwitensor_ready=false
+    DWITENSOR_FMT=""
+    DWITENSOR_MOUNT=()
+    if [ "$HAS_DWI" = true ]; then
+        if [ "$DWI_FORMAT" = "hcp" ]; then
+            dwitensor_ready=true
+            DWITENSOR_FMT="hcp"
+            DWITENSOR_MOUNT=(-v "$BIDS_DIR/sourcedata/hcp/${SUBJECT}":/hcp_in/${SUBJECT}:ro)
+        elif compgen -G "$OUTPUT_DIR/qsiprep/sub-${SUBJECT}/dwi/"*space-ACPC_desc-preproc_dwi.nii.gz > /dev/null 2>&1; then
+            dwitensor_ready=true
+        fi
+    fi
+    if [ "$dwitensor_ready" = true ]; then
         if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
             log_step "Running $NAME (DTI fit for anisotropic conductivity)..."
             step_start=$(date +%s)
@@ -1116,8 +1168,9 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
             docker run --rm --user "$(id -u):$(id -g)" \
                 -v "$OUTPUT_DIR":/derivatives \
                 -v "$PARROT_SCRIPT_DIR/bin/make_dwitensor.sh":/make_dwitensor.sh:ro \
+                "${DWITENSOR_MOUNT[@]}" \
                 --entrypoint bash "$IMG_QSIRECON" \
-                /make_dwitensor.sh "$SUBJECT" > "$LOG_DIR/${NAME}_log.txt" 2>&1
+                /make_dwitensor.sh "$SUBJECT" "$DWITENSOR_FMT" > "$LOG_DIR/${NAME}_log.txt" 2>&1
             check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
             step_end=$(date +%s)
@@ -1136,8 +1189,11 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # re-fit in T1), and the tractogram is transformed so it shares the atlas's
     # space (which lets the connectome step below run correctly). Fatal on failure
     # like every other step.
+    # Skipped for HCP: its DWI is already in T1 space (dwitensor wrote space-T1
+    # directly, and the qsirecon-hcpya tractogram is already T1w/mesh space), so
+    # there is no ACPC->anat transform to apply.
     NAME="dwi2t1"
-    if [ "$HAS_DWI" = true ] && \
+    if [ "$HAS_DWI" = true ] && [ "$DWI_FORMAT" != "hcp" ] && \
        compgen -G "$OUTPUT_DIR/qsiprep/sub-${SUBJECT}/dwi/"*space-ACPC_desc-preproc_dwi.nii.gz > /dev/null 2>&1; then
         if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
             log_step "Running $NAME (register DWI derivatives to T1 space)..."

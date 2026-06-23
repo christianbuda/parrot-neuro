@@ -26,15 +26,29 @@
 set -euo pipefail
 
 SUB="$1"
-DWI_DIR="/derivatives/qsiprep/sub-${SUB}/dwi"
+FORMAT="${2:-}"            # "" = QSIPrep ACPC (default); "hcp" = HCP-YA native tree
 OUT="/derivatives/dwitensor/sub-${SUB}"
 mkdir -p "$OUT"
 
-DWI=$(ls "$DWI_DIR"/*space-ACPC_desc-preproc_dwi.nii.gz | head -n 1)
-BVEC="${DWI%.nii.gz}.bvec"
-BVAL="${DWI%.nii.gz}.bval"
-MASK=$(ls "$DWI_DIR"/*space-ACPC_desc-brain_mask.nii.gz | head -n 1)
-PRE="$OUT/sub-${SUB}_space-ACPC_model-dti"
+if [ "$FORMAT" = "hcp" ]; then
+    # HCP-YA's preprocessed DWI already lives in the subject T1w (ACPC) space, which
+    # Parrot takes as the mesh space (identity) -- so we fit directly and label the
+    # output space-T1, and the separate dwi2t1 step is skipped for HCP. No gradient
+    # rotation is needed (no resampling happens here, unlike the qsiprep->T1 path).
+    DDIR="/hcp_in/${SUB}/T1w/Diffusion"
+    DWI="$DDIR/data.nii.gz"
+    BVEC="$DDIR/bvecs"
+    BVAL="$DDIR/bvals"
+    MASK="$DDIR/nodif_brain_mask.nii.gz"
+    PRE="$OUT/sub-${SUB}_space-T1_model-dti"
+else
+    DWI_DIR="/derivatives/qsiprep/sub-${SUB}/dwi"
+    DWI=$(ls "$DWI_DIR"/*space-ACPC_desc-preproc_dwi.nii.gz | head -n 1)
+    BVEC="${DWI%.nii.gz}.bvec"
+    BVAL="${DWI%.nii.gz}.bval"
+    MASK=$(ls "$DWI_DIR"/*space-ACPC_desc-brain_mask.nii.gz | head -n 1)
+    PRE="$OUT/sub-${SUB}_space-ACPC_model-dti"
+fi
 
 echo "DWI  : $DWI"
 echo "bvec : $BVEC"
