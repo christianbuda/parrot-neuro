@@ -106,10 +106,27 @@ if __name__ == "__main__":
     )
         
     parser.add_argument(
-        '--output_dir', 
+        '--output_dir',
         type=str,
         required=True,
         help='Path to the output folder (e.g., /derivatives/)'
+    )
+
+    # Recon backend dirs: surfaces + standard segs come from SURF_DIR (FastSurfer
+    # in full mode, FreeSurfer in freesurfer/HCP mode); the FastSurfer CNN subsegs
+    # (HypVINN) always come from SEG_DIR (fastsurfer). Default both to fastsurfer
+    # for backward compatibility with the full-FastSurfer layout.
+    parser.add_argument(
+        '--surf_dir',
+        type=str,
+        default='fastsurfer',
+        help='Derivatives subdir holding the recon surfaces/segs (fastsurfer or freesurfer)'
+    )
+    parser.add_argument(
+        '--seg_dir',
+        type=str,
+        default='fastsurfer',
+        help='Derivatives subdir holding the FastSurfer CNN subsegs (always fastsurfer)'
     )
 
     # Parse the arguments from the command line
@@ -119,6 +136,8 @@ if __name__ == "__main__":
     subject = args.subject
     T1_path = args.T1_path
     output_dir = args.output_dir
+    surf_dir = args.surf_dir
+    seg_dir = args.seg_dir
 
     try:
         os.mkdir(os.path.join(output_dir, f'atlas/sub-{subject}/hippunfold_surf'))
@@ -128,7 +147,7 @@ if __name__ == "__main__":
         raise RuntimeError('Atlases already detected in subject folder, you should delete the atlas folder before running this module!')
 
     T1 = nib.load(T1_path)
-    fsLUT = get_freesurfer_LUT(os.path.join(output_dir, f'fastsurfer/sub-{subject}/FreeSurferColorLUT.txt'))[1]
+    fsLUT = get_freesurfer_LUT(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/FreeSurferColorLUT.txt'))[1]
 
     for nparcels in [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]:
         # initialize atlas and LUT
@@ -164,11 +183,11 @@ if __name__ == "__main__":
         cerebflag = 601
         
         #################################################### ASEG ATLAS
-        aseg = get_resampled_image(os.path.join(output_dir, f'fastsurfer/sub-{subject}/mri/schaefer{nparcels}_aparc+aseg.mgz'))
+        aseg = get_resampled_image(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/mri/schaefer{nparcels}_aparc+aseg.mgz'))
 
         # aseg labels that need to be kept
         labels_to_keep = ['Left-Caudate', 'Left-Putamen', 'Left-Pallidum', 'Left-Accumbens-area', 'Left-VentralDC', 'Right-Caudate', 'Right-Putamen', 'Right-Pallidum', 'Right-Accumbens-area', 'Right-VentralDC', 'Fornix', 'CC_Posterior', 'CC_Mid_Posterior', 'CC_Central', 'CC_Mid_Anterior', 'CC_Anterior']
-        to_keep = [key for (key, val) in get_freesurfer_LUT(os.path.join(output_dir, f'fastsurfer/sub-{subject}/FreeSurferColorLUT.txt'))[0].items() if val in labels_to_keep]
+        to_keep = [key for (key, val) in get_freesurfer_LUT(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/FreeSurferColorLUT.txt'))[0].items() if val in labels_to_keep]
 
         # check if LUT did not change
         assert len(labels_to_keep)==len(to_keep)
@@ -183,7 +202,7 @@ if __name__ == "__main__":
         ccflag = 250
         
         ##################################################### SCHAEFER CORTICAL ATLAS
-        schaefer_LUT = get_schaefer_LUT(os.path.join(output_dir, f'fastsurfer/sub-{subject}/Schaefer_LUT/Schaefer2018_{nparcels}Parcels_17Networks_order_LUT.txt'))[1]
+        schaefer_LUT = get_schaefer_LUT(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/Schaefer_LUT/Schaefer2018_{nparcels}Parcels_17Networks_order_LUT.txt'))[1]
         to_keep = np.unique(aseg[(aseg>1000)&(aseg<3000)&(aseg!=2000)]).tolist()
 
         for key in to_keep:
@@ -191,7 +210,7 @@ if __name__ == "__main__":
             newLabels[key] = copy.deepcopy(schaefer_LUT[key]['name'])
 
         fs_lab = np.load(os.path.join(output_dir, f'surfaces/sub-{subject}/freesurfer_lh_middle_original_labels_{nparcels}.npy'))
-        _, _, values = nib.freesurfer.read_annot(os.path.join(output_dir, f'fastsurfer/sub-{subject}/label/lh.Schaefer2018_{nparcels}Parcels_17Networks_order.annot'))
+        _, _, values = nib.freesurfer.read_annot(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/label/lh.Schaefer2018_{nparcels}Parcels_17Networks_order.annot'))
         values = np.array(values).astype(str)
         values[0] = 'Unknown'
         old_labels = dict(zip(range(len(values)+1), values.tolist()))
@@ -199,7 +218,7 @@ if __name__ == "__main__":
         np.save(os.path.join(output_dir, f'atlas/sub-{subject}/freesurfer_surf/lh.{nparcels}Parcels_labels.npy'), fs_lab)
         
         fs_lab = np.load(os.path.join(output_dir, f'surfaces/sub-{subject}/freesurfer_rh_middle_original_labels_{nparcels}.npy'))        
-        _, _, values = nib.freesurfer.read_annot(os.path.join(output_dir, f'fastsurfer/sub-{subject}/label/rh.Schaefer2018_{nparcels}Parcels_17Networks_order.annot'))
+        _, _, values = nib.freesurfer.read_annot(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/label/rh.Schaefer2018_{nparcels}Parcels_17Networks_order.annot'))
         values = np.array(values).astype(str)
         values[0] = 'Unknown'
         old_labels = dict(zip(range(len(values)+1), values.tolist()))
@@ -212,11 +231,11 @@ if __name__ == "__main__":
         rightschaeferflag = 2001
         
         ##################################################### HYPOTHALAMUS ATLAS
-        hypvinn = get_resampled_image(os.path.join(output_dir, f'fastsurfer/sub-{subject}/mri/hypothalamus.HypVINN.nii.gz'))
+        hypvinn = get_resampled_image(os.path.join(output_dir, f'{seg_dir}/sub-{subject}/mri/hypothalamus.HypVINN.nii.gz'))
 
         # hypothalamus labels that need to be kept
         labels_to_keep = ['R-N.opticus', 'L-N.opticus', 'R-C.mammilare', 'R-Optic-tract', 'L-Optic-tract', 'L-C.mammilare', 'R-Chiasma-Opticum', 'L-Chiasma-Opticum', 'Ant-Commisure', 'Third-Ventricle', 'R-Fornix', 'L-Fornix', 'Epiphysis', 'Hypophysis', 'Infundibulum', 'Tuberal-Region', 'L-Med-Hypothalamus', 'L-Lat-Hypothalamus', 'L-Ant-Hypothalamus', 'L-Post-Hypothalamus', 'R-Med-Hypothalamus', 'R-Lat-Hypothalamus', 'R-Ant-Hypothalamus', 'R-Post-Hypothalamus']
-        to_keep = [key for (key, val) in get_freesurfer_LUT(os.path.join(output_dir, f'fastsurfer/sub-{subject}/FreeSurferColorLUT.txt'))[0].items() if val in labels_to_keep]
+        to_keep = [key for (key, val) in get_freesurfer_LUT(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/FreeSurferColorLUT.txt'))[0].items() if val in labels_to_keep]
 
         # check if LUT did not change
         assert len(labels_to_keep)==len(to_keep)
@@ -230,11 +249,11 @@ if __name__ == "__main__":
         hyvinnflag = min(to_keep)
 
         ###################################################### BRAINSTEM ATLAS
-        brstem = get_resampled_image(os.path.join(output_dir, f'fastsurfer/sub-{subject}/mri/brainstemSsLabels.mgz'))
+        brstem = get_resampled_image(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/mri/brainstemSsLabels.mgz'))
 
         # brainstem labels that need to be kept
         labels_to_keep = ['brainstem', 'DCG', 'Vermis', 'Midbrain', 'Pons', 'Medulla', 'Vermis-White-Matter', 'SCP', 'Floculus']
-        to_keep = [key for (key, val) in get_freesurfer_LUT(os.path.join(output_dir, f'fastsurfer/sub-{subject}/FreeSurferColorLUT.txt'))[0].items() if val in labels_to_keep]
+        to_keep = [key for (key, val) in get_freesurfer_LUT(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/FreeSurferColorLUT.txt'))[0].items() if val in labels_to_keep]
 
 
         # check if LUT did not change
@@ -250,10 +269,10 @@ if __name__ == "__main__":
         brstemflag = min(to_keep)
         
         ####################################################### THALAMUS ATLAS
-        thalamus = get_resampled_image(os.path.join(output_dir, f'fastsurfer/sub-{subject}/mri/ThalamicNuclei.mgz'))
+        thalamus = get_resampled_image(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/mri/ThalamicNuclei.mgz'))
 
-        labels_to_keep = [val for (key,val) in get_freesurfer_LUT(os.path.join(output_dir, f'fastsurfer/sub-{subject}/FreeSurferColorLUT.txt'))[0].items() if key in range(8103,8237)]
-        to_keep = [key for (key, val) in get_freesurfer_LUT(os.path.join(output_dir, f'fastsurfer/sub-{subject}/FreeSurferColorLUT.txt'))[0].items() if val in labels_to_keep]
+        labels_to_keep = [val for (key,val) in get_freesurfer_LUT(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/FreeSurferColorLUT.txt'))[0].items() if key in range(8103,8237)]
+        to_keep = [key for (key, val) in get_freesurfer_LUT(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/FreeSurferColorLUT.txt'))[0].items() if val in labels_to_keep]
 
 
         # check if LUT did not change
@@ -270,9 +289,9 @@ if __name__ == "__main__":
         
         #################################################### AMYGDALA ATLAS
         ############## LEFT
-        Lhippoamy = get_resampled_image(os.path.join(output_dir, f'fastsurfer/sub-{subject}/mri/lh.hippoAmygLabels.mgz'))
+        Lhippoamy = get_resampled_image(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/mri/lh.hippoAmygLabels.mgz'))
 
-        old_labels = [(x,'Left-'+get_freesurfer_LUT(os.path.join(output_dir, f'fastsurfer/sub-{subject}/FreeSurferColorLUT.txt'))[0][x]) for x in range(7001,7021)]
+        old_labels = [(x,'Left-'+get_freesurfer_LUT(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/FreeSurferColorLUT.txt'))[0][x]) for x in range(7001,7021)]
         old_labels = list(zip(*old_labels))
 
         amyg_labels = dict(zip(list(range(7001, 7001+len(old_labels[1]))), old_labels[1]))
@@ -286,9 +305,9 @@ if __name__ == "__main__":
         atlas[np.isin(Lhippoamy, list(range(7001, 7001+len(old_labels[1]))))] = Lhippoamy[np.isin(Lhippoamy, list(range(7001, 7001+len(old_labels[1]))))]
 
         ############## RIGHT
-        Rhippoamy = get_resampled_image(os.path.join(output_dir, f'fastsurfer/sub-{subject}/mri/rh.hippoAmygLabels.mgz'))
+        Rhippoamy = get_resampled_image(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/mri/rh.hippoAmygLabels.mgz'))
 
-        old_labels = [(x,'Right-'+get_freesurfer_LUT(os.path.join(output_dir, f'fastsurfer/sub-{subject}/FreeSurferColorLUT.txt'))[0][x]) for x in range(7001,7021)]
+        old_labels = [(x,'Right-'+get_freesurfer_LUT(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/FreeSurferColorLUT.txt'))[0][x]) for x in range(7001,7021)]
         old_labels = list(zip(*old_labels))
 
         amyg_labels = dict(zip(list(range(7001+len(old_labels[1]), 7001+2*len(old_labels[1]))), old_labels[1]))
@@ -393,7 +412,7 @@ if __name__ == "__main__":
     
     # easy to read labels
     nparcels = 100
-    schaefer_labels, schaefer_full_LUT = get_schaefer_LUT(os.path.join(output_dir, f'fastsurfer/sub-{subject}/Schaefer_LUT/Schaefer2018_{nparcels}Parcels_17Networks_order_LUT.txt'))
+    schaefer_labels, schaefer_full_LUT = get_schaefer_LUT(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/Schaefer_LUT/Schaefer2018_{nparcels}Parcels_17Networks_order_LUT.txt'))
     aggregated_labels = [   ([0,28,60,170,171,172,173,174,175,177,178,179,250,251,252,253,254,255,961,962,964,965,967,968,969,970,971,972,973,974,975, 1000, 2000],'Unknown'),
                             ([11],'Left-Caudate'),
                             ([12],'Left-Putamen'),

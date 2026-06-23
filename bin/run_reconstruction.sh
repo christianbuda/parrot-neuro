@@ -14,10 +14,21 @@ check_step() {
         echo "[ERROR] $description failed! (Exit Code: $exit_code)"
         echo "Check log file for more info: $log_file"
 
-        # Check if the cleanup path was provided and if it actually exists
+        # Remove the partial/intermediate output so a rerun starts from a clean slate.
         if [ -n "$cleanup_path" ] && [ -d "$cleanup_path" ]; then
             echo "Cleaning up incomplete directory: $cleanup_path"
             rm -rf "$cleanup_path"
+        fi
+
+        # Rename the log so the idempotency guard (which skips a step when its
+        # <name>_log.txt already exists) does not mistake this failed run for a
+        # completed one on the next invocation. The failed log is kept for
+        # debugging under a FAILED_<timestamp>_ prefix.
+        if [ -n "$log_file" ] && [ -f "$log_file" ]; then
+            local failed_log
+            failed_log="$(dirname "$log_file")/FAILED_$(date '+%Y%m%d-%H%M%S')_$(basename "$log_file")"
+            mv "$log_file" "$failed_log"
+            echo "Renamed failed log to: $failed_log"
         fi
 
         echo
@@ -50,6 +61,7 @@ usage() {
     echo "  --dipole-seed              Integer seed for reproducible dipole sampling (Default: unset = random)."
     echo "  --dwi-preprocessed         Treat the BIDS dwi/ data as already corrected and skip QSIPrep (e.g. HCP)."
     echo "  --fix-inputs               Auto-repair flagged input issues (squeeze singleton 4D, snap voxel-size artifacts). Default: flag only, never mutate."
+    echo "  --recon                    Surface recon backend: 'fastsurfer' (default, seg+surf) or 'freesurfer' (recon-all surfaces + FastSurfer --seg_only for CNN subsegs)."
     exit 1
 }
 
@@ -88,6 +100,7 @@ SPACING_DUNEURO_CGAL=2
 DIPOLE_SEED=""
 DWI_PREPROCESSED=false
 FIX_INPUTS=false
+RECON_BACKEND=fastsurfer
 
 while [[ $# -gt 0 ]]; do
     key="$1"
@@ -131,6 +144,10 @@ while [[ $# -gt 0 ]]; do
             FIX_INPUTS=true
             shift
             ;;
+        --recon)
+            RECON_BACKEND="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             ;;
@@ -143,6 +160,12 @@ done
 
 # Internal list of all spacings needed for dipole precomputation (one per solver)
 SPACING_LIST=("$SPACING_OPENMEEG" "$SPACING_DUNEURO_SIMNIBS" "$SPACING_DUNEURO_CGAL")
+
+# Validate the recon backend selection.
+if [ "$RECON_BACKEND" != "fastsurfer" ] && [ "$RECON_BACKEND" != "freesurfer" ]; then
+    echo "ERROR: --recon must be 'fastsurfer' or 'freesurfer' (got '$RECON_BACKEND')."
+    usage
+fi
 
 # =============================================================================
 # 3. PRE-FLIGHT CHECKS
@@ -397,6 +420,26 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         fi
     fi
 
+    # ---------------------------------------------------------
+    # Recon backend selection (per subject -> mixed cohorts work)
+    # ---------------------------------------------------------
+    # FastSurfer ALWAYS runs and its CNN subsegs (CerebNet/HypVINN) live in
+    # fastsurfer/ -> SEG_DIR. Surfaces come either from FastSurfer (full mode) or
+    # from FreeSurfer recon-all / a staged HCP recon -> SURF_DIR. An already-present
+    # recon (e.g. HCP-staged freesurfer/, detected by surf/lh.white) is reused
+    # regardless of --recon, so cohorts mixing HCP and raw subjects just work.
+    SEG_DIR="fastsurfer"
+    if [ -f "$OUTPUT_DIR/freesurfer/sub-${SUBJECT}/surf/lh.white" ]; then
+        SURF_DIR="freesurfer"
+    elif [ -f "$OUTPUT_DIR/fastsurfer/sub-${SUBJECT}/surf/lh.white" ]; then
+        SURF_DIR="fastsurfer"
+    elif [ "$RECON_BACKEND" = "freesurfer" ]; then
+        SURF_DIR="freesurfer"
+    else
+        SURF_DIR="fastsurfer"
+    fi
+    echo "Recon backend: surfaces from '$SURF_DIR', CNN subsegs from '$SEG_DIR'." | tee -a "$LOG_FILE"
+
     # =========================================================================
     # 5. EXECUTE PIPELINE STEPS (With Robust Idempotency)
     # =========================================================================
@@ -447,7 +490,15 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # surfaces (it still exits 0). The LEMON staging cleans this; see the surface guard.
     NAME="fastsurfer"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-        log_step "Running $NAME reconstruction (seg + surfaces)..."
+        # Full seg+surf when FastSurfer provides the surfaces (SURF_DIR=fastsurfer);
+        # --seg_only (just the CNN subsegs CerebNet/HypVINN) when FreeSurfer/HCP
+        # provides the surfaces instead.
+        if [ "$SURF_DIR" = "fastsurfer" ]; then
+            FS_MODE=("--parallel"); fs_desc="seg + surfaces"
+        else
+            FS_MODE=("--seg_only"); fs_desc="segmentation only (surfaces from $SURF_DIR)"
+        fi
+        log_step "Running $NAME reconstruction ($fs_desc)..."
         mkdir -p "$OUTPUT_DIR/$NAME"
 
         step_start=$(date +%s)
@@ -459,27 +510,18 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
             --t1 "/data/sub-${SUBJECT}/anat/$(basename "$T1_PATH")" \
             --sid "sub-${SUBJECT}" \
             --sd /output \
-            --3T --threads "$N_THREADS" --parallel > "$LOG_DIR/${NAME}_log.txt" 2>&1
+            --3T --threads "$N_THREADS" "${FS_MODE[@]}" > "$LOG_DIR/${NAME}_log.txt" 2>&1
         fastsurfer_rc=$?
 
-        # FastSurfer can exit 0 even when the surf stage dies (e.g. a rejected vox_size),
-        # so $? alone is not enough -- assert the surfaces were actually produced.
-        if [ "$fastsurfer_rc" -eq 0 ] && [ ! -f "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/surf/lh.white" ]; then
+        # In full mode FastSurfer can exit 0 even when the surf stage dies (e.g. a
+        # rejected vox_size), so $? alone isn't enough -- assert the surfaces exist.
+        # (--seg_only legitimately produces none, so only check in full mode.)
+        if [ "$SURF_DIR" = "fastsurfer" ] && [ "$fastsurfer_rc" -eq 0 ] && [ ! -f "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/surf/lh.white" ]; then
             echo "[ERROR] FastSurfer exited 0 but produced no surfaces (surf/lh.white missing)." | tee -a "$LOG_FILE"
             echo "        Most likely the input voxel size is > 1mm (header artifact); it must be <= 1mm." | tee -a "$LOG_FILE"
             fastsurfer_rc=1
         fi
         check_step "$fastsurfer_rc" "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
-
-        # LUTs the atlas stage later reads from the subject dir (recon-all used to copy
-        # these in). Run in the MRI image -- the Schaefer LUT ships there, not in the
-        # FastSurfer image. Append to the same log; FREESURFER_HOME is set in that image.
-        docker run --rm --entrypoint /bin/bash -v "$OUTPUT_DIR":/derivatives \
-            "$IMG_MRI_RECONSTRUCTION" -c \
-            "cp \$FREESURFER_HOME/FreeSurferColorLUT.txt /derivatives/fastsurfer/sub-${SUBJECT}/FreeSurferColorLUT.txt && \
-             cp -r /home/Schaefer2018_LocalGlobal/Parcellations/project_to_individual /derivatives/fastsurfer/sub-${SUBJECT}/Schaefer_LUT" \
-            >> "$LOG_DIR/${NAME}_log.txt" 2>&1 \
-            || { echo "[ERROR] failed to copy LUTs into fastsurfer/sub-${SUBJECT}" | tee -a "$LOG_FILE"; exit 1; }
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -532,6 +574,49 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     fi
 
     # ---------------------------------------------------------
+    # FREESURFER RECON-ALL  (only when SURF_DIR=freesurfer)
+    # ---------------------------------------------------------
+    # Optional surface backend: full recon-all into freesurfer/sub-X. Skipped for
+    # the default FastSurfer backend, and skipped-via-placeholder-log for HCP (whose
+    # FreeSurfer recon is staged in directly). Uses the standardized, MPRAGEised
+    # T1_DOCKER from ingest; the old T2/FLAIR pial refinement is intentionally gone
+    # (FastSurfer is the default surface source and is T1-only).
+    NAME="freesurfer"
+    if [ "$SURF_DIR" = "freesurfer" ]; then
+        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+            log_step "Running $NAME recon-all (surface reconstruction)..."
+            mkdir -p "$OUTPUT_DIR/$NAME"
+
+            step_start=$(date +%s)
+            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
+                "export SUBJECTS_DIR=/derivatives/freesurfer && \
+                 recon-all -subject sub-${SUBJECT} -i $T1_DOCKER -all -threads $N_THREADS"
+
+            step_end=$(date +%s)
+            echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+        else
+            echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+        fi
+    fi
+
+    # ---------------------------------------------------------
+    # RECON LUTS  (backend-agnostic)
+    # ---------------------------------------------------------
+    # The schaefer/atlas stages read the FreeSurfer color LUT + the Schaefer
+    # projection LUT from the surfaces dir. FastSurfer/recon-all don't ship these,
+    # so install them into SURF_DIR for every backend (incl. HCP, where recon-all
+    # was skipped). Idempotent: only runs if the color LUT isn't already there.
+    if [ ! -f "$OUTPUT_DIR/$SURF_DIR/sub-${SUBJECT}/FreeSurferColorLUT.txt" ]; then
+        log_step "Installing recon LUTs into $SURF_DIR/sub-${SUBJECT}..."
+        docker run --rm --entrypoint /bin/bash -v "$OUTPUT_DIR":/derivatives \
+            "$IMG_MRI_RECONSTRUCTION" -c \
+            "cp \$FREESURFER_HOME/FreeSurferColorLUT.txt /derivatives/$SURF_DIR/sub-${SUBJECT}/FreeSurferColorLUT.txt && \
+             cp -r /home/Schaefer2018_LocalGlobal/Parcellations/project_to_individual /derivatives/$SURF_DIR/sub-${SUBJECT}/Schaefer_LUT" \
+            >> "$LOG_FILE" 2>&1 \
+            || { echo "[ERROR] failed to install recon LUTs into $SURF_DIR/sub-${SUBJECT}" | tee -a "$LOG_FILE"; exit 1; }
+    fi
+
+    # ---------------------------------------------------------
     # ---------------------------------------------------------
     # PARROT MRI RECONSTRUCTION
     # ---------------------------------------------------------
@@ -558,7 +643,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
             bem_vol="--volume INV2"
         fi
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
-            "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && \
+            "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && \
              ${bem_prep}micromamba run -n neuro python /scripts/make_bem_surfaces.py --subject $SUBJECT --subjects_dir \$FREESURFER_HOME/subjects $bem_vol"
 
         step_end=$(date +%s)
@@ -579,9 +664,9 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         for n_parcels in {100..1000..100}; do
             ATLAS_NAME="Schaefer2018_${n_parcels}Parcels_17Networks_order"
 
-            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_surf2surf --hemi lh --srcsubject fsaverage --trgsubject $SUBJECT --sval-annot /home/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label/lh.${ATLAS_NAME}.annot --tval \$SUBJECTS_DIR/$SUBJECT/label/lh.${ATLAS_NAME}.annot"
-            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_surf2surf --hemi rh --srcsubject fsaverage --trgsubject $SUBJECT --sval-annot /home/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label/rh.${ATLAS_NAME}.annot --tval \$SUBJECTS_DIR/$SUBJECT/label/rh.${ATLAS_NAME}.annot"
-            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_aparc2aseg --s $SUBJECT --o \$SUBJECTS_DIR/$SUBJECT/mri/schaefer${n_parcels}_aparc+aseg.mgz --annot $ATLAS_NAME"
+            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_surf2surf --hemi lh --srcsubject fsaverage --trgsubject $SUBJECT --sval-annot /home/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label/lh.${ATLAS_NAME}.annot --tval \$SUBJECTS_DIR/$SUBJECT/label/lh.${ATLAS_NAME}.annot"
+            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_surf2surf --hemi rh --srcsubject fsaverage --trgsubject $SUBJECT --sval-annot /home/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label/rh.${ATLAS_NAME}.annot --tval \$SUBJECTS_DIR/$SUBJECT/label/rh.${ATLAS_NAME}.annot"
+            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_aparc2aseg --s $SUBJECT --o \$SUBJECTS_DIR/$SUBJECT/mri/schaefer${n_parcels}_aparc+aseg.mgz --annot $ATLAS_NAME"
         done
 
         step_end=$(date +%s)
@@ -599,9 +684,9 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         
         step_start=$(date +%s)
 
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions thalamus --cross $SUBJECT --threads $N_THREADS"
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions hippo-amygdala --cross $SUBJECT --threads $N_THREADS"
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/fastsurfer/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions brainstem --cross $SUBJECT --threads $N_THREADS"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions thalamus --cross $SUBJECT --threads $N_THREADS"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions hippo-amygdala --cross $SUBJECT --threads $N_THREADS"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions brainstem --cross $SUBJECT --threads $N_THREADS"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -620,7 +705,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         step_start=$(date +%s)
 
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "cd /home/simnibs_reconstructions && \
-                                                        /root/SimNIBS-4.5/bin/charm subject $T1_DOCKER ${simnibs_args[*]} --forcerun --fs-dir /derivatives/fastsurfer/sub-${SUBJECT} --forcesform && \
+                                                        /root/SimNIBS-4.5/bin/charm subject $T1_DOCKER ${simnibs_args[*]} --forcerun --fs-dir /derivatives/$SURF_DIR/sub-${SUBJECT} --forcesform && \
                                                         cd / && \
                                                         /root/SimNIBS-4.5/bin/simnibs_python /scripts/extract_charm_surf.py --charm_dir "/home/simnibs_reconstructions/m2m_subject/" && \
                                                         cp /scripts/simnibs_conductivities.txt /home/simnibs_reconstructions/m2m_subject/conductivities.txt && \
@@ -691,7 +776,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         step_start=$(date +%s)
 
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "cp /home/cerebellum_template/Cerebellar_Regions.csv /derivatives/$NAME/sub-${SUBJECT}/LABELS.csv && \
-                                                        micromamba run -n neuro python /scripts/run_cereb_pipeline.py --output_dir /derivatives --subject $SUBJECT --template_dir /home/cerebellum_template/ --threads $N_THREADS"
+                                                        micromamba run -n neuro python /scripts/run_cereb_pipeline.py --output_dir /derivatives --subject $SUBJECT --template_dir /home/cerebellum_template/ --threads $N_THREADS --seg_dir $SEG_DIR"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -727,7 +812,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
 
         step_start=$(date +%s)
 
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "micromamba run -n neuro python /scripts/gather_surfaces.py --output_dir /derivatives --subject $SUBJECT"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "micromamba run -n neuro python /scripts/gather_surfaces.py --output_dir /derivatives --subject $SUBJECT --surf_dir $SURF_DIR"
  
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -745,7 +830,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
 
         step_start=$(date +%s)
 
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "micromamba run -n neuro python /scripts/make_atlas.py --T1_path $T1_DOCKER --output_dir /derivatives --subject $SUBJECT"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "micromamba run -n neuro python /scripts/make_atlas.py --T1_path $T1_DOCKER --output_dir /derivatives --subject $SUBJECT --surf_dir $SURF_DIR --seg_dir $SEG_DIR"
  
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -924,7 +1009,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
                         --participant-label "$SUBJECT" \
                         --recon-spec "/specs/$SPEC" \
                         --input-type qsiprep \
-                        --fs-subjects-dir /derivatives/fastsurfer \
+                        --fs-subjects-dir /derivatives/$SURF_DIR \
                         --fs-license-file /bids/license.txt \
                         --nprocs "$N_THREADS" \
                         -w "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt" 2>&1
@@ -1214,6 +1299,42 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     DOCKER_IMAGE="$IMG_FORWARD_SOLVERS"
 
     # ---------------------------------------------------------
+    # ANISOTROPY  (WM conductivity tensors for the CGAL FEM)
+    # ---------------------------------------------------------
+    # Optional. Turns the subject diffusion tensor (cerebral, from the dwitensor
+    # stage) -- plus the warped cerebellar template DTI when present -- into one
+    # anisotropic conductivity tensor per White-Matter tetrahedron of the CGAL
+    # mesh. Gated on a subject DTI in mesh/T1 space; with no DWI it is skipped and
+    # the CGAL leadfield below stays isotropic (unchanged). Runs in the solvers
+    # image (needs the mesh, hence after tetmesh).
+    NAME="anisotropy"
+    CEREBRAL_DTI="$OUTPUT_DIR/dwitensor/sub-${SUBJECT}/sub-${SUBJECT}_space-T1_model-dti_tensor.nii.gz"
+    if [ -f "$CEREBRAL_DTI" ]; then
+        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+            log_step "Running $NAME (DTI -> WM conductivity tensors)..."
+            step_start=$(date +%s)
+
+            # Cerebellar WM uses the warped cerebellar template DTI when available,
+            # routed by the FastSurfer cerebellum segmentation; otherwise every WM
+            # tet is sampled from the subject (cerebral) DTI.
+            CEREB_ARGS=""
+            if [ -f "$OUTPUT_DIR/cerebellum/sub-${SUBJECT}/nonlinear_DTI.nii.gz" ] && \
+               [ -f "$OUTPUT_DIR/$SEG_DIR/sub-${SUBJECT}/mri/cerebellum.CerebNet.nii.gz" ]; then
+                CEREB_ARGS="--cerebellar_dti /derivatives/cerebellum/sub-${SUBJECT}/nonlinear_DTI.nii.gz --cerebellum_mask /derivatives/$SEG_DIR/sub-${SUBJECT}/mri/cerebellum.CerebNet.nii.gz"
+            fi
+
+            run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/dti_to_conductivity_tensors.py --subject $SUBJECT --output_dir /derivatives --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --cerebral_dti /derivatives/dwitensor/sub-${SUBJECT}/sub-${SUBJECT}_space-T1_model-dti_tensor.nii.gz $CEREB_ARGS"
+
+            step_end=$(date +%s)
+            echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+        else
+            echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+        fi
+    else
+        echo "$NAME skipped for sub-${SUBJECT} (no subject DTI; CGAL leadfield stays isotropic)." | tee -a "$LOG_FILE"
+    fi
+
+    # ---------------------------------------------------------
     # SOLVE FORWARD PROBLEM
     # ---------------------------------------------------------
     NAME="forwardsolvers"
@@ -1226,16 +1347,25 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
 
         spacing=$(printf "%.1f" "$SPACING_OPENMEEG")
         echo "Solving forward problem with OpenMEEG at $spacing mm dipole spacing"
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "/scripts/make_leadfield_openmeeg.py --dipole_spacing $spacing"
+        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_openmeeg.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing"
 
         spacing=$(printf "%.1f" "$SPACING_DUNEURO_SIMNIBS")
         echo "Solving forward problem with DUNEuro using SimNIBS charm mesh, at $spacing mm dipole spacing"
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "/scripts/make_leadfield_duneuro.py --dipole_spacing $spacing --mesh_path /derivatives/simnibscharm/sub-${SUBJECT}/subject.msh --tissue_names /derivatives/simnibscharm/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/simnibscharm/sub-${SUBJECT}/conductivities.txt --label simnibs --valid_tissues \"Gray-Matter\""
+        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/simnibscharm/sub-${SUBJECT}/subject.msh --tissue_names /derivatives/simnibscharm/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/simnibscharm/sub-${SUBJECT}/conductivities.txt --label simnibs --valid_tissues \"Gray-Matter\""
 
         spacing=$(printf "%.1f" "$SPACING_DUNEURO_CGAL")
         echo "Solving forward problem with DUNEuro using CGAL mesh, at $spacing mm dipole spacing"
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "/scripts/make_leadfield_duneuro.py --dipole_spacing $spacing --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --label CGAL --valid_tissues $CGAL_VALID_TISSUES"
- 
+        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --label CGAL --valid_tissues $CGAL_VALID_TISSUES"
+
+        # Anisotropic CGAL leadfield (extra, alongside the isotropic one above) --
+        # only when the anisotropy stage produced WM conductivity tensors. White
+        # Matter must stay OUT of CGAL_VALID_TISSUES here, or the Venant source
+        # model's monopole patch collapses for WM dipoles.
+        if [ -f "$OUTPUT_DIR/anisotropy/sub-${SUBJECT}/conductivity_tensors.npy" ]; then
+            echo "Solving forward problem with DUNEuro using CGAL mesh (ANISOTROPIC WM), at $spacing mm dipole spacing"
+            run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --label CGAL_anisotropic --valid_tissues $CGAL_VALID_TISSUES --dti_tensors_path /derivatives/anisotropy/sub-${SUBJECT}/conductivity_tensors.npy"
+        fi
+
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
     else

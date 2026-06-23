@@ -151,6 +151,14 @@ if __name__ == "__main__":
         help='Number of threads to use during ants registration'
     )
 
+    # FastSurfer CNN subseg dir (always fastsurfer); holds cerebellum.CerebNet.
+    parser.add_argument(
+        '--seg_dir',
+        type=str,
+        default='fastsurfer',
+        help='Derivatives subdir holding the FastSurfer CNN subsegs (always fastsurfer)'
+    )
+
     # Parse the arguments from the command line
     args = parser.parse_args()
 
@@ -159,6 +167,7 @@ if __name__ == "__main__":
     subject = args.subject
     output_dir = args.output_dir
     cerebellum_template_folder = args.template_dir
+    seg_dir = args.seg_dir
 
 
     ################## LOAD FILES ########################
@@ -175,7 +184,7 @@ if __name__ == "__main__":
     ants.image_write(subject_brain, os.path.join(output_dir,f'cerebellum/sub-{subject}/T1_stripped_N4corrected.nii.gz'))
 
     # then load and resample cerebellum mask
-    subject_cerebmask = ants.image_read(os.path.join(output_dir,f'fastsurfer/sub-{subject}/mri/cerebellum.CerebNet.nii.gz'))
+    subject_cerebmask = ants.image_read(os.path.join(output_dir,f'{seg_dir}/sub-{subject}/mri/cerebellum.CerebNet.nii.gz'))
     subject_cerebmask = ants.resample_image_to_target(subject_cerebmask, subject_brain, interp_type='genericLabel')
     subject_cerebmask = ants.threshold_image(subject_cerebmask, low_thresh=0.5)
 
@@ -267,6 +276,35 @@ if __name__ == "__main__":
     )
 
     ants.image_write(warped_white_labels, os.path.join(output_dir,f"cerebellum/sub-{subject}/nonlinear_white_labels.nii.gz"))
+
+    ### cerebellum template DTI (optional)
+    # The template ships a diffusion tensor already aligned to the template brain
+    # (DTI_in_T1w_ITK.nii.gz, ITK symmetric-tensor order). When present, warp it
+    # into subject space with the SAME nonlinear transform used for the labels
+    # above, but with tensor reorientation (imagetype=2 == antsApplyTransforms
+    # -e 2, PPD) so the eigenvectors follow the deformation. This gives subject
+    # cerebellar WM a diffusion tensor where the subject's own low-res DWI has
+    # bad partial-volume; it feeds the anisotropic-conductivity FEM downstream.
+    template_dti = os.path.join(cerebellum_template_folder, 'DTI_in_T1w_ITK.nii.gz')
+    if os.path.exists(template_dti):
+        print('Warping cerebellum template DTI into subject space (PPD reorientation)...')
+        warped_dti = ants.apply_transforms(
+            fixed=subject_brain,
+            moving=ants.image_read(template_dti),
+            transformlist=[os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/0GenericAffine.mat'), os.path.join(output_dir,f'cerebellum/sub-{subject}/transform_files/1InverseWarp.nii.gz')],
+            whichtoinvert=[True, False],
+            imagetype=2  # tensor: PPD eigenvector reorientation
+        )
+
+        # ANTs keeps ITK component order (xx, xy, xz, yy, yz, zz); the downstream
+        # conductivity model reads MRtrix order (D11 D22 D33 D12 D13 D23 =
+        # xx, yy, zz, xy, xz, yz). Reorder the 6 components and save only the
+        # MRtrix-ordered tensor (no FSL/ITK copy), on the subject grid.
+        dti = warped_dti.numpy()[..., [0, 3, 5, 1, 2, 4]]
+        dti = ants.from_numpy(dti, origin=subject_brain.origin, spacing=subject_brain.spacing, direction=subject_brain.direction, has_components=True)
+        ants.image_write(dti, os.path.join(output_dir,f"cerebellum/sub-{subject}/nonlinear_DTI.nii.gz"))
+    else:
+        print('No template DTI (DTI_in_T1w_ITK.nii.gz) found; skipping cerebellar DTI warp.')
 
     ################## APPLY TRANSFORMS 1 ###################
 
