@@ -62,7 +62,8 @@ if __name__ == "__main__":
         
         os.makedirs(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/'), exist_ok=True)
         with open(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/fiducials.json'), 'w') as f:
-            json.dump(fiducials, f)
+            # project_fid_on_mesh returns numpy arrays; cast to lists so json can serialise them
+            json.dump({k: np.asarray(v).tolist() for k, v in fiducials.items()}, f)
 
     points = [fiducials['RPA'], fiducials['LPA'], fiducials['NAS'], fiducials['IN']]
 
