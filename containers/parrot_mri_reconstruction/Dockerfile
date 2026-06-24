@@ -72,14 +72,21 @@ RUN bash /tmp/getfsl.sh /usr/local/fsl \
     && echo "source $FSLDIR/etc/fslconf/fsl.sh" >> ~/.bashrc \
     && echo "export PATH=$FSLDIR/bin:$PATH" >> ~/.bashrc
 
-# install simnibs
+# install simnibs into /opt (NOT the default $HOME=/root) so it is world-readable and
+# therefore usable when the container runs as an arbitrary non-root UID (Apptainer/HPC,
+# or `docker run --user`). The installer targets $HOME, so set HOME=/opt for this layer
+# only; runtime HOME is configured near the end. test -x fails the build fast if the
+# installer ever changes its default layout. The installer leaves most of the tree
+# owner-only (it ran as root), which blocks a non-root UID from traversing into the
+# bundled python -- chmod a+rX makes dirs traversable and keeps executables runnable for all.
 RUN wget -qO /tmp/simnibs.tar.gz https://github.com/simnibs/simnibs/releases/download/v4.5.0/simnibs_installer_linux.tar.gz \
     && tar -xzf /tmp/simnibs.tar.gz -C /tmp \
-    && /tmp/simnibs_installer/install -s \
+    && HOME=/opt /tmp/simnibs_installer/install -s \
+    && test -x /opt/SimNIBS-4.5/bin/charm \
     && rm -rf /tmp/simnibs_installer \
-    && rm -rf /root/SimNIBS-4.5/documentation \
-    && rm -rf /root/SimNIBS-4.5/examples \
-    && mkdir -p /home/simnibs_reconstructions \
+    && rm -rf /opt/SimNIBS-4.5/documentation \
+    && rm -rf /opt/SimNIBS-4.5/examples \
+    && chmod -R a+rX /opt/SimNIBS-4.5 \
     && rm /tmp/simnibs.tar.gz
 
 # install micromamba
@@ -117,6 +124,13 @@ COPY scripts /scripts
 
 # set fs license and make it so that freesurfer and fsl are sourced in non interactive shells
 ENV FS_LICENSE=/SUBJECTS/license.txt
+
+# Rootless defaults. When the container runs as an arbitrary UID there is no /etc/passwd
+# entry, so HOME defaults to "/" (unwritable) and getpass.getuser() / whoami fail. A
+# writable HOME and a USER name fix both. The orchestrator overrides HOME with a per-subject
+# scratch at runtime; these are the standalone fallbacks (e.g. `docker run --user`).
+ENV HOME=/tmp
+ENV USER=parrot
 
 # Set default command
 ENTRYPOINT [ "/bin/bash", "--login", "-c", "/scripts/run_pipeline.sh \"$@\"", "_" ]

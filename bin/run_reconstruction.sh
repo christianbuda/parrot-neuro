@@ -64,6 +64,8 @@ usage() {
     echo "                             <bids_dir>/sourcedata/hcp/<ID>/; uses QSIRecon --input-type hcpya)."
     echo "  --fix-inputs               Auto-repair flagged input issues (squeeze singleton 4D, snap voxel-size artifacts). Default: flag only, never mutate."
     echo "  --recon                    Surface recon backend: 'fastsurfer' (default, seg+surf) or 'freesurfer' (recon-all surfaces + FastSurfer --seg_only for CNN subsegs)."
+    echo "  --runtime                  Container runtime: 'docker' (default, workstation) or 'apptainer' (rootless, for HPC like CINECA LEONARDO)."
+    echo "  --sif-dir                  Directory holding/caching .sif images (apptainer only; default: <output_dir>/.sif). Pulled from Docker Hub on first use."
     exit 1
 }
 
@@ -103,6 +105,8 @@ DIPOLE_SEED=""
 DWI_FORMAT=""           # "" = raw DWI in BIDS dwi/ (run QSIPrep); else a preprocessed format
 FIX_INPUTS=false
 RECON_BACKEND=fastsurfer
+RUNTIME=docker          # container runtime: "docker" (workstation) or "apptainer" (HPC, e.g. LEONARDO)
+SIF_DIR=""              # where .sif images live/are pulled (apptainer only); default set after parsing
 
 while [[ $# -gt 0 ]]; do
     key="$1"
@@ -150,6 +154,14 @@ while [[ $# -gt 0 ]]; do
             RECON_BACKEND="$2"
             shift 2
             ;;
+        --runtime)
+            RUNTIME="$2"
+            shift 2
+            ;;
+        --sif-dir)
+            SIF_DIR="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             ;;
@@ -175,6 +187,26 @@ if [ -n "$DWI_FORMAT" ] && [ "$DWI_FORMAT" != "qsiprep" ] && [ "$DWI_FORMAT" != 
     usage
 fi
 
+# Validate the container runtime and resolve the .sif cache dir (apptainer only).
+if [ "$RUNTIME" != "docker" ] && [ "$RUNTIME" != "apptainer" ]; then
+    echo "ERROR: --runtime must be 'docker' or 'apptainer' (got '$RUNTIME')."
+    usage
+fi
+# Pick the runtime CLI: Apptainer and SingularityCE share an identical CLI for everything
+# we use (exec/run/pull/--nv/--bind/--pwd), and clusters ship one or the other. Prefer
+# `apptainer`, fall back to `singularity`, so the same code runs on either.
+APPTAINER_BIN="apptainer"
+if [ "$RUNTIME" = "apptainer" ]; then
+    if command -v apptainer &>/dev/null; then APPTAINER_BIN="apptainer"
+    elif command -v singularity &>/dev/null; then APPTAINER_BIN="singularity"
+    else
+        echo "ERROR: --runtime apptainer requested but neither 'apptainer' nor 'singularity' is on PATH."
+        echo "       On a module-based HPC you likely need e.g. 'module load apptainer' first."
+        exit 1
+    fi
+    [ -z "$SIF_DIR" ] && SIF_DIR="$OUTPUT_DIR/.sif"
+fi
+
 # =============================================================================
 # 3. PRE-FLIGHT CHECKS
 # =============================================================================
@@ -189,40 +221,75 @@ if [ ! -f "$BIDS_DIR/license.txt" ]; then
     exit 1
 fi
 
-# GPU Configuration Logic
+# GPU Configuration Logic. DOCKER_GPU and APPTAINER_NV are set together from the same
+# detection so a CPU-only context (GPU disabled, or no driver -- e.g. a SLURM DCGP/CPU
+# node) cleanly yields *no* GPU flag for whichever runtime is active. On the GPU side,
+# `--gpus` (docker) / `--nv` (apptainer) expose whatever the host/scheduler granted, so
+# requesting a single GPU via SLURM `--gres=gpu:1` needs no change here.
 if [ "$GPU_OPT" == "none" ]; then
     DOCKER_GPU=""
+    APPTAINER_NV=""
     echo "Notice: GPU disabled by user. Running in CPU-only mode."
 else
     # Check if nvidia-smi exists and can talk to the driver
     if ! command -v nvidia-smi &> /dev/null || ! nvidia-smi &> /dev/null; then
         DOCKER_GPU=""
+        APPTAINER_NV=""
         echo "WARNING: nvidia-smi not found or driver missing. Falling back to CPU-only mode."
     else
         DOCKER_GPU="--gpus $GPU_OPT"
-        echo "GPU Configuration: $DOCKER_GPU"
+        APPTAINER_NV="--nv"
+        echo "GPU Configuration: runtime=$RUNTIME, docker='$DOCKER_GPU', apptainer='$APPTAINER_NV'"
     fi
 fi
 
-# Ensure required Docker images are present (pull any that are missing).
-# Image list comes from bin/images.sh; this replaces the old standalone setup.sh.
+# Map a docker image tag to its .sif filename in SIF_DIR, e.g.
+#   christianbuda/parrot_mri_reconstruction:latest -> $SIF_DIR/parrot_mri_reconstruction_latest.sif
+# (drop the registry/namespace, turn the :tag separator into _). Used by the apptainer path.
+sif_path() {
+    local tag=$1
+    local base=${tag##*/}     # strip registry/namespace
+    base=${base//:/_}         # tag separator -> underscore
+    echo "$SIF_DIR/${base}.sif"
+}
+
+# Ensure required container images are present (pull any that are missing). Image list comes
+# from bin/images.sh so build/pull/run never drift. For docker we pull tags into the local
+# daemon; for apptainer we pull each docker:// image once into a flattened .sif under SIF_DIR
+# (a plain file, reusable across subjects and SLURM array tasks).
 ALL_IMAGES=("${EXTERNAL_IMAGES[@]}")
 for entry in "${PARROT_IMAGES[@]}"; do
     ALL_IMAGES+=("${entry%%|*}")
 done
 
-echo "Checking required Docker images..."
-for img in "${ALL_IMAGES[@]}"; do
-    if [[ -z "$(docker images -q "$img" 2> /dev/null)" ]]; then
-        echo "  Missing $img - pulling (this may take a while)..."
-        if ! docker pull "$img"; then
-            echo "ERROR: Failed to pull $img"
-            exit 1
+echo "Checking required container images (runtime: $RUNTIME)..."
+if [ "$RUNTIME" = "apptainer" ]; then
+    mkdir -p "$SIF_DIR"
+    for img in "${ALL_IMAGES[@]}"; do
+        sif=$(sif_path "$img")
+        if [ -f "$sif" ]; then
+            echo "  Found $(basename "$sif")"
+        else
+            echo "  Missing $(basename "$sif") - pulling docker://$img (this may take a while)..."
+            if ! "$APPTAINER_BIN" pull "$sif" "docker://$img"; then
+                echo "ERROR: Failed to pull docker://$img into $sif"
+                exit 1
+            fi
         fi
-    else
-        echo "  Found $img"
-    fi
-done
+    done
+else
+    for img in "${ALL_IMAGES[@]}"; do
+        if [[ -z "$(docker images -q "$img" 2> /dev/null)" ]]; then
+            echo "  Missing $img - pulling (this may take a while)..."
+            if ! docker pull "$img"; then
+                echo "ERROR: Failed to pull $img"
+                exit 1
+            fi
+        else
+            echo "  Found $img"
+        fi
+    done
+fi
 
 # Scratch work directory for BIDS apps that need one (e.g. QSIPrep/nipype, which
 # can balloon to tens of GB). Placed inside the output dir so it shares the large
@@ -233,29 +300,12 @@ mkdir -p "$OUTPUT_DIR"   # may be a brand-new output dir; mktemp below needs it 
 WORK_DIR=$(mktemp -d "$OUTPUT_DIR/.parrot_work.XXXXXX")
 WORK_DIR_DOCKER="/derivatives/$(basename "$WORK_DIR")"
 
-# Re-own a subject's container-created outputs back to the host user, from inside a
-# root container (so no host sudo is needed). The Parrot MRI/forward images and
-# HippUnfold run as root, so without this they leave root-owned files in the
-# derivatives tree -- a pain to manage or delete later. Every root-owned output lives
-# under /derivatives/<stage>/sub-<ID>, so that one glob covers them all (logs/ and
-# leadfields/ included); nullglob makes a subject with no outputs yet a clean no-op.
-normalize_ownership() {
-    local subject=$1
-    [ -n "$subject" ] || return 0
-    docker run --rm --entrypoint bash \
-        -v "$OUTPUT_DIR":/derivatives \
-        "$IMG_MRI_RECONSTRUCTION" \
-        -c "shopt -s nullglob; t=(/derivatives/*/sub-${subject}); [ \${#t[@]} -gt 0 ] && chown -R $(id -u):$(id -g) \"\${t[@]}\"" \
-        || echo "[WARN] ownership normalization failed for sub-${subject} (some files may remain root-owned)."
-}
-
-# Cleanup on exit: sweep the scratch work dir and re-own the in-flight subject's
-# outputs (covers aborts/errors mid-subject; cleanly completed subjects are re-owned
-# at the end of their loop iteration). CURRENT_SUBJECT is set at the top of each loop.
+# Cleanup on exit: sweep the scratch work dir. Every container now runs as the invoking
+# user (docker --user / apptainer are both rootless), so outputs are already user-owned --
+# the old root-ownership normalization (a chown from inside a root container) is gone.
 CURRENT_SUBJECT=""
 cleanup() {
     [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR"
-    normalize_ownership "$CURRENT_SUBJECT"
 }
 trap cleanup EXIT INT TERM
 
@@ -285,25 +335,79 @@ echo "Subjects to process: ${PARTICIPANTS[*]}"
 echo "====================================================================="
 
 # =============================================================================
-# DOCKER WRAPPER FUNCTION (The Magic Ingredient)
+# CONTAINER RUNTIME ABSTRACTION
 # =============================================================================
-# This dynamically spins up the container, sources the environment, and runs your command
+# container_exec emits the right invocation for the active RUNTIME (docker | apptainer) and
+# runs it. Both paths run rootless (docker --user / apptainer-as-you), so the only real
+# difference is flag syntax: --gpus/--nv, -v/--bind, -e/--env, -w/--pwd, --entrypoint vs
+# `exec <exe>` / `run`. Callers set these globals before each call (optionals auto-reset):
+#   CE_GPU   1 to expose the GPU (default 0)
+#   CE_HOME  1 to inject a writable managed HOME (default 0; required for the custom Parrot
+#            images, which -- unlike the external BIDS apps -- have no world-writable HOME)
+#   CE_EXEC  entrypoint executable to run (default: use the image's own entrypoint/runscript)
+#   CE_PWD   working directory inside the container (default: image default)
+#   CE_ENVS  array of "KEY=VALUE" env vars
+#   CE_BINDS array of "src:dst[:ro]" mounts
+# Usage: container_exec <image_tag> [args...]   (stdout/stderr are the caller's to redirect)
+container_exec() {
+    local image=$1; shift
+    local -a cmd=( "$@" )
+    local rc x
+    if [ "$RUNTIME" = "apptainer" ]; then
+        local sif; sif=$(sif_path "$image")
+        local -a a=( "$APPTAINER_BIN" )
+        # `exec <sif> <exe> <args>` when an entrypoint override is given; otherwise `run` the
+        # image's own runscript (the converted Docker ENTRYPOINT) with <args>.
+        if [ -n "${CE_EXEC:-}" ]; then a+=( exec ); else a+=( run ); fi
+        # Apptainer manages HOME specially and REJECTS setting it via --env (it warns
+        # "Overriding HOME ... with APPTAINERENV_HOME is not permitted"). The supported way is
+        # --home <src>:<dest>, which bind-mounts a writable host scratch at /parrot_home AND
+        # sets HOME to it, replacing the default host-$HOME mount (so we never touch the
+        # quota'd home on HPC). USER fills the missing /etc/passwd entry (getpass); it is a
+        # normal env var, so --env is fine for it.
+        a+=( --home "$PARROT_HOME_HOST:/parrot_home" --env USER=parrot )
+        [ "${CE_GPU:-0}" = 1 ] && [ -n "$APPTAINER_NV" ] && a+=( $APPTAINER_NV )
+        for x in "${CE_ENVS[@]:-}";  do [ -n "$x" ] && a+=( --env "$x" ); done
+        for x in "${CE_BINDS[@]:-}"; do [ -n "$x" ] && a+=( --bind "$x" ); done
+        [ -n "${CE_PWD:-}" ] && a+=( --pwd "$CE_PWD" )
+        a+=( "$sif" )
+        [ -n "${CE_EXEC:-}" ] && a+=( "$CE_EXEC" )
+        a+=( "${cmd[@]}" )
+        "${a[@]}"; rc=$?
+    else
+        local -a a=( docker run --rm --user "$(id -u):$(id -g)" )
+        # External BIDS apps keep their own world-writable HOME on docker (as before); the
+        # custom Parrot images get the managed writable HOME when the caller asks (CE_HOME=1).
+        if [ "${CE_HOME:-0}" = 1 ]; then
+            a+=( -v "$PARROT_HOME_HOST:/parrot_home" -e HOME=/parrot_home -e USER=parrot )
+        fi
+        [ "${CE_GPU:-0}" = 1 ] && [ -n "$DOCKER_GPU" ] && a+=( $DOCKER_GPU )
+        for x in "${CE_ENVS[@]:-}";  do [ -n "$x" ] && a+=( -e "$x" ); done
+        for x in "${CE_BINDS[@]:-}"; do [ -n "$x" ] && a+=( -v "$x" ); done
+        [ -n "${CE_PWD:-}" ] && a+=( -w "$CE_PWD" )
+        [ -n "${CE_EXEC:-}" ] && a+=( --entrypoint "$CE_EXEC" )
+        a+=( "$image" )
+        a+=( "${cmd[@]}" )
+        "${a[@]}"; rc=$?
+    fi
+    # Reset optionals so they never leak into the next call (arrays are reset by callers).
+    CE_GPU=0; CE_HOME=0; CE_EXEC=""; CE_PWD=""; CE_ENVS=(); CE_BINDS=()
+    return $rc
+}
+
+# Run a step in the MRI reconstruction image, sourcing its environment first. FS_LICENSE
+# override: the image bakes FS_LICENSE=/SUBJECTS/license.txt, but we only mount /bids and
+# /derivatives -- point FreeSurfer at the license shipped in the BIDS dataset.
 run_in_docker_MRI() {
     local step_name=$1
     local log_file=$2
     local cmd=$3
-    
-    # --entrypoint /bin/bash overrides any internal entrypoints so we can run raw commands.
-    # FS_LICENSE override: the image bakes FS_LICENSE=/SUBJECTS/license.txt, but we only
-    # mount /bids and /derivatives. Point FreeSurfer at the license shipped in the BIDS
-    # dataset (same file QSIPrep uses) so all recon steps can find it.
-    docker run --rm $DOCKER_GPU --entrypoint /bin/bash \
-        -e FS_LICENSE=/bids/license.txt \
-        -v "$BIDS_DIR":/bids:ro \
-        -v "$OUTPUT_DIR":/derivatives \
-        "$IMG_MRI_RECONSTRUCTION" \
-        -c "source /scripts/source_env.sh && $cmd" > "$log_file" 2>&1
-        
+
+    CE_GPU=1; CE_HOME=1; CE_EXEC=/bin/bash; CE_PWD=/parrot_home
+    CE_ENVS=( "FS_LICENSE=/bids/license.txt" )
+    CE_BINDS=( "$BIDS_DIR:/bids:ro" "$OUTPUT_DIR:/derivatives" )
+    container_exec "$IMG_MRI_RECONSTRUCTION" -c "source /scripts/source_env.sh && $cmd" > "$log_file" 2>&1
+
     check_step $? "$step_name" "$log_file"
 }
 
@@ -312,14 +416,30 @@ run_in_docker_FWD() {
     local log_file=$2
     local image=$3
     local cmd=$4
-    
-    # --entrypoint /bin/bash overrides any internal entrypoints so we can run raw commands
-    docker run --rm $DOCKER_GPU --entrypoint /bin/bash \
-        -v "$BIDS_DIR":/bids:ro \
-        -v "$OUTPUT_DIR":/derivatives \
-        "$image" -c "$cmd" > "$log_file" 2>&1
-        
+
+    CE_GPU=1; CE_HOME=1; CE_EXEC=/bin/bash
+    CE_BINDS=( "$BIDS_DIR:/bids:ro" "$OUTPUT_DIR:/derivatives" )
+    container_exec "$image" -c "$cmd" > "$log_file" 2>&1
+
     check_step $? "$step_name" "$log_file"
+}
+
+# Run a leadfield solver (OpenMEEG/DUNEuro) in the forward-solvers image. These scripts read
+# geometry.geom / conductivities.cond / neuronal_strength_dict.json from the current directory
+# (the baked WORKDIR /pipeline) and write intermediates (e.g. OpenMEEG's head.hm) there too.
+# That's fine as root, but rootless makes /pipeline read-only and -- under Apptainer -- cwd
+# defaults to the host PWD. So stage those three tiny config files into a writable per-call
+# scratch (on the derivatives parallel FS, since BEM matrices can be large) and cd there
+# first. Runtime-agnostic: the cd happens inside the container command for docker and apptainer alike.
+run_in_docker_SOLVER() {
+    local step_name=$1
+    local log_file=$2
+    local image=$3
+    local cmd=$4
+
+    local pre="s=\$(mktemp -d $WORK_DIR_DOCKER/solver.XXXXXX) && cd \"\$s\" && \
+cp /pipeline/geometry.geom /pipeline/conductivities.cond /pipeline/neuronal_strength_dict.json \"\$s\"/ && "
+    run_in_docker_FWD "$step_name" "$log_file" "$image" "${pre}${cmd}"
 }
 
 # =============================================================================
@@ -333,6 +453,12 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     echo "====================================================================="
 
     CURRENT_SUBJECT="$SUBJECT"
+
+    # Per-subject writable HOME for rootless containers (see container_exec). Lives in the
+    # ephemeral work dir (swept on exit) on the derivatives filesystem; bound at /parrot_home.
+    # Per-subject so concurrent runs (e.g. a SLURM array) never share config/cache/lock files.
+    PARROT_HOME_HOST="$WORK_DIR/home_sub-${SUBJECT}"
+    mkdir -p "$PARROT_HOME_HOST"
 
     # Subject BIDS input directory
     SUB_BIDS_DIR="$BIDS_DIR/sub-${SUBJECT}"
@@ -528,10 +654,9 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         step_start=$(date +%s)
         # Use the standardized, MPRAGEised T1 from ingest (T1_DOCKER), not the raw
         # BIDS T1 -- so MP2RAGE subjects get the same conditioned input recon-all uses.
-        docker run $DOCKER_GPU --rm --user $(id -u):$(id -g) \
-            -v "$BIDS_DIR":/data:ro \
-            -v "$OUTPUT_DIR":/derivatives \
-            "$IMG_FASTSURFER" \
+        CE_GPU=1
+        CE_BINDS=( "$BIDS_DIR:/data:ro" "$OUTPUT_DIR:/derivatives" )
+        container_exec "$IMG_FASTSURFER" \
             --fs_license /data/license.txt \
             --t1 "$T1_DOCKER" \
             --sid "sub-${SUBJECT}" \
@@ -572,10 +697,8 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         # No -it: a TTY isn't available in non-interactive/background runs and breaks
         # with "the input device is not a TTY"; this batch BIDS app doesn't need one.
         HIPPUNFOLD_TMP=$(mktemp -d "$OUTPUT_DIR/.hippunfold_tmp.XXXXXX")
-        docker run --rm \
-            -v "$BIDS_DIR":/bids:ro \
-            -v "$HIPPUNFOLD_TMP":/output \
-            "$IMG_HIPPUNFOLD" \
+        CE_BINDS=( "$BIDS_DIR:/bids:ro" "$HIPPUNFOLD_TMP:/output" )
+        container_exec "$IMG_HIPPUNFOLD" \
             /bids /output participant \
             --participant_label "$SUBJECT" \
             --modality T1w --cores "$N_THREADS" > "$LOG_DIR/${NAME}_log.txt" 2>&1
@@ -641,8 +764,9 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # was skipped). Idempotent: only runs if the color LUT isn't already there.
     if [ ! -f "$OUTPUT_DIR/$SURF_DIR/sub-${SUBJECT}/FreeSurferColorLUT.txt" ]; then
         log_step "Installing recon LUTs into $SURF_DIR/sub-${SUBJECT}..."
-        docker run --rm --entrypoint /bin/bash -v "$OUTPUT_DIR":/derivatives \
-            "$IMG_MRI_RECONSTRUCTION" -c \
+        CE_HOME=1; CE_EXEC=/bin/bash; CE_PWD=/parrot_home
+        CE_BINDS=( "$OUTPUT_DIR:/derivatives" )
+        container_exec "$IMG_MRI_RECONSTRUCTION" -c \
             "cp \$FREESURFER_HOME/FreeSurferColorLUT.txt /derivatives/$SURF_DIR/sub-${SUBJECT}/FreeSurferColorLUT.txt && \
              cp -r /home/Schaefer2018_LocalGlobal/Parcellations/project_to_individual /derivatives/$SURF_DIR/sub-${SUBJECT}/Schaefer_LUT" \
             >> "$LOG_FILE" 2>&1 \
@@ -737,13 +861,19 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
 
         step_start=$(date +%s)
 
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "cd /home/simnibs_reconstructions && \
-                                                        /root/SimNIBS-4.5/bin/charm subject $T1_DOCKER ${simnibs_args[*]} --forcerun --fs-dir /derivatives/$SURF_DIR/sub-${SUBJECT} --forcesform && \
+        # charm writes its m2m_subject folder into the current directory, so cwd must be a
+        # WRITABLE, bind-mounted path -- the old /home/simnibs_reconstructions was a baked
+        # image dir (fine as root, but unwritable when running rootless / under Apptainer's
+        # read-only image). Use the per-subject scratch under /derivatives instead. charm /
+        # simnibs_python are now on PATH (source_env.sh) since SimNIBS moved to /opt, so no
+        # more hardcoded /root/SimNIBS-4.5/bin/... (unreadable to a non-root UID).
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "cd $WORK_DIR_DOCKER && \
+                                                        charm subject $T1_DOCKER ${simnibs_args[*]} --forcerun --fs-dir /derivatives/$SURF_DIR/sub-${SUBJECT} --forcesform && \
                                                         cd / && \
-                                                        /root/SimNIBS-4.5/bin/simnibs_python /scripts/extract_charm_surf.py --charm_dir "/home/simnibs_reconstructions/m2m_subject/" && \
-                                                        cp /scripts/simnibs_conductivities.txt /home/simnibs_reconstructions/m2m_subject/conductivities.txt && \
-                                                        cp /scripts/simnibs_labels.txt /home/simnibs_reconstructions/m2m_subject/labels.txt && \
-                                                        mv /home/simnibs_reconstructions/m2m_subject /derivatives/$NAME/sub-${SUBJECT}"
+                                                        simnibs_python /scripts/extract_charm_surf.py --charm_dir "$WORK_DIR_DOCKER/m2m_subject/" && \
+                                                        cp /scripts/simnibs_conductivities.txt $WORK_DIR_DOCKER/m2m_subject/conductivities.txt && \
+                                                        cp /scripts/simnibs_labels.txt $WORK_DIR_DOCKER/m2m_subject/labels.txt && \
+                                                        mv $WORK_DIR_DOCKER/m2m_subject /derivatives/$NAME/sub-${SUBJECT}"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -917,10 +1047,13 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
             # coarse DWI toward the MRtrix-recommended ~1.25 mm for tractography,
             # but never downsample finer-than-1.25 acquisitions. Read the native
             # voxel size with nibabel from our MRI image (it has the env).
-            OUTPUT_RES=$(docker run --rm --entrypoint micromamba \
-                -v "$BIDS_DIR":/bids:ro \
-                "$IMG_MRI_RECONSTRUCTION" \
-                run -n neuro python -c "import nibabel as nib; z=nib.load('$DWI_DOCKER').header.get_zooms()[:3]; print(round(min(min(z),1.25),2))" 2>/dev/null)
+            # Set CE_* INSIDE the command substitution: a subshell, so they don't leak into
+            # the next (non-substituted) container_exec call -- container_exec's reset runs in
+            # the subshell and wouldn't propagate to the parent.
+            OUTPUT_RES=$(
+                CE_HOME=1; CE_EXEC=micromamba; CE_BINDS=( "$BIDS_DIR:/bids:ro" )
+                container_exec "$IMG_MRI_RECONSTRUCTION" \
+                    run -n neuro python -c "import nibabel as nib; z=nib.load('$DWI_DOCKER').header.get_zooms()[:3]; print(round(min(min(z),1.25),2))" 2>/dev/null)
             if [ -z "$OUTPUT_RES" ]; then
                 echo "[ERROR] Could not read DWI voxel size for sub-${SUBJECT}." | tee -a "$LOG_FILE"
                 exit 1
@@ -938,26 +1071,26 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
             # atlas_to_aggregated.json is a top-level JSON array, so
             # dict.update(list) -> "unhashable type: list". Binding only raw
             # inputs sidesteps this regardless of where the output dir lives.
+            # bind specs ("src:dst:ro"), runtime-agnostic (container_exec turns these into
+            # -v or --bind as needed).
             QSIPREP_BIDS_MOUNTS=(
-                -v "$BIDS_DIR/dataset_description.json":/bids/dataset_description.json:ro
-                -v "$BIDS_DIR/license.txt":/bids/license.txt:ro
-                -v "$BIDS_DIR/sub-${SUBJECT}":/bids/sub-${SUBJECT}:ro
+                "$BIDS_DIR/dataset_description.json:/bids/dataset_description.json:ro"
+                "$BIDS_DIR/license.txt:/bids/license.txt:ro"
+                "$BIDS_DIR/sub-${SUBJECT}:/bids/sub-${SUBJECT}:ro"
             )
             # participants.tsv is optional; bind it only if present -- a missing
             # bind source makes Docker silently create an empty dir at /bids.
             if [ -f "$BIDS_DIR/participants.tsv" ]; then
-                QSIPREP_BIDS_MOUNTS+=( -v "$BIDS_DIR/participants.tsv":/bids/participants.tsv:ro )
+                QSIPREP_BIDS_MOUNTS+=( "$BIDS_DIR/participants.tsv:/bids/participants.tsv:ro" )
             fi
 
-            # --user avoids root-owned outputs in the NFS derivatives tree; the
-            # image's HOME (/home/qsiprep) is world-writable so we keep it as-is.
+            # Runs rootless (container_exec --user / apptainer); the image's HOME
+            # (/home/qsiprep) is world-writable so on docker we keep it as-is (no CE_HOME).
             # TemplateFlow is cached persistently across runs.
-            docker run --rm $DOCKER_GPU --user "$(id -u):$(id -g)" \
-                -e TEMPLATEFLOW_HOME=/templateflow \
-                -v "$TEMPLATEFLOW_DIR":/templateflow \
-                "${QSIPREP_BIDS_MOUNTS[@]}" \
-                -v "$OUTPUT_DIR":/derivatives \
-                "$IMG_QSIPREP" \
+            CE_GPU=1
+            CE_ENVS=( "TEMPLATEFLOW_HOME=/templateflow" )
+            CE_BINDS=( "$TEMPLATEFLOW_DIR:/templateflow" "${QSIPREP_BIDS_MOUNTS[@]}" "$OUTPUT_DIR:/derivatives" )
+            container_exec "$IMG_QSIPREP" \
                 /bids "/derivatives/$NAME" participant \
                 --participant-label "$SUBJECT" \
                 --fs-license-file /bids/license.txt \
@@ -1001,7 +1134,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
             if [ "$DWI_FORMAT" = "hcp" ]; then
                 # HCP-YA native tree; ingress2qsirecon converts it internally. Bind only
                 # this subject so QSIRecon doesn't index the whole HCP cohort.
-                RECON_INPUT_MOUNT=(-v "$BIDS_DIR/sourcedata/hcp/${SUBJECT}":/hcp_in/${SUBJECT}:ro)
+                RECON_INPUT_MOUNT=("$BIDS_DIR/sourcedata/hcp/${SUBJECT}:/hcp_in/${SUBJECT}:ro")
                 RECON_INPUT_DIR="/hcp_in"
                 RECON_INPUT_TYPE="hcpya"
             else
@@ -1017,9 +1150,11 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
                 # Adaptive recon-spec selection from the acquisition shell scheme:
                 # >=2 non-zero shells -> MSMT; 1 shell with >=28 dirs -> SS3T; else skip.
                 # BVAL_DOCKER (set during detection) may live under /bids or /derivatives.
-                RECON_CHOICE=$(docker run --rm --entrypoint micromamba \
-                    -v "$BIDS_DIR":/bids:ro -v "$OUTPUT_DIR":/derivatives \
-                    "$IMG_MRI_RECONSTRUCTION" \
+                # CE_* set inside the substitution (subshell) so they don't leak -- see the
+                # qsiprep output-resolution probe above for the rationale.
+                RECON_CHOICE=$(
+                    CE_HOME=1; CE_EXEC=micromamba; CE_BINDS=( "$BIDS_DIR:/bids:ro" "$OUTPUT_DIR:/derivatives" )
+                    container_exec "$IMG_MRI_RECONSTRUCTION" \
                     run -n neuro python -c "
 import numpy as np
 b=np.atleast_1d(np.loadtxt('$BVAL_DOCKER'))
@@ -1048,14 +1183,16 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
                     # ephemeral work dir, then we relocate the results into place. We bind
                     # only license.txt from $BIDS_DIR (plus the HCP subject tree for hcpya)
                     # to avoid needlessly exposing the whole dataset/derivatives tree.
-                    docker run --rm $DOCKER_GPU --user "$(id -u):$(id -g)" \
-                        -e TEMPLATEFLOW_HOME=/templateflow \
-                        -v "$TEMPLATEFLOW_DIR":/templateflow \
-                        -v "$PARROT_SCRIPT_DIR/template_data/qsirecon_specs":/specs:ro \
-                        -v "$BIDS_DIR/license.txt":/bids/license.txt:ro \
-                        -v "$OUTPUT_DIR":/derivatives \
-                        "${RECON_INPUT_MOUNT[@]}" \
-                        "$IMG_QSIRECON" \
+                    CE_GPU=1
+                    CE_ENVS=( "TEMPLATEFLOW_HOME=/templateflow" )
+                    CE_BINDS=(
+                        "$TEMPLATEFLOW_DIR:/templateflow"
+                        "$PARROT_SCRIPT_DIR/template_data/qsirecon_specs:/specs:ro"
+                        "$BIDS_DIR/license.txt:/bids/license.txt:ro"
+                        "$OUTPUT_DIR:/derivatives"
+                        "${RECON_INPUT_MOUNT[@]}"
+                    )
+                    container_exec "$IMG_QSIRECON" \
                         "$RECON_INPUT_DIR" "$WORK_DIR_DOCKER/qsirecon_out" participant \
                         --participant-label "$SUBJECT" \
                         --recon-spec "/specs/$SPEC" \
@@ -1158,7 +1295,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         if [ "$DWI_FORMAT" = "hcp" ]; then
             dwitensor_ready=true
             DWITENSOR_FMT="hcp"
-            DWITENSOR_MOUNT=(-v "$BIDS_DIR/sourcedata/hcp/${SUBJECT}":/hcp_in/${SUBJECT}:ro)
+            DWITENSOR_MOUNT=("$BIDS_DIR/sourcedata/hcp/${SUBJECT}:/hcp_in/${SUBJECT}:ro")
         elif compgen -G "$OUTPUT_DIR/qsiprep/sub-${SUBJECT}/dwi/"*space-ACPC_desc-preproc_dwi.nii.gz > /dev/null 2>&1; then
             dwitensor_ready=true
         fi
@@ -1168,11 +1305,13 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
             log_step "Running $NAME (DTI fit for anisotropic conductivity)..."
             step_start=$(date +%s)
 
-            docker run --rm --user "$(id -u):$(id -g)" \
-                -v "$OUTPUT_DIR":/derivatives \
-                -v "$PARROT_SCRIPT_DIR/bin/make_dwitensor.sh":/make_dwitensor.sh:ro \
-                "${DWITENSOR_MOUNT[@]}" \
-                --entrypoint bash "$IMG_QSIRECON" \
+            CE_EXEC=bash
+            CE_BINDS=(
+                "$OUTPUT_DIR:/derivatives"
+                "$PARROT_SCRIPT_DIR/bin/make_dwitensor.sh:/make_dwitensor.sh:ro"
+                "${DWITENSOR_MOUNT[@]}"
+            )
+            container_exec "$IMG_QSIRECON" \
                 /make_dwitensor.sh "$SUBJECT" "$DWITENSOR_FMT" > "$LOG_DIR/${NAME}_log.txt" 2>&1
             check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
@@ -1206,10 +1345,12 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
             # to the swept WORK_DIR, not the derivatives tree. Products land under
             # dwitensor/ (tensor + transform) and qsirecon/ (T1 tractogram); this
             # stage has no output folder of its own.
-            docker run --rm --user "$(id -u):$(id -g)" \
-                -v "$OUTPUT_DIR":/derivatives \
-                -v "$PARROT_SCRIPT_DIR/bin/dwi_to_t1.sh":/dwi_to_t1.sh:ro \
-                --entrypoint bash "$IMG_QSIRECON" \
+            CE_EXEC=bash
+            CE_BINDS=(
+                "$OUTPUT_DIR:/derivatives"
+                "$PARROT_SCRIPT_DIR/bin/dwi_to_t1.sh:/dwi_to_t1.sh:ro"
+            )
+            container_exec "$IMG_QSIRECON" \
                 /dwi_to_t1.sh "$SUBJECT" "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt" 2>&1
             check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt"
 
@@ -1232,10 +1373,12 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
             log_step "Running $NAME matrices (tck2connectome)..."
             step_start=$(date +%s)
 
-            docker run --rm --user "$(id -u):$(id -g)" \
-                -v "$OUTPUT_DIR":/derivatives \
-                -v "$PARROT_SCRIPT_DIR/bin/make_connectomes.sh":/make_connectomes.sh:ro \
-                --entrypoint bash "$IMG_QSIRECON" \
+            CE_EXEC=bash
+            CE_BINDS=(
+                "$OUTPUT_DIR:/derivatives"
+                "$PARROT_SCRIPT_DIR/bin/make_connectomes.sh:/make_connectomes.sh:ro"
+            )
+            container_exec "$IMG_QSIRECON" \
                 /make_connectomes.sh "$SUBJECT" > "$LOG_DIR/${NAME}-matrices_log.txt" 2>&1
             check_step $? "$NAME matrices" "$LOG_DIR/${NAME}-matrices_log.txt"
 
@@ -1275,7 +1418,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
 
         step_start=$(date +%s)
 
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python place_electrodes.py --subject $SUBJECT --output_dir /derivatives"
+        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python /scripts/place_electrodes.py --subject $SUBJECT --output_dir /derivatives"
  
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -1307,7 +1450,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
             echo "Placing dipoles at $spacing mm spacing..."
 
             step_start=$(date +%s)
-            run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}-${spacing}mm_log.txt" "$DOCKER_IMAGE" "python place_dipoles.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
+            run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}-${spacing}mm_log.txt" "$DOCKER_IMAGE" "python /scripts/place_dipoles.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
             step_end=$(date +%s)
 
 
@@ -1342,9 +1485,9 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
 
         step_start=$(date +%s)
 
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python nifti_to_inr.py --nifti_path /derivatives/tissuelabels/sub-${SUBJECT}/electrical/$VOLUME_TO_MESH.nii.gz --inr_path /derivatives/tetmesh/sub-${SUBJECT}/label_field.inr"
+        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python /scripts/nifti_to_inr.py --nifti_path /derivatives/tissuelabels/sub-${SUBJECT}/electrical/$VOLUME_TO_MESH.nii.gz --inr_path /derivatives/tetmesh/sub-${SUBJECT}/label_field.inr"
         run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "mesher $N_THREADS /derivatives/tetmesh/sub-${SUBJECT}/label_field.inr /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh $ANGLE $DIST $DEF_SURF $DEF_VOL $RATIO $SMOOTH $OPT_TIME ${TISSUE_ARGS[*]}"
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python mesh_postprocessing.py --reference_nifti /derivatives/tissuelabels/sub-${SUBJECT}/electrical/$VOLUME_TO_MESH.nii.gz --mesh /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --output /derivatives/tetmesh/sub-${SUBJECT}/transformed_tetrahedral_mesh.mesh --export_vtu"
+        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python /scripts/mesh_postprocessing.py --reference_nifti /derivatives/tissuelabels/sub-${SUBJECT}/electrical/$VOLUME_TO_MESH.nii.gz --mesh /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --output /derivatives/tetmesh/sub-${SUBJECT}/transformed_tetrahedral_mesh.mesh --export_vtu"
  
         mv "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/transformed_tetrahedral_mesh.mesh" "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh"
         mv "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/transformed_tetrahedral_mesh.vtu" "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.vtu"
@@ -1415,15 +1558,15 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
 
         spacing=$(printf "%.1f" "$SPACING_OPENMEEG")
         echo "Solving forward problem with OpenMEEG at $spacing mm dipole spacing"
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_openmeeg.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing"
+        run_in_docker_SOLVER "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_openmeeg.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing"
 
         spacing=$(printf "%.1f" "$SPACING_DUNEURO_SIMNIBS")
         echo "Solving forward problem with DUNEuro using SimNIBS charm mesh, at $spacing mm dipole spacing"
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/simnibscharm/sub-${SUBJECT}/subject.msh --tissue_names /derivatives/simnibscharm/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/simnibscharm/sub-${SUBJECT}/conductivities.txt --label simnibs --valid_tissues \"Gray-Matter\""
+        run_in_docker_SOLVER "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/simnibscharm/sub-${SUBJECT}/subject.msh --tissue_names /derivatives/simnibscharm/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/simnibscharm/sub-${SUBJECT}/conductivities.txt --label simnibs --valid_tissues \"Gray-Matter\""
 
         spacing=$(printf "%.1f" "$SPACING_DUNEURO_CGAL")
         echo "Solving forward problem with DUNEuro using CGAL mesh, at $spacing mm dipole spacing"
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --label CGAL --valid_tissues $CGAL_VALID_TISSUES"
+        run_in_docker_SOLVER "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --label CGAL --valid_tissues $CGAL_VALID_TISSUES"
 
         # Anisotropic CGAL leadfield (extra, alongside the isotropic one above) --
         # only when the anisotropy stage produced WM conductivity tensors. White
@@ -1431,7 +1574,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         # model's monopole patch collapses for WM dipoles.
         if [ -f "$OUTPUT_DIR/anisotropy/sub-${SUBJECT}/conductivity_tensors.npy" ]; then
             echo "Solving forward problem with DUNEuro using CGAL mesh (ANISOTROPIC WM), at $spacing mm dipole spacing"
-            run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --label CGAL_anisotropic --valid_tissues $CGAL_VALID_TISSUES --dti_tensors_path /derivatives/anisotropy/sub-${SUBJECT}/conductivity_tensors.npy"
+            run_in_docker_SOLVER "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --label CGAL_anisotropic --valid_tissues $CGAL_VALID_TISSUES --dti_tensors_path /derivatives/anisotropy/sub-${SUBJECT}/conductivity_tensors.npy"
         fi
 
         step_end=$(date +%s)
@@ -1441,10 +1584,8 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     fi    
 
 
-    # All stages done for this subject -- re-own its outputs now (don't wait for the
-    # whole batch). Clear CURRENT_SUBJECT so the exit trap won't redundantly re-chown
-    # a subject that already completed cleanly.
-    normalize_ownership "$SUBJECT"
+    # All stages done for this subject. Outputs are already user-owned (rootless), so there
+    # is nothing to re-own; just clear CURRENT_SUBJECT for symmetry with the cleanup trap.
     CURRENT_SUBJECT=""
 done
 
