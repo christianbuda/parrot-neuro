@@ -39,14 +39,16 @@ DST_ROOT = Path("/dst")  # target BIDS dataset (e.g. BIDS_LEMON)
 # Orchestrator override columns, IN POSITIONAL ORDER (the orchestrator parses them
 # by position): col4=skip-T2-registration, col5=no-neck, col6=mp2rage.
 OVERRIDE_COLS = ["skip_t2_registration", "no_neck", "mp2rage"]
-DEFAULT_OVERRIDE = {"skip_t2_registration": False, "no_neck": False, "mp2rage": False}
+# LEMON is a *uniformly* MP2RAGE cohort, so mp2rage defaults to True here: the raw
+# UNI ships with a high-intensity background that breaks FastSurfer's conform unless
+# the pipeline's mp2rage_prep MPRAGEises it first. Override per-subject below only for
+# genuine exceptions.
+DEFAULT_OVERRIDE = {"skip_t2_registration": False, "no_neck": False, "mp2rage": True}
 
-# Per-subject overrides. sub-010002: T1/T2 same-session (register normally), no-neck
-# not asserted up front (flip to True if charm's neck fit fails), mp2rage True (raw
-# UNI -> mp2rage_prep MPRAGEises it).
-SUBJECT_OVERRIDES: dict[str, dict[str, bool]] = {
-    "sub-010002": {"skip_t2_registration": False, "no_neck": False, "mp2rage": True},
-}
+# Per-subject exceptions to DEFAULT_OVERRIDE (key by sub-<ID>); empty = all subjects
+# take the defaults. Add an entry e.g. to assert no_neck=True up front if charm's neck
+# fit fails for a subject, or skip_t2_registration if the T2 is a different session.
+SUBJECT_OVERRIDES: dict[str, dict[str, bool]] = {}
 
 
 def find_session_dir(sub_dir: Path) -> Path:
