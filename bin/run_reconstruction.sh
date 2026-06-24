@@ -229,6 +229,7 @@ done
 # derivatives filesystem rather than a possibly RAM-backed /tmp, and removed when
 # the script exits (success, error, or interrupt). Ephemeral by design: a failed
 # QSIPrep run therefore restarts from scratch on re-run (no nipype resume cache).
+mkdir -p "$OUTPUT_DIR"   # may be a brand-new output dir; mktemp below needs it to exist
 WORK_DIR=$(mktemp -d "$OUTPUT_DIR/.parrot_work.XXXXXX")
 WORK_DIR_DOCKER="/derivatives/$(basename "$WORK_DIR")"
 
@@ -962,6 +963,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
                 --fs-license-file /bids/license.txt \
                 --output-resolution "$OUTPUT_RES" \
                 --nprocs "$N_THREADS" \
+                --omp-nthreads "$N_THREADS" \
                 --skip-bids-validation \
                 -w "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt" 2>&1
 
@@ -1061,6 +1063,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
                         --fs-subjects-dir /derivatives/$SURF_DIR \
                         --fs-license-file /bids/license.txt \
                         --nprocs "$N_THREADS" \
+                        --omp-nthreads "$N_THREADS" \
                         -w "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt" 2>&1
                     check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME"
 
