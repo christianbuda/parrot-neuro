@@ -10,16 +10,15 @@
 # NOTE: the Parrot images must already be published to Docker Hub as :latest
 # (the rootless build). `./bin/build.sh --push` from a machine that has Docker.
 #
-# Apptainer/Singularity is NOT in LEONARDO's default module profile -- it's usually a
-# system command. If `command -v` below fails, try `module spider apptainer`/ask CINECA.
+# On LEONARDO, Singularity is a SYSTEM command (/usr/bin/singularity), not a module --
+# no `module load` needed. (No `apptainer`; singularity is the binary here.)
 #
 #   bash hpc/leonardo/prepull_sifs.sh /leonardo_work/<ACCT>/parrot_sif
 ###############################################################################
 set -euo pipefail
 
-module load apptainer 2>/dev/null || module load singularity 2>/dev/null || true
 APP="$(command -v apptainer || command -v singularity || true)"
-[ -n "$APP" ] || { echo "ERROR: no apptainer/singularity on PATH. Try 'module spider apptainer' or ask CINECA."; exit 1; }
+[ -n "$APP" ] || { echo "ERROR: no apptainer/singularity on PATH (expected /usr/bin/singularity). Ask CINECA."; exit 1; }
 
 SIF="${1:?usage: prepull_sifs.sh <sif_dir>, e.g. /leonardo_work/<ACCT>/parrot_sif}"
 mkdir -p "$SIF"

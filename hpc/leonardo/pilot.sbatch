@@ -43,14 +43,13 @@ OUT="$BIDS/derivatives"                    # derivatives go next to the data
 SIF="$WORKDIR/parrot_sif"                  # persistent .sif cache (pull once, reuse)
 
 # --- modules -----------------------------------------------------------------
-# CUDA for --nv. Apptainer/Singularity is NOT in LEONARDO's default module profile -- it is
-# usually a system command (or under another profile). Verify on a login node first:
-#   command -v apptainer singularity ; module spider apptainer singularity
+# CUDA for --nv. On LEONARDO, Singularity is a SYSTEM command (/usr/bin/singularity) -- NOT a
+# module -- so it survives `module purge`. (No `apptainer`; our runtime helper falls back to
+# singularity.) Confirmed 2026-06-25: `command -v singularity` -> /usr/bin/singularity.
 module purge
 module load cuda/12.2 2>/dev/null || module load cuda 2>/dev/null || true
-module load apptainer 2>/dev/null || module load singularity 2>/dev/null || true   # harmless if absent
 command -v apptainer >/dev/null || command -v singularity >/dev/null || {
-    echo "ERROR: no apptainer/singularity on PATH. Find it: 'module spider apptainer' or ask CINECA."; exit 1; }
+    echo "ERROR: no apptainer/singularity on PATH (expected /usr/bin/singularity). Ask CINECA."; exit 1; }
 
 mkdir -p "$SIF" "$OUT"
 

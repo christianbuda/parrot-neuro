@@ -12,9 +12,10 @@ holds the cluster glue.
 
 ## One-time prerequisites
 
-0. **Confirm Apptainer is available.** It is **not** in LEONARDO's default module profile, so on a
-   login node check `command -v apptainer singularity` and `module spider apptainer singularity`.
-   It's usually a system command; if truly absent, ask CINECA. Nothing else works without it.
+0. **Container runtime — confirmed.** On LEONARDO, **Singularity is a system command**
+   (`/usr/bin/singularity`), *not* a module — it survives `module purge`, no `module load`
+   needed. (There's no `apptainer` binary; our `--runtime apptainer` helper resolves to
+   `singularity`. `module spider` isn't available on this Lmod, fwiw.) Verified 2026-06-25.
 1. **Publish the rootless images.** From a machine with Docker:
    `./bin/build.sh --push` (pushes `christianbuda/parrot_*:latest`).
 2. **Get the code on the cluster.** Clone this repo to `$HOME/parrot-neuro` (or edit the path in `pilot.sbatch`).
@@ -51,8 +52,20 @@ The pilot's job is to produce two numbers before we scale to a job array:
 If it brushes the cap or idles the A100 for hours → build the split (a `--stages` selector +
 a two-phase SLURM array with `--dependency=aftercorr`). Don't build the array before reading these.
 
+### QoS options (for scaling — Booster `boost_usr_prod`)
+
+| QoS | Walltime | Notes |
+|-----|----------|-------|
+| `normal` (default) | 24 h | standard production; the pilot uses this |
+| `boost_qos_lprod` | **4 days** | long production, max 8 nodes / 32 GPUs per account — escape hatch if a subject brushes 24 h |
+| `boost_qos_dbg` | 30 min | debug, **max 1 running-or-pending job**; too short for a full subject |
+| `lrd_all_serial` (CPU partition) | 4 h | CPU-only, **budget-free**, ≤4 cores — ideal for **staging** and CPU-only forward stages |
+
+`lrd_all_serial` being budget-free is the lever for Deliverable 2: run staging and the
+mesher+solver (CPU) phase there for free, spend GPU-hours only on recon/DWI.
+
 ## Notes / gotchas
 - Apptainer sets HOME via `--home` (it rejects `--env HOME`); the orchestrator handles this.
 - Compute nodes lack internet → always `prepull_sifs.sh` first; the in-job auto-pull will fail otherwise.
 - Don't max `--threads`: `place_dipoles` (and BLAS-heavy steps) oversubscribe badly. The pilot uses `--cpus-per-task`.
-- Apptainer/Singularity is **not** a module in the default profile — it's a system command (verify with `command -v`); `cuda/12.2` *is* a module. Use `module spider` to locate anything missing.
+- Singularity is a **system command** (`/usr/bin/singularity`), *not* a module — no `module load` needed, survives `module purge`. `cuda/12.2` *is* a module (load it for `--nv`). `module spider` isn't available on this Lmod.
