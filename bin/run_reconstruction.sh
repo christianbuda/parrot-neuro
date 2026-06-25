@@ -4,11 +4,30 @@
 # PARROT MRI RECONSTRUCTION - BIDS APP
 ###############################################################################
 
+# Idempotency model (robust to ANY stop, incl. SIGKILL/crash/OOM/power-loss):
+#   - A step's idempotency marker is its final "<name>_log.txt". It must exist IFF the
+#     step completed successfully, so a step's live output is written to "<log>.partial"
+#     and only RENAMED to "<log>" by check_step on success (see below). An interruption
+#     therefore leaves only ".partial" (never the marker), so the step re-runs.
+#   - begin_step() is called when a step is (re-)run: it clears any stale ".partial" and
+#     WIPES the step's output dir, so a partial left by a previously-killed attempt cannot
+#     survive into the rerun (some steps don't overwrite old files -- e.g. per-spacing
+#     dipoles). Pass the output path(s) the step produces.
+begin_step() {
+    local log_file=$1; shift
+    rm -f "${log_file}.partial"
+    local p
+    for p in "$@"; do
+        [ -n "$p" ] && rm -rf "$p"
+    done
+}
+
 check_step() {
     local exit_code=$1    # The exit code of the command you just ran
     local description=$2  # Text description
     local log_file=$3     # Where the logs are stored
     local cleanup_path=$4 # Optional, path to remove if error is detected
+    local partial="${log_file}.partial"  # live output lives here until finalised
 
     if [ "$exit_code" -ne 0 ]; then
         echo "[ERROR] $description failed! (Exit Code: $exit_code)"
@@ -20,20 +39,23 @@ check_step() {
             rm -rf "$cleanup_path"
         fi
 
-        # Rename the log so the idempotency guard (which skips a step when its
-        # <name>_log.txt already exists) does not mistake this failed run for a
-        # completed one on the next invocation. The failed log is kept for
-        # debugging under a FAILED_<timestamp>_ prefix.
-        if [ -n "$log_file" ] && [ -f "$log_file" ]; then
+        # Preserve the log under a FAILED_<timestamp>_ prefix for debugging, but NEVER
+        # leave it as the success marker. We rename the .partial (the live log); fall back
+        # to an already-finalised log only for safety.
+        local src="$partial"; [ -f "$src" ] || src="$log_file"
+        if [ -n "$src" ] && [ -f "$src" ]; then
             local failed_log
             failed_log="$(dirname "$log_file")/FAILED_$(date '+%Y%m%d-%H%M%S')_$(basename "$log_file")"
-            mv "$log_file" "$failed_log"
+            mv "$src" "$failed_log"
             echo "Renamed failed log to: $failed_log"
         fi
 
         echo
         exit 1
     fi
+
+    # SUCCESS: commit the completion marker. Only now does <name>_log.txt exist.
+    [ -f "$partial" ] && mv -f "$partial" "$log_file"
 }
 
 log_step() {
@@ -307,7 +329,13 @@ CURRENT_SUBJECT=""
 cleanup() {
     [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR"
 }
-trap cleanup EXIT INT TERM
+# Graceful stop: previously `trap cleanup EXIT INT TERM` ran cleanup but, since cleanup
+# does not exit, the script RESUMED after SIGINT/SIGTERM -- so the only way to stop it was
+# SIGKILL, which bypasses check_step and leaves false "completed" logs. Now INT/TERM exit
+# (the EXIT trap then runs cleanup once), so SIGTERM stops the pipeline cleanly.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Persistent TemplateFlow cache (NOT swept on exit): QSIPrep fetches templates at
 # runtime and the image ships none, so caching here downloads them once and reuses
@@ -406,7 +434,7 @@ run_in_docker_MRI() {
     CE_GPU=1; CE_HOME=1; CE_EXEC=/bin/bash; CE_PWD=/parrot_home
     CE_ENVS=( "FS_LICENSE=/bids/license.txt" )
     CE_BINDS=( "$BIDS_DIR:/bids:ro" "$OUTPUT_DIR:/derivatives" )
-    container_exec "$IMG_MRI_RECONSTRUCTION" -c "source /scripts/source_env.sh && $cmd" > "$log_file" 2>&1
+    container_exec "$IMG_MRI_RECONSTRUCTION" -c "source /scripts/source_env.sh && $cmd" > "${log_file}.partial" 2>&1
 
     check_step $? "$step_name" "$log_file"
 }
@@ -419,7 +447,7 @@ run_in_docker_FWD() {
 
     CE_GPU=1; CE_HOME=1; CE_EXEC=/bin/bash
     CE_BINDS=( "$BIDS_DIR:/bids:ro" "$OUTPUT_DIR:/derivatives" )
-    container_exec "$image" -c "$cmd" > "$log_file" 2>&1
+    container_exec "$image" -c "$cmd" > "${log_file}.partial" 2>&1
 
     check_step $? "$step_name" "$log_file"
 }
@@ -661,7 +689,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
             --t1 "$T1_DOCKER" \
             --sid "sub-${SUBJECT}" \
             --sd /derivatives/$NAME \
-            --3T --threads "$N_THREADS" "${FS_MODE[@]}" > "$LOG_DIR/${NAME}_log.txt" 2>&1
+            --3T --threads "$N_THREADS" "${FS_MODE[@]}" > "$LOG_DIR/${NAME}_log.txt.partial" 2>&1
         fastsurfer_rc=$?
 
         # In full mode FastSurfer can exit 0 even when the surf stage dies (e.g. a
@@ -701,7 +729,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         container_exec "$IMG_HIPPUNFOLD" \
             /bids /output participant \
             --participant_label "$SUBJECT" \
-            --modality T1w --cores "$N_THREADS" > "$LOG_DIR/${NAME}_log.txt" 2>&1
+            --modality T1w --cores "$N_THREADS" > "$LOG_DIR/${NAME}_log.txt.partial" 2>&1
         hippunfold_rc=$?
 
         # Lift the real derivatives out of the nested hippunfold/ subdir, drop the scratch.
@@ -857,6 +885,9 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     NAME="simnibscharm"
     if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
+        # Re-run from clean: wipe any partial output so the final `mv m2m_subject ->
+        # sub-<ID>` can't nest inside a leftover dir from a killed attempt.
+        begin_step "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
         mkdir -p "$OUTPUT_DIR/$NAME"
 
         step_start=$(date +%s)
@@ -1098,7 +1129,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
                 --nprocs "$N_THREADS" \
                 --omp-nthreads "$N_THREADS" \
                 --skip-bids-validation \
-                -w "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt" 2>&1
+                -w "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt.partial" 2>&1
 
             check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
@@ -1201,7 +1232,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
                         --fs-license-file /bids/license.txt \
                         --nprocs "$N_THREADS" \
                         --omp-nthreads "$N_THREADS" \
-                        -w "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt" 2>&1
+                        -w "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt.partial" 2>&1
                     check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME"
 
                     # QSIRecon writes to <out>/derivatives/qsirecon-Parrot/; relocate the
@@ -1312,7 +1343,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
                 "${DWITENSOR_MOUNT[@]}"
             )
             container_exec "$IMG_QSIRECON" \
-                /make_dwitensor.sh "$SUBJECT" "$DWITENSOR_FMT" > "$LOG_DIR/${NAME}_log.txt" 2>&1
+                /make_dwitensor.sh "$SUBJECT" "$DWITENSOR_FMT" > "$LOG_DIR/${NAME}_log.txt.partial" 2>&1
             check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
             step_end=$(date +%s)
@@ -1351,7 +1382,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
                 "$PARROT_SCRIPT_DIR/bin/dwi_to_t1.sh:/dwi_to_t1.sh:ro"
             )
             container_exec "$IMG_QSIRECON" \
-                /dwi_to_t1.sh "$SUBJECT" "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt" 2>&1
+                /dwi_to_t1.sh "$SUBJECT" "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt.partial" 2>&1
             check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt"
 
             step_end=$(date +%s)
@@ -1379,7 +1410,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
                 "$PARROT_SCRIPT_DIR/bin/make_connectomes.sh:/make_connectomes.sh:ro"
             )
             container_exec "$IMG_QSIRECON" \
-                /make_connectomes.sh "$SUBJECT" > "$LOG_DIR/${NAME}-matrices_log.txt" 2>&1
+                /make_connectomes.sh "$SUBJECT" > "$LOG_DIR/${NAME}-matrices_log.txt.partial" 2>&1
             check_step $? "$NAME matrices" "$LOG_DIR/${NAME}-matrices_log.txt"
 
             step_end=$(date +%s)
@@ -1447,6 +1478,9 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         spacing=$(printf "%.1f" "$s")
 
         if [ ! -f "$LOG_DIR/${NAME}-${spacing}mm_log.txt" ]; then
+            # Re-run from clean: wipe any partial dipoles for THIS spacing (place_dipoles
+            # writes per-surface dirs incrementally and won't redo completed surfaces).
+            begin_step "$LOG_DIR/${NAME}-${spacing}mm_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/spacing${spacing}mm"
             echo "Placing dipoles at $spacing mm spacing..."
 
             step_start=$(date +%s)
