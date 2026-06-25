@@ -420,7 +420,7 @@ if __name__ == "__main__":
     # transpose to make it (number_electrodes, number_dipoles)
     leadfield = np.array(leadfield).T
     
-    np.save(add_output_dir(f'forward_solvers/sub-{subject}/raw_duneuro{outlabel}-{dipole_spacing}mm-leadfield.npy'), leadfield)
+    np.save(add_output_dir(f'forwardsolvers/sub-{subject}/raw_duneuro{outlabel}-{dipole_spacing}mm-leadfield.npy'), leadfield)
     
     print('Processing leadfield...')
     with open(neuronal_strength_dict,'r') as f:

@@ -265,7 +265,7 @@ if __name__ == "__main__":
     run_openmeeg_pipeline()
 
     leadfield = convert_gain('head.gain', is_inside=is_inside)
-    np.save(add_output_dir(f'forward_solvers/sub-{subject}/raw_openmeeg-{dipole_spacing}mm-leadfield.npy'), leadfield)
+    np.save(add_output_dir(f'forwardsolvers/sub-{subject}/raw_openmeeg-{dipole_spacing}mm-leadfield.npy'), leadfield)
     
     print('Processing leadfield...')
     with open(neuronal_strength_dict,'r') as f:
