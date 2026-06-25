@@ -24,9 +24,12 @@ def convert_gain(input, is_inside = None):
         # so we usually need to transpose it back (.T)
         leadfield = np.array(f['linop']).T
     
-    # here we insert zero in places where dipoles were not inside the brain domain
+    # here we insert zero in places where dipoles were not inside the brain domain.
+    # complete_leadfield spans ALL placed dipoles (len(is_inside)); OpenMEEG only
+    # returns columns for the inside ones, so zeros_like(leadfield) (n_inside cols)
+    # is too small whenever any dipole falls outside the domain -- size it to n_total.
     if is_inside is not None:
-        complete_leadfield = np.zeros_like(leadfield)
+        complete_leadfield = np.zeros((leadfield.shape[0], len(is_inside)), dtype=leadfield.dtype)
         complete_leadfield[:,is_inside] = leadfield
         leadfield = complete_leadfield
     
