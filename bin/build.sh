@@ -9,9 +9,12 @@
 #   ./bin/build.sh [OPTIONS] [FILTER ...]
 #
 # Options:
-#   --push        Push each image to its registry after a successful build.
-#   --no-cache    Build without using Docker's layer cache.
-#   -h, --help    Show this help and exit.
+#   --push           Push each image to its registry after a successful build.
+#   --version X.Y.Z  Also tag (and, with --push, push) each image as :X.Y.Z in
+#                    addition to :latest. The same version is applied to every
+#                    image built in this run. --tag is an alias.
+#   --no-cache       Build without using Docker's layer cache.
+#   -h, --help       Show this help and exit.
 #
 # Arguments:
 #   FILTER        Optional substring(s); only images whose tag contains a filter
@@ -32,9 +35,12 @@ Usage:
   ./bin/build.sh [OPTIONS] [FILTER ...]
 
 Options:
-  --push        Push each image to its registry after a successful build.
-  --no-cache    Build without using Docker's layer cache.
-  -h, --help    Show this help and exit.
+  --push           Push each image to its registry after a successful build.
+  --version X.Y.Z  Also tag (and, with --push, push) each image as :X.Y.Z in
+                   addition to :latest. The same version is applied to every
+                   image built in this run. --tag is an alias.
+  --no-cache       Build without using Docker's layer cache.
+  -h, --help       Show this help and exit.
 
 Arguments:
   FILTER        Optional substring(s); only images whose tag contains a filter
@@ -47,14 +53,20 @@ EOF
 PUSH=false
 NO_CACHE=()
 FILTERS=()
+VERSION=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --push)     PUSH=true; shift ;;
-        --no-cache) NO_CACHE=(--no-cache); shift ;;
-        -h|--help)  usage 0 ;;
-        -*)         echo "Unknown option: $1" >&2; usage 1 ;;
-        *)          FILTERS+=("$1"); shift ;;
+        --push)       PUSH=true; shift ;;
+        --version|--tag)
+            [[ $# -ge 2 ]] || { echo "$1 needs a value (e.g. --version 1.0.1)" >&2; usage 1; }
+            VERSION="$2"; shift 2 ;;
+        --version=*|--tag=*)
+            VERSION="${1#*=}"; shift ;;
+        --no-cache)   NO_CACHE=(--no-cache); shift ;;
+        -h|--help)    usage 0 ;;
+        -*)           echo "Unknown option: $1" >&2; usage 1 ;;
+        *)            FILTERS+=("$1"); shift ;;
     esac
 done
 
@@ -75,18 +87,28 @@ for entry in "${PARROT_IMAGES[@]}"; do
 
     matches_filter "$tag" || continue
 
+    # When a version is requested, derive the same repo:VERSION ref by replacing
+    # the :latest suffix so the single build gets both tags (same image ID).
+    tags=("$tag")
+    [[ -n "$VERSION" ]] && tags+=("${tag%:*}:$VERSION")
+
+    build_args=()
+    for t in "${tags[@]}"; do build_args+=(-t "$t"); done
+
     echo "====================================================================="
-    echo "Building $tag"
+    echo "Building ${tags[*]}"
     echo "  context: $REPO_ROOT/$context"
     echo "====================================================================="
-    docker build "${NO_CACHE[@]}" -t "$tag" "$REPO_ROOT/$context"
+    docker build "${NO_CACHE[@]}" "${build_args[@]}" "$REPO_ROOT/$context"
 
     if [ "$PUSH" = true ]; then
-        echo "Pushing $tag..."
-        docker push "$tag"
+        for t in "${tags[@]}"; do
+            echo "Pushing $t..."
+            docker push "$t"
+        done
     fi
 
-    built+=("$tag")
+    built+=("${tags[@]}")
 done
 
 if [ ${#built[@]} -eq 0 ]; then
