@@ -50,7 +50,7 @@ Here is detailed what each reconstructed folder contains. For convenience, only 
 │       └── rh.white: Right cortical white surface.
 ├── simnibs_charm/: Output of SimNibs charm stream.
 │   ├── converted/: Surfaces extracted from simnibs generated tetrahedral mesh (subject.msh).
-│   ├── final_tissues.nii.gz: Tissues volumetric label field.
+│   ├── final_tissues.nii.gz: Tissues volumetric label field. SimNIBS writes this 4D as (X,Y,Z,1) (degenerate trailing axis); the downstream tissue_labels volumes squeeze it to plain 3D.
 │   ├── final_tissues_LUT.txt: LUT associated to above label field.
 │   └── subject.msh: Tetrahedral mesh generated from the above tissue label field.
 ├── fsl_first/: Output of FSL First tool.
@@ -80,42 +80,42 @@ Here is detailed what each reconstructed folder contains. For convenience, only 
 │   ├── nonlinear_DTI.nii.gz: Cerebellar diffusion tensor warped from the template (PPD tensor reorientation), in MRtrix component order; fills cerebellar WM for the anisotropic-conductivity model. Optional (only when the cerebellum template ships a DTI).
 │   └── transform_files/: Computed transformation files, from Subject to Template.
 ├── surfaces/: Surface files from various tools converted to world space and aggregated here.
-│   ├── cereb_gray.stl: Pial cerebellar surface (nonlinearly transformed from template).
-│   ├── cereb_white.stl: White cerebellar surface (nonlinearly transformed from template).
-│   ├── cereb_inner_raw.stl: Inner cerebellar surface (nonlinearly transformed from template).
-│   ├── cereb_inner_raw.stl: Inner cerebellar surface, processed to become manifold (nonlinearly transformed from template).
-│   ├── cereb_inner_original_labels.npy: Per vertex cerebellum labels associated to cereb_inner_raw.stl
-│   ├── cereb_inner_thickness.npy: Per vertex cerebellum thickness associated to cereb_inner_raw.stl
-│   ├── charm_*.stl: Surfaces extracted from SimNibs charm stream.
-│   ├── first_*.stl: Surfaces extracted from FSL first stream.
-│   ├── freesurfer_BEM_brain.stl: CSF-bran surface extracted with MNE watershed BEM.
-│   ├── freesurfer_BEM_inner_skull.stl: Skull-CSF surface extracted with MNE watershed BEM.
-│   ├── freesurfer_BEM_outer_skull.stl: Scalp-skull surface extracted with MNE watershed BEM.
-│   ├── freesurfer_BEM_outer_skin.stl: Scalp surface extracted with MNE watershed BEM.
-│   ├── freesurfer_lh_pial.stl: Freesurfer left pial cortical surface.
-│   ├── freesurfer_lh_white.stl: Freesurfer left white cortical surface.
-│   ├── freesurfer_lh_middle.stl: Freesurfer left midthickness cortical surface.
-│   ├── freesurfer_lh_middle_original_labels_*.npy: Per vertex labels associated to freesurfer_lh_middle.stl
-│   ├── freesurfer_lh_middle_thickness.npy: Per vertex thickness associated to freesurfer_lh_middle.stl
-│   ├── freesurfer_lh_middle_volume.npy: Per vertex volumes associated to freesurfer_lh_middle.stl
-│   ├── freesurfer_rh_pial.stl: Freesurfer right pial cortical surface.
-│   ├── freesurfer_rh_white.stl: Freesurfer right white cortical surface.
-│   ├── freesurfer_rh_middle.stl: Freesurfer right midthickness cortical surface.
-│   ├── freesurfer_rh_middle_original_labels_*.npy: Per vertex labels associated to freesurfer_rh_middle.stl
-│   ├── freesurfer_rh_middle_thickness.npy: Per vertex thickness associated to freesurfer_rh_middle.stl
-│   ├── freesurfer_rh_middle_volume.npy: Per vertex volumes associated to freesurfer_rh_middle.stl
-│   ├── hippunfold_L_dentate_middle.stl: Left dentate surface extracted using hippunfold.
-│   ├── hippunfold_L_dentate_middle_original_labels.npy: Per vertex labels associated to hippunfold_L_dentate_middle.stl
-│   ├── hippunfold_L_dentate_middle_thickness.npy: Per vertex thickness associated to hippunfold_L_dentate_middle.stl
-│   ├── hippunfold_L_hipp_middle.stl: Left hippocampus surface extracted using hippunfold.
-│   ├── hippunfold_L_hipp_middle_original_labels.npy: Per vertex labels associated to hippunfold_L_hipp_middle.stl
-│   ├── hippunfold_L_hipp_middle_thickness.npy: Per vertex thickness associated to hippunfold_L_hipp_middle.stl
-│   ├── hippunfold_R_dentate_middle.stl: Right dentate surface extracted using hippunfold.
-│   ├── hippunfold_R_dentate_middle_original_labels.npy: Per vertex labels associated to hippunfold_R_dentate_middle.stl
-│   ├── hippunfold_R_dentate_middle_thickness.npy: Per vertex thickness associated to hippunfold_R_dentate_middle.stl
-│   ├── hippunfold_R_hipp_middle.stl: Right hippocampus surface extracted using hippunfold.
-│   ├── hippunfold_R_hipp_middle_original_labels.npy: Per vertex labels associated to hippunfold_R_hipp_middle.stl
-│   └── hippunfold_R_hipp_middle_thickness.npy: Per vertex thickness associated to hippunfold_R_hipp_middle.stl
+│   ├── cereb_gray.ply: Pial cerebellar surface (nonlinearly transformed from template).
+│   ├── cereb_white.ply: White cerebellar surface (nonlinearly transformed from template).
+│   ├── cereb_inner_raw.ply: Inner cerebellar surface (nonlinearly transformed from template).
+│   ├── cereb_inner_raw.ply: Inner cerebellar surface, processed to become manifold (nonlinearly transformed from template).
+│   ├── cereb_inner_original_labels.npy: Per vertex cerebellum labels associated to cereb_inner_raw.ply
+│   ├── cereb_inner_thickness.npy: Per vertex cerebellum thickness associated to cereb_inner_raw.ply
+│   ├── charm_*.ply: Surfaces extracted from SimNibs charm stream.
+│   ├── first_*.ply: Surfaces extracted from FSL first stream.
+│   ├── freesurfer_BEM_brain.ply: CSF-bran surface extracted with MNE watershed BEM.
+│   ├── freesurfer_BEM_inner_skull.ply: Skull-CSF surface extracted with MNE watershed BEM.
+│   ├── freesurfer_BEM_outer_skull.ply: Scalp-skull surface extracted with MNE watershed BEM.
+│   ├── freesurfer_BEM_outer_skin.ply: Scalp surface extracted with MNE watershed BEM.
+│   ├── freesurfer_lh_pial.ply: Freesurfer left pial cortical surface.
+│   ├── freesurfer_lh_white.ply: Freesurfer left white cortical surface.
+│   ├── freesurfer_lh_middle.ply: Freesurfer left midthickness cortical surface.
+│   ├── freesurfer_lh_middle_original_labels_*.npy: Per vertex labels associated to freesurfer_lh_middle.ply
+│   ├── freesurfer_lh_middle_thickness.npy: Per vertex thickness associated to freesurfer_lh_middle.ply
+│   ├── freesurfer_lh_middle_volume.npy: Per vertex volumes associated to freesurfer_lh_middle.ply
+│   ├── freesurfer_rh_pial.ply: Freesurfer right pial cortical surface.
+│   ├── freesurfer_rh_white.ply: Freesurfer right white cortical surface.
+│   ├── freesurfer_rh_middle.ply: Freesurfer right midthickness cortical surface.
+│   ├── freesurfer_rh_middle_original_labels_*.npy: Per vertex labels associated to freesurfer_rh_middle.ply
+│   ├── freesurfer_rh_middle_thickness.npy: Per vertex thickness associated to freesurfer_rh_middle.ply
+│   ├── freesurfer_rh_middle_volume.npy: Per vertex volumes associated to freesurfer_rh_middle.ply
+│   ├── hippunfold_L_dentate_middle.ply: Left dentate surface extracted using hippunfold.
+│   ├── hippunfold_L_dentate_middle_original_labels.npy: Per vertex labels associated to hippunfold_L_dentate_middle.ply
+│   ├── hippunfold_L_dentate_middle_thickness.npy: Per vertex thickness associated to hippunfold_L_dentate_middle.ply
+│   ├── hippunfold_L_hipp_middle.ply: Left hippocampus surface extracted using hippunfold.
+│   ├── hippunfold_L_hipp_middle_original_labels.npy: Per vertex labels associated to hippunfold_L_hipp_middle.ply
+│   ├── hippunfold_L_hipp_middle_thickness.npy: Per vertex thickness associated to hippunfold_L_hipp_middle.ply
+│   ├── hippunfold_R_dentate_middle.ply: Right dentate surface extracted using hippunfold.
+│   ├── hippunfold_R_dentate_middle_original_labels.npy: Per vertex labels associated to hippunfold_R_dentate_middle.ply
+│   ├── hippunfold_R_dentate_middle_thickness.npy: Per vertex thickness associated to hippunfold_R_dentate_middle.ply
+│   ├── hippunfold_R_hipp_middle.ply: Right hippocampus surface extracted using hippunfold.
+│   ├── hippunfold_R_hipp_middle_original_labels.npy: Per vertex labels associated to hippunfold_R_hipp_middle.ply
+│   └── hippunfold_R_hipp_middle_thickness.npy: Per vertex thickness associated to hippunfold_R_hipp_middle.ply
 ├── atlas/: Contains volumetric atlases built on the input T1.
 │   └── atlas*.nii.gz: Files of this form are label fields where subcortical regions are segmented into more than 100 labels. The file name indicate how many subregions are used to parcellate the cortex (e.g. atlas100.nii.gz contains 100 distinct labels for the cortex).
 │   ├── atlas*_LUT.txt: LUT file associated to the volume above.
@@ -123,7 +123,7 @@ Here is detailed what each reconstructed folder contains. For convenience, only 
 │   ├── atlas_aggregated.nii.gz: Simplified atlas that only divides main regions (26 in total, 24 subcortical and 1 for each cortical emisphere).
 │   ├── atlas_aggregated_labels.txt: Label file for the volume above.
 │   └── *_surf/: These folders are generated to keep track of vertices labels (associated to several, pre generated, surfaces) in the new atlases labels.
-├── tissue_labels/: Label fields of tissues with electrical and acoustic properties.
+├── tissue_labels/: Label fields of tissues with electrical and acoustic properties. (Written as plain 3D; the gather scripts squeeze SimNIBS' degenerate trailing axis — see final_tissues below.)
 │   └── sim4life_raw/: Label field generated with sim4life (optional, needs to be created manually)
 │   ├── electrical/: Tissue labels with electrical properties.
 │   │   ├── ITIS_conductivities.txt: Conductivities of tissues extracted from the ITIS database.
@@ -188,10 +188,16 @@ Here is detailed what each reconstructed folder contains. For convenience, only 
 │   └── sub-subject/
 │       ├── conductivity_tensors.npy: (M,3,3) per-WM-tetrahedron anisotropic conductivity tensors (shape-preserving orthotropic; geometric mean = isotropic WM sigma). M = number of WM tetrahedra.
 │       └── wm_element_indices.npy: (M,) indices of those WM tetrahedra in the CGAL mesh, mapping each tensor to its element (feeds the duneuro hybrid-label config).
-├── scalp_landmarks/: Subject landmarks built on surfaces/charm_scalp.stl
+├── scalp_landmarks/: Subject landmarks built on surfaces/charm_scalp.ply
 │   ├── fiducials.json: RPA, LPA, NAS, IN positions.
 │   └── outlines.npy: Right ear, left ear, and eyes outline, used to exclude electrodes.
-├── electrodes/: Electrodes sampled accordingly to the 10-5 system, built on surfaces/charm_scalp.stl
+├── electrodes/: Electrodes sampled accordingly to the 10-5 system, built on surfaces/charm_scalp.ply
 │   ├── landmarks_10-5-full.csv: Electrodes positions sampled according to the 10-5 system.
 │   └── selected_landmarks_10-5-full.json: Subset of electrodes that do not overlap with ears or eyes.
-└── reconstruction_logs/: Logs extracted from the various reconstruction steps (one per folder).
+├── reconstruction_logs/: Logs extracted from the various reconstruction steps (one per folder).
+└── qc/: Final cross-stage QC (parrot_qc image, baking the qc/ package; run after the forward solvers). Validates every stage's outputs and renders a human-review HTML report. Never blocks the pipeline.
+    ├── index.html: Group-level QC index — subject x stage pass/warn/fail/skip matrix, links to each subject report (refreshed after the subject loop).
+    └── sub-subject/
+        ├── index.html: Per-subject report — status table + embedded QC images for every stage (open this).
+        ├── qc_report.json: Machine-readable record: {stage: {status, checks[], figures[]}} (status in pass|warn|fail|skip; skip = stage not produced).
+        └── figures/: PNGs referenced by index.html — 2D slice mosaics / label overlays (nilearn) and 3D snapshots (pyvista offscreen: BEM nesting, subcortical surfaces, dipole cloud, mesh cross-section).

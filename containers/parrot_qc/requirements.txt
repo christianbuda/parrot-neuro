@@ -1,0 +1,13 @@
+# Parrot QC image Python dependencies.
+# The QC *code* lives in the repo's qc/ package and is bind-mounted at runtime
+# (live-editable, no rebuild per tweak); this image carries only the libraries.
+numpy
+scipy
+nibabel
+nilearn
+matplotlib
+trimesh
+meshio
+pyvista
+vtk
+jinja2

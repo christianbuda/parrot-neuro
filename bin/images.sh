@@ -19,6 +19,7 @@ IMG_QSIRECON="pennlinc/qsirecon:latest"
 IMG_MRI_RECONSTRUCTION="christianbuda/parrot_mri_reconstruction:latest"
 IMG_FORWARD_MODEL="christianbuda/parrot_forward_model:latest"
 IMG_FORWARD_SOLVERS="christianbuda/parrot_forward_solvers:latest"
+IMG_QC="christianbuda/parrot_qc:latest"
 
 # --- Derived collections -----------------------------------------------------
 # Used to pull (run_reconstruction.sh) and build (build.sh) in bulk.
@@ -38,4 +39,5 @@ PARROT_IMAGES=(
     "$IMG_MRI_RECONSTRUCTION|containers/parrot_mri_reconstruction"
     "$IMG_FORWARD_MODEL|containers/parrot_forward_model"
     "$IMG_FORWARD_SOLVERS|containers/parrot_forward_solvers"
+    "$IMG_QC|containers/parrot_qc"
 )

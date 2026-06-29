@@ -470,6 +470,24 @@ cp /pipeline/geometry.geom /pipeline/conductivities.cond /pipeline/neuronal_stre
     run_in_docker_FWD "$step_name" "$log_file" "$image" "${pre}${cmd}"
 }
 
+# Run the final QC stage in the parrot_qc image. The QC code is baked into the
+# image (the qc/ package, like the other Parrot images' scripts); only
+# /derivatives is needed (QC reads everything from there, including raw/T1).
+# CE_HOME gives a writable HOME for matplotlib/pyvista caches; pyvista renders
+# offscreen via Mesa software GL. QC is informational, so this is NON-FATAL: a QC
+# failure must never abort a reconstruction whose heavy stages already succeeded.
+run_in_docker_QC() {
+    local step_name=$1
+    local log_file=$2
+    local cmd=$3
+
+    CE_HOME=1; CE_EXEC=/bin/bash
+    CE_BINDS=( "$OUTPUT_DIR:/derivatives" )
+    if ! container_exec "$IMG_QC" -c "$cmd" > "$log_file" 2>&1; then
+        echo "WARNING: $step_name failed (see $log_file)" | tee -a "${LOG_FILE:-/dev/stderr}"
+    fi
+}
+
 # =============================================================================
 # 4. MAIN PROCESSING LOOP
 # =============================================================================
@@ -1618,10 +1636,32 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     fi    
 
 
+    # ---------------------------------------------------------------------
+    # FINAL QC: validate every stage's outputs + render an HTML report.
+    # ALWAYS runs (no idempotency guard) so the report reflects the latest
+    # outputs, and is NON-FATAL -- it is informational and must never block the
+    # pipeline. It is quick (~2-3 min/subject) relative to the heavy stages.
+    # ---------------------------------------------------------------------
+    NAME="qc"
+    log_step "Running final $NAME for subject $SUBJECT..."
+    step_start=$(date +%s)
+    run_in_docker_QC "$NAME" "$LOG_DIR/${NAME}_log.txt" \
+        "python /qc/run_qc.py --subject $SUBJECT --output_dir /derivatives --threads $N_THREADS"
+    step_end=$(date +%s)
+    echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+
     # All stages done for this subject. Outputs are already user-owned (rootless), so there
     # is nothing to re-own; just clear CURRENT_SUBJECT for symmetry with the cleanup trap.
     CURRENT_SUBJECT=""
 done
+
+# Group-level QC: aggregate every subject's report into qc/index.html. Always
+# refreshed (no idempotency guard) and non-fatal: a failure here must not fail a
+# run whose per-subject reports already succeeded.
+echo "Writing group QC index..."
+mkdir -p "$OUTPUT_DIR/logs"
+run_in_docker_QC "qc-group" "$OUTPUT_DIR/logs/qc-group_log.txt" \
+    "python /qc/run_qc.py --group --output_dir /derivatives"
 
 echo ""
 echo "====================================================================="

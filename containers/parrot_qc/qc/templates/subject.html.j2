@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Parrot QC — {{ report.subject }}</title>
+<style>
+  :root { --pass:#2e7d32; --warn:#ef6c00; --fail:#c62828; --skip:#9e9e9e; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; color:#222; background:#fafafa; }
+  header { background:#263238; color:#fff; padding:16px 24px; }
+  header h1 { margin:0; font-size:20px; }
+  header .meta { font-size:13px; opacity:.8; margin-top:4px; }
+  .badge { display:inline-block; padding:2px 9px; border-radius:10px; color:#fff; font-size:12px; font-weight:600; text-transform:uppercase; }
+  .pass{background:var(--pass)} .warn{background:var(--warn)} .fail{background:var(--fail)} .skip{background:var(--skip)}
+  main { padding: 16px 24px 60px; }
+  .toc { columns: 3; font-size:14px; margin-bottom:20px; }
+  .toc a { text-decoration:none; color:#1565c0; }
+  section { background:#fff; border:1px solid #e0e0e0; border-radius:8px; margin:14px 0; padding:14px 18px; }
+  section h2 { font-size:17px; margin:0 0 8px; display:flex; align-items:center; gap:10px; }
+  table.checks { border-collapse:collapse; width:100%; font-size:13px; margin:6px 0 12px; }
+  table.checks td { border-bottom:1px solid #eee; padding:4px 8px; vertical-align:top; }
+  table.checks td.s { width:60px; }
+  .note { color:#777; font-style:italic; font-size:13px; }
+  .figs { display:flex; flex-wrap:wrap; gap:14px; }
+  .fig { flex:1 1 360px; }
+  .fig img { width:100%; border:1px solid #ddd; border-radius:4px; background:#fff; }
+  .fig .cap { font-size:12px; color:#555; margin-top:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Parrot reconstruction QC — {{ report.subject }}
+      <span class="badge {{ report.overall_status }}">{{ report.overall_status }}</span></h1>
+  <div class="meta">generated {{ report.generated }}</div>
+</header>
+<main>
+  <div class="toc">
+    {% for s in report.stages %}
+      <div><span class="badge {{ s.status }}">{{ s.status }}</span>
+        <a href="#{{ s.name }}">{{ s.title }}</a></div>
+    {% endfor %}
+  </div>
+
+  {% for s in report.stages %}
+  <section id="{{ s.name }}">
+    <h2>{{ s.title }} <span class="badge {{ s.status }}">{{ s.status }}</span></h2>
+    {% if not s.present %}
+      <div class="note">not produced{% if s.notes %} — {{ s.notes|join('; ') }}{% endif %}</div>
+    {% else %}
+      {% if s.checks %}
+      <table class="checks">
+        {% for c in s.checks %}
+        <tr><td class="s"><span class="badge {{ c.status }}">{{ c.status }}</span></td>
+            <td><b>{{ c.name }}</b>{% if c.detail %} — {{ c.detail }}{% endif %}</td></tr>
+        {% endfor %}
+      </table>
+      {% endif %}
+      {% if s.notes %}<div class="note">{{ s.notes|join('; ') }}</div>{% endif %}
+      {% if s.figures %}
+      <div class="figs">
+        {% for f in s.figures %}
+        <div class="fig"><a href="{{ f.path }}"><img src="{{ f.path }}" alt="{{ f.caption }}"></a>
+          <div class="cap">{{ f.caption }}</div></div>
+        {% endfor %}
+      </div>
+      {% endif %}
+    {% endif %}
+  </section>
+  {% endfor %}
+</main>
+</body>
+</html>
