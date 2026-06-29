@@ -38,9 +38,9 @@ solver driver and no local test suite — all processing happens inside the Dock
 Running the pipeline needs no local build; the images are built/published only when maintaining
 a container (see `bin/build.sh`).
 
-## Architecture: Three Containers, One Orchestrator
+## Architecture: Four Containers, One Orchestrator
 
-`bin/run_reconstruction.sh` invokes three Parrot images (plus external `deepmi/fastsurfer`
+`bin/run_reconstruction.sh` invokes four Parrot images (plus external `deepmi/fastsurfer`
 and `khanlab/hippunfold`) in sequence, once per subject:
 
 ```
@@ -71,6 +71,12 @@ parrot_forward_solvers      (DUNEuro 2.10 / OpenMEEG 2.4)
   → leadfield matrices (one per solver/mesh/spacing)
     │
     ▼
+parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
+  run_qc.py — validate outputs of every stage + render a per-subject report
+  (2D label/FA overlays + 3D snapshots: BEM nesting, dipoles, sensitivity, …)
+  → qc/sub-<ID>/index.html (+ qc_report.json, figures/), group qc/index.html
+    │
+    ▼
   [planned] JAX-TVB neural simulation → synthetic EEG/MEG
 ```
 
@@ -88,6 +94,7 @@ parrot_forward_solvers      (DUNEuro 2.10 / OpenMEEG 2.4)
 | `containers/parrot_forward_model/mesher.cpp` | CGAL tetrahedral mesher (C++) |
 | `containers/parrot_forward_solvers/make_leadfield_duneuro.py` | FEM leadfield (DUNEuro) |
 | `containers/parrot_forward_solvers/make_leadfield_openmeeg.py` | BEM leadfield (OpenMEEG) |
+| `containers/parrot_qc/qc/` | Final QC package (baked into the `parrot_qc` image): `run_qc.py` entry point + one `stages/<name>.py` per pipeline stage + `render2d.py`/`render3d.py` + HTML `templates/` |
 | `bin/make_dwitensor.sh` | DTI tensor fit (MRtrix `dwi2tensor`), run inside the QSIRecon image |
 | `bin/dwi_to_t1.sh` | Carry DWI tensor + tractogram from QSIPrep's ACPC space into T1/mesh space, reusing QSIPrep's `from-ACPC_to-anat` transform (ANTs resample + world-frame gradient rotation + `dwi2tensor` refit; `tcktransform`) |
 | `bin/make_connectomes.sh` | Subject connectome via `tck2connectome` (T1 space), run inside the QSIRecon image |
@@ -119,6 +126,21 @@ parrot_forward_solvers      (DUNEuro 2.10 / OpenMEEG 2.4)
   and QSIPrep works in **AC-PC space**, which is *not* the mesh/T1 space — `dwi2t1` reuses
   QSIPrep's own `from-ACPC_to-anat` transform (its "anat" == `raw/T1`), applied with ANTs, to
   reach mesh space. We do **not** re-register (`mrregister` diverged; reuse is correct + robust).
+- **Final QC (`parrot_qc`).** A final stage validates the outputs of every reconstruction stage
+  and renders a human-review report. It runs **automatically** as the last per-subject step, then
+  a group pass after the subject loop. Unlike every other step it is **not** log-guarded — it
+  **always runs** (so the report reflects the latest outputs) and is **non-fatal** (a QC failure
+  only logs a WARNING; it never aborts a reconstruction). It's quick (~2 min/subject) and runs
+  rootless, reading only `/derivatives`.
+  - **View:** open `<output_dir>/qc/sub-<ID>/index.html` (per-subject report: pass/warn/fail/skip
+    table + embedded figures); the group `subject × stage` matrix is `<output_dir>/qc/index.html`;
+    `qc/sub-<ID>/qc_report.json` is the machine-readable record. `skip` = stage not produced
+    (optional stages like DWI degrade gracefully, never fail).
+  - **Run standalone** (inside the `parrot_qc` image, mounting derivatives at `/derivatives`):
+    `python /qc/run_qc.py --subject <ID> --output_dir /derivatives` (or `--group`).
+  - **Edit/iterate:** the QC code is the baked `qc/` package (like the other images' scripts), so
+    changes need a rebuild: `./bin/build.sh qc`. Add a stage by dropping a `stages/<name>.py`
+    (exposing `NAME`, `TITLE`, `run(ctx)`) into the ordered list in `qc/stages/__init__.py`.
 
 ## Repo Layout Notes
 
