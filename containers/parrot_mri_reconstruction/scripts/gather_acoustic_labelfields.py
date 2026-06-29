@@ -11,8 +11,18 @@ def get_resampled_image(source_path, target_path):
     new = ants.image_read(source_path)
     
     new = ants.resample_image_to_target(new, orig, interp_type='genericLabel')
-    
+
     return new.numpy().astype(int)
+
+def save_label_volume(field_value, ref_img, path):
+    # write a tissue label volume as a clean 3D NIfTI. SimNIBS' final_tissues is
+    # saved 4D as (X,Y,Z,1); drop that degenerate trailing axis so the field we
+    # write -- and everything meshed from it -- is plain 3D. The affine is kept;
+    # nibabel rebuilds a 3D-consistent header from it.
+    data = np.asarray(field_value)
+    if data.ndim == 4 and data.shape[-1] == 1:
+        data = data[..., 0]
+    nib.save(nib.Nifti1Image(data, ref_img.affine), path)
 
 
 # acoustic parameters
@@ -111,8 +121,7 @@ def convert_simnibs_labelfield():
 
 
     # save the volume
-    label_field = nib.Nifti1Image(field_value, label_field.affine, label_field.header)
-    nib.save(label_field, os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/simnibs.nii.gz'))
+    save_label_volume(field_value, label_field, os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/simnibs.nii.gz'))
 
     # save the corresponding label file
     with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/simnibs_labels.txt'), 'w') as f:
@@ -222,8 +231,7 @@ def convert_sim4life_labelfield():
     ####################################################
 
     # save the volume
-    label_field = nib.Nifti1Image(field_value, label_field.affine, label_field.header)
-    nib.save(label_field, os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/sim4life.nii.gz'))
+    save_label_volume(field_value, label_field, os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/sim4life.nii.gz'))
     
     # save the corresponding labels file
     with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/acoustic/sim4life_labels.txt'), 'w') as f:

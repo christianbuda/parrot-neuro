@@ -11,8 +11,18 @@ def get_resampled_image(source_path, target_path):
     new = ants.image_read(source_path)
     
     new = ants.resample_image_to_target(new, orig, interp_type='genericLabel')
-    
+
     return new.numpy().astype(int)
+
+def save_label_volume(field_value, ref_img, path):
+    # write a tissue label volume as a clean 3D NIfTI. SimNIBS' final_tissues is
+    # saved 4D as (X,Y,Z,1); drop that degenerate trailing axis so the field we
+    # write -- and everything meshed from it -- is plain 3D. The affine is kept;
+    # nibabel rebuilds a 3D-consistent header from it.
+    data = np.asarray(field_value)
+    if data.ndim == 4 and data.shape[-1] == 1:
+        data = data[..., 0]
+    nib.save(nib.Nifti1Image(data, ref_img.affine), path)
 
 # conductivities from https://simnibs.github.io/simnibs/build/html/documentation/conductivity.html
 simnibs_electrical_conductivities = {'Background':0, 'White-Matter':0.126, 'Gray-Matter':0.275, 'CSF':1.654, 'Bone':0.01, 'Scalp':0.465, 'Eye_balls':0.5, 'Compact_bone':0.008, 'Spongy_bone':0.025, 'Blood':0.6, 'Muscle':0.16, 'Saline_or_gel':1.0}
@@ -86,7 +96,7 @@ def write_electrical_labelfield(basename, field_value, label_field, final_tissue
     out_dir = os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical')
 
     # save the volume
-    nib.save(nib.Nifti1Image(field_value, label_field.affine, label_field.header), os.path.join(out_dir, f'{basename}.nii.gz'))
+    save_label_volume(field_value, label_field, os.path.join(out_dir, f'{basename}.nii.gz'))
 
     # save the corresponding label file
     with open(os.path.join(out_dir, f'{basename}_labels.txt'), 'w') as f:
@@ -224,8 +234,7 @@ def convert_sim4life_labelfield():
     ####################################################
 
     # save the volume
-    label_field = nib.Nifti1Image(field_value, label_field.affine, label_field.header)
-    nib.save(label_field, os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/sim4life.nii.gz'))
+    save_label_volume(field_value, label_field, os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/sim4life.nii.gz'))
     
     # save the corresponding labels file
     with open(os.path.join(output_dir, f'tissuelabels/sub-{subject}/electrical/sim4life_labels.txt'), 'w') as f:
