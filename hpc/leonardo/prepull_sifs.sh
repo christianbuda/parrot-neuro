@@ -29,6 +29,7 @@ IMAGES=(
   christianbuda/parrot_mri_reconstruction:latest
   christianbuda/parrot_forward_model:latest
   christianbuda/parrot_forward_solvers:latest
+  christianbuda/parrot_qc:latest
   deepmi/fastsurfer:latest
   khanlab/hippunfold:latest
   pennlinc/qsiprep:latest
