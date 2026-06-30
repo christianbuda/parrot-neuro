@@ -73,6 +73,12 @@ a two-phase SLURM array with `--dependency=aftercorr`). Don't build the array be
 mesher+solver (CPU) phase there for free, spend GPU-hours only on recon/DWI.
 
 ## Notes / gotchas
+- **`signal: killed` while creating the squashfs/SIF** = the login node OOM-killed `mksquashfs`.
+  Login-node `/tmp` is RAM-backed (tmpfs) and there's a per-user memory cap, so building a ~20 GB
+  `.sif` there blows the limit. `prepull_sifs.sh` now redirects `APPTAINER_TMPDIR`/`CACHEDIR` to
+  the disk-backed work FS, which fixes it. If the *biggest* image (`parrot_mri_reconstruction`,
+  ~20 GB) still gets killed on the login node, run the same prepull on the **data-mover node**
+  (`ssh <user>@data.leonardo.cineca.it`) — it has higher limits and is built for heavy I/O.
 - Apptainer sets HOME via `--home` (it rejects `--env HOME`); the orchestrator handles this.
 - Compute nodes lack internet → always `prepull_sifs.sh` first; the in-job auto-pull will fail otherwise.
 - Don't max `--threads`: `place_dipoles` (and BLAS-heavy steps) oversubscribe badly. The pilot uses `--cpus-per-task`.

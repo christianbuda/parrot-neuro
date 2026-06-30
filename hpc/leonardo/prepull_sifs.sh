@@ -30,6 +30,18 @@ SIF="${1:?usage: prepull_sifs.sh <sif_dir>, e.g. /leonardo_work/<ACCT>/parrot_si
 FORCE="${FORCE:-0}"
 mkdir -p "$SIF"
 
+# CRITICAL on LEONARDO login nodes: the default temp ($TMPDIR/$HOME/tmp) is RAM-backed
+# tmpfs and there's a per-user memory cgroup limit, so assembling a ~20GB .sif makes
+# mksquashfs OOM and get SIGKILL ("create command failed: signal: killed"). And the
+# default cache lives under $HOME (only 50G). Redirect BOTH to the big disk-backed work
+# FS (here, alongside the sif cache). Honour pre-set values if the caller exported them.
+: "${APPTAINER_CACHEDIR:=$SIF/.cache}"
+: "${APPTAINER_TMPDIR:=$SIF/.tmp}"
+export APPTAINER_CACHEDIR APPTAINER_TMPDIR
+export SINGULARITY_CACHEDIR="$APPTAINER_CACHEDIR" SINGULARITY_TMPDIR="$APPTAINER_TMPDIR"
+mkdir -p "$APPTAINER_CACHEDIR" "$APPTAINER_TMPDIR"
+echo "cache=$APPTAINER_CACHEDIR  tmp=$APPTAINER_TMPDIR"
+
 # Echo the remote manifest digest (sha256:...) for a docker image, or nothing if
 # we have no tool to query it without downloading the whole image.
 remote_digest() {
