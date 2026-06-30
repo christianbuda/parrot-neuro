@@ -71,6 +71,7 @@ IMAGES=(
   pennlinc/qsirecon:latest
 )
 
+failed=()
 for img in "${IMAGES[@]}"; do
   base="${img##*/}"; base="${base//:/_}"
   sif="$SIF/${base}.sif"
@@ -91,7 +92,22 @@ for img in "${IMAGES[@]}"; do
     echo "  pull        $base.sif  <- docker://$img"
   fi
 
-  "$APP" pull --force "$sif" "docker://$img"
-  [ -n "$remote" ] && printf '%s\n' "$remote" > "$dgf"
+  # Non-fatal per image: a login-node OOM on one big image must not abort the
+  # rest. Collect failures and point them at the two-phase fallback.
+  if "$APP" pull --force "$sif" "docker://$img"; then
+    [ -n "$remote" ] && printf '%s\n' "$remote" > "$dgf"
+  else
+    rm -f "$sif"
+    echo "  FAILED      $base.sif (often a login-node OOM on a big image)"
+    failed+=( "$img" )
+  fi
 done
+
+if [ "${#failed[@]:-0}" -gt 0 ]; then
+  echo "Done WITH FAILURES (${#failed[@]}): ${failed[*]}"
+  echo "Build those via the two-phase route (download on login, squashfs in a job):"
+  echo "  bash hpc/leonardo/build_sif_fallback.sh $SIF ${failed[*]}"
+  echo "  sbatch hpc/leonardo/build_sif.sbatch $SIF"
+  exit 1
+fi
 echo "Done. .sif cache: $SIF"

@@ -8,7 +8,7 @@ holds the cluster glue.
 | File | Role |
 |------|------|
 | `prepull_sifs.sh` | Pull the 8 images into `<work>/parrot_sif` as `.sif` (run on a login/data-mover node). Re-pulls only images that changed on the registry (`FORCE=1` to re-pull all). |
-| `build_sif_fallback.sh` + `build_sif.sbatch` | **Two-phase build** for when `prepull_sifs.sh` OOM-kills on the login node (the ~20GB image). Phase A (login) extracts to a sandbox (no squashfs); Phase B (`lrd_all_serial` job) converts it to `.sif` with real memory. |
+| `build_sif_fallback.sh` + `build_sif.sbatch` | **Two-phase build** for when `prepull_sifs.sh` OOM-kills on the login node (multi-GB images). Phase A (login) *downloads* each image to a single archive via skopeo/crane — no extraction; Phase B (`lrd_all_serial` job) does the extract+squashfs into `.sif` with real memory. |
 | `check_leonardo.sh` | **Preflight** — run on a login node before `sbatch`; verifies runtime, `.sif` cache, BIDS+license+subject, repo, work area, account. Exits non-zero on any failure. |
 | `pilot.sbatch` | One-subject end-to-end pilot on the Booster GPU partition, instrumented. |
 
@@ -74,19 +74,22 @@ a two-phase SLURM array with `--dependency=aftercorr`). Don't build the array be
 mesher+solver (CPU) phase there for free, spend GPU-hours only on recon/DWI.
 
 ## Notes / gotchas
-- **`signal: killed` while creating the squashfs/SIF** = the login node OOM-killed `mksquashfs`.
-  Login-node `/tmp` is RAM-backed (tmpfs) and there's a per-user memory cap, so building a ~20 GB
-  `.sif` there blows the limit. `prepull_sifs.sh` now redirects `APPTAINER_TMPDIR`/`CACHEDIR` to
-  the disk-backed work FS, which fixes it. If the *biggest* image (`parrot_mri_reconstruction`,
-  ~20 GB) still gets killed on the login node (and you have no interactive data-mover login),
-  use the **two-phase build** instead — it never asks a memory-limited node to run `mksquashfs`:
+- **`signal: killed` while building a `.sif`** = the login node OOM/arbiter-killed it. Login
+  nodes have a small per-user memory cap and a RAM-backed `/tmp`, so building a multi-GB `.sif`
+  there dies — at the `mksquashfs` step, or even at *extract* for the ~20 GB images. Redirecting
+  tmp/cache to the disk FS (which `prepull_sifs.sh` does) is not always enough, because the
+  extract/squashfs itself needs the memory. With no interactive data-mover login, use the
+  **two-phase build**, which never extracts on the login node:
   ```bash
-  # Phase A (login node, has internet): fetch + extract to a sandbox, NO squashfs
+  # Phase A (login node, internet, memory-light): DOWNLOAD each image to an archive (no extract)
   bash hpc/leonardo/build_sif_fallback.sh /leonardo_work/<ACCT>/parrot_sif
-  # Phase B (budget-free serial job, real --mem): sandbox -> .sif
-  sbatch hpc/leonardo/build_sif.sbatch /leonardo_work/<ACCT>/parrot_sif
-  rm -rf /leonardo_work/<ACCT>/parrot_sif/.staging/*.sandbox   # reclaim space after
+  # Phase B (budget-free serial job, real --mem): extract+squashfs archive -> .sif (no internet)
+  sbatch hpc/leonardo/build_sif.sbatch /leonardo_work/<ACCT>/parrot_sif   # edit the account line
+  bash hpc/leonardo/check_leonardo.sh                                     # confirm all 8 .sif
+  rm -rf /leonardo_work/<ACCT>/parrot_sif/.staging/*.tar                  # reclaim space after
   ```
+  Phase A uses `skopeo`/`crane` (auto-fetches a static `crane` if neither is installed). Phase B
+  is idempotent — if it hits the 4 h wall, just re-submit and it resumes.
 - Apptainer sets HOME via `--home` (it rejects `--env HOME`); the orchestrator handles this.
 - Compute nodes lack internet → always `prepull_sifs.sh` first; the in-job auto-pull will fail otherwise.
 - Don't max `--threads`: `place_dipoles` (and BLAS-heavy steps) oversubscribe badly. The pilot uses `--cpus-per-task`.
