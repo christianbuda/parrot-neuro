@@ -8,6 +8,7 @@ holds the cluster glue.
 | File | Role |
 |------|------|
 | `prepull_sifs.sh` | Pull the 8 images into `<work>/parrot_sif` as `.sif` (run on a login/data-mover node). Re-pulls only images that changed on the registry (`FORCE=1` to re-pull all). |
+| `build_sif_fallback.sh` + `build_sif.sbatch` | **Two-phase build** for when `prepull_sifs.sh` OOM-kills on the login node (the ~20GB image). Phase A (login) extracts to a sandbox (no squashfs); Phase B (`lrd_all_serial` job) converts it to `.sif` with real memory. |
 | `check_leonardo.sh` | **Preflight** — run on a login node before `sbatch`; verifies runtime, `.sif` cache, BIDS+license+subject, repo, work area, account. Exits non-zero on any failure. |
 | `pilot.sbatch` | One-subject end-to-end pilot on the Booster GPU partition, instrumented. |
 
@@ -77,8 +78,15 @@ mesher+solver (CPU) phase there for free, spend GPU-hours only on recon/DWI.
   Login-node `/tmp` is RAM-backed (tmpfs) and there's a per-user memory cap, so building a ~20 GB
   `.sif` there blows the limit. `prepull_sifs.sh` now redirects `APPTAINER_TMPDIR`/`CACHEDIR` to
   the disk-backed work FS, which fixes it. If the *biggest* image (`parrot_mri_reconstruction`,
-  ~20 GB) still gets killed on the login node, run the same prepull on the **data-mover node**
-  (`ssh <user>@data.leonardo.cineca.it`) — it has higher limits and is built for heavy I/O.
+  ~20 GB) still gets killed on the login node (and you have no interactive data-mover login),
+  use the **two-phase build** instead — it never asks a memory-limited node to run `mksquashfs`:
+  ```bash
+  # Phase A (login node, has internet): fetch + extract to a sandbox, NO squashfs
+  bash hpc/leonardo/build_sif_fallback.sh /leonardo_work/<ACCT>/parrot_sif
+  # Phase B (budget-free serial job, real --mem): sandbox -> .sif
+  sbatch hpc/leonardo/build_sif.sbatch /leonardo_work/<ACCT>/parrot_sif
+  rm -rf /leonardo_work/<ACCT>/parrot_sif/.staging/*.sandbox   # reclaim space after
+  ```
 - Apptainer sets HOME via `--home` (it rejects `--env HOME`); the orchestrator handles this.
 - Compute nodes lack internet → always `prepull_sifs.sh` first; the in-job auto-pull will fail otherwise.
 - Don't max `--threads`: `place_dipoles` (and BLAS-heavy steps) oversubscribe badly. The pilot uses `--cpus-per-task`.
