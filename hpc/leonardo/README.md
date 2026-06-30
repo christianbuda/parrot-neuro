@@ -7,8 +7,14 @@ holds the cluster glue.
 
 | File | Role |
 |------|------|
-| `prepull_sifs.sh` | Pull the 7 images into `$WORK/parrot_sif` as `.sif` (run on a login/data-mover node). |
+| `prepull_sifs.sh` | Pull the 8 images into `<work>/parrot_sif` as `.sif` (run on a login/data-mover node). Re-pulls only images that changed on the registry (`FORCE=1` to re-pull all). |
+| `check_leonardo.sh` | **Preflight** — run on a login node before `sbatch`; verifies runtime, `.sif` cache, BIDS+license+subject, repo, work area, account. Exits non-zero on any failure. |
 | `pilot.sbatch` | One-subject end-to-end pilot on the Booster GPU partition, instrumented. |
+
+> **Staying connected.** `sbatch` jobs run on the scheduler regardless of your SSH session —
+> no `tmux` needed for the job. But the *foreground* login-node steps (`rsync`, `prepull_sifs.sh`)
+> die if SSH drops, so run those inside `tmux`/`screen` (`tmux new -s parrot`, `Ctrl-b d` to
+> detach, `tmux attach -t parrot` to return). `rsync -P` resumes partial transfers on re-run.
 
 ## One-time prerequisites
 
@@ -32,10 +38,12 @@ holds the cluster glue.
 
 ## Run the pilot
 
-Edit the four `# <<EDIT>>` lines in `pilot.sbatch` (account, repo path, BIDS path, subject), then:
+Edit the four `# <<EDIT>>` lines in `pilot.sbatch` (account, repo path, BIDS path, subject), then
+**preflight before spending any GPU time** (pass the same values via env, or rely on the defaults):
 ```bash
+ACCT=<ACCT> SUBJECT=<ID> bash hpc/leonardo/check_leonardo.sh   # must say PREFLIGHT PASSED
 sbatch hpc/leonardo/pilot.sbatch
-squeue --me            # watch it
+squeue --me            # PD = pending, R = running
 ```
 It takes **one GPU** (`--gres=gpu:1`) and a 1/4-node CPU/RAM slice — Booster shares nodes and bills per-GPU, so this is the cheapest honest pilot. A **no-DWI** subject is fastest for a first run (skips the multi-hour QSIPrep/QSIRecon).
 
