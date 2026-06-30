@@ -67,7 +67,9 @@ if [ ! -d "$SIF" ]; then
 else
   for img in "${IMAGES[@]}"; do
     base="${img##*/}"; base="${base//:/_}"
-    if [ -f "$SIF/$base.sif" ]; then ok "$base.sif"; else bad "missing $base.sif  (run prepull_sifs.sh)"; fi
+    if [ -f "$SIF/$base.sif" ]; then ok "$base.sif"
+    elif [ -d "$SIF/$base" ]; then ok "$base/ (sandbox)"
+    else bad "missing $base.sif  (run prepull_sifs.sh, or build_sif_fallback.sh + build_sif.sbatch)"; fi
   done
 fi
 

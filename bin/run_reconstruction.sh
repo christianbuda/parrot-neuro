@@ -275,6 +275,19 @@ sif_path() {
     echo "$SIF_DIR/${base}.sif"
 }
 
+# Resolve the on-disk artifact apptainer should run: the flattened .sif if present,
+# otherwise a sandbox DIRECTORY of the same basename (built when mksquashfs won't fit
+# on a memory-limited build node -- see hpc/leonardo/build_sif.sbatch SANDBOX=1).
+# apptainer exec/run accept a sandbox dir transparently. Falls back to the .sif path
+# (where a pull would land) when neither exists.
+image_path() {
+    local sif; sif=$(sif_path "$1")
+    if [ -f "$sif" ]; then echo "$sif"; return; fi
+    local sb="${sif%.sif}"
+    if [ -d "$sb" ]; then echo "$sb"; return; fi
+    echo "$sif"
+}
+
 # Ensure required container images are present (pull any that are missing). Image list comes
 # from bin/images.sh so build/pull/run never drift. For docker we pull tags into the local
 # daemon; for apptainer we pull each docker:// image once into a flattened .sif under SIF_DIR
@@ -288,8 +301,8 @@ echo "Checking required container images (runtime: $RUNTIME)..."
 if [ "$RUNTIME" = "apptainer" ]; then
     mkdir -p "$SIF_DIR"
     for img in "${ALL_IMAGES[@]}"; do
-        sif=$(sif_path "$img")
-        if [ -f "$sif" ]; then
+        sif=$(image_path "$img")
+        if [ -e "$sif" ]; then
             echo "  Found $(basename "$sif")"
         else
             echo "  Missing $(basename "$sif") - pulling docker://$img (this may take a while)..."
@@ -382,7 +395,7 @@ container_exec() {
     local -a cmd=( "$@" )
     local rc x
     if [ "$RUNTIME" = "apptainer" ]; then
-        local sif; sif=$(sif_path "$image")
+        local sif; sif=$(image_path "$image")
         local -a a=( "$APPTAINER_BIN" )
         # `exec <sif> <exe> <args>` when an entrypoint override is given; otherwise `run` the
         # image's own runscript (the converted Docker ENTRYPOINT) with <args>.
