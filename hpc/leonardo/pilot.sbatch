@@ -34,13 +34,16 @@ set -euo pipefail
 # $WORK/$SCRATCH are ambiguous on LEONARDO if you belong to several accounts -- use explicit
 # /leonardo_work/<ACCT> paths. The per-account work area is large (tens of TB), so data +
 # derivatives live there; see `cindata` for your areas.
-ACCT="<YOUR_ACCOUNT>"                       # <<EDIT>> same account as --account above
-WORKDIR="/leonardo_work/$ACCT"             # large per-account work area
+ACCT="${ACCT:-<YOUR_ACCOUNT>}"             # <<EDIT>> SLURM billing account; keep in sync with --account above
+# Storage area, INDEPENDENT of the billing account. Defaults to $WORK for convenience, but $WORK is
+# AMBIGUOUS if you belong to several accounts (may resolve to the wrong allocation) -> set WORKDIR then.
+WORKDIR="${WORKDIR:-${WORK:-}}"            # e.g. /leonardo_work/<ACCT>
+: "${WORKDIR:?set WORKDIR (or export \$WORK) -- e.g. /leonardo_work/<ACCT>}"
 REPO="$HOME/parrot-neuro"                  # <<EDIT>> clone location of this repo
 BIDS="$WORKDIR/parrot/bids"                # <<EDIT>> staged BIDS dataset on the cluster
 SUBJECT="010002"                           # <<EDIT>> participant label to pilot
 OUT="$BIDS/derivatives"                    # derivatives go next to the data
-SIF="$WORKDIR/parrot_sif"                  # persistent .sif cache (pull once, reuse)
+SIF="$WORKDIR/parrot/parrot_sif"           # persistent .sif cache (pull once, reuse)
 
 # --- modules -----------------------------------------------------------------
 # CUDA for --nv. On LEONARDO, Singularity is a SYSTEM command (/usr/bin/singularity) -- NOT a

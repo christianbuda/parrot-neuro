@@ -65,3 +65,7 @@ logs/
 # --- Temporary/Scratch ---
 tmp/
 temp/
+
+# Local .sif build output (hpc/leonardo/build_sif_local.sh) + hippunfold cache — never commit
+parrot_sif_local/
+hippunfold_cache/

@@ -18,12 +18,18 @@
 ###############################################################################
 set -uo pipefail   # NOT -e: we want every check to run and report, not abort early
 
-ACCT="${ACCT:-<YOUR_ACCOUNT>}"            # your SLURM account (saldo -b)
-WORKDIR="${WORKDIR:-/leonardo_work/$ACCT}"
+ACCT="${ACCT:-<YOUR_ACCOUNT>}"            # SLURM BILLING account (saldo -b); the -A / --account value
+# Storage area, INDEPENDENT of the billing account (you may bill one allocation but store on
+# another). Default to $WORK for convenience -- but $WORK is AMBIGUOUS if you belong to several
+# accounts (it may resolve to the wrong allocation), so override WORKDIR explicitly in that case.
+WORKDIR="${WORKDIR:-${WORK:-}}"
+: "${WORKDIR:?set WORKDIR (or export \$WORK) -- e.g. /leonardo_work/<ACCT>}"
 REPO="${REPO:-$HOME/parrot-neuro}"
 BIDS="${BIDS:-$WORKDIR/parrot/bids}"
 SUBJECT="${SUBJECT:-010002}"
-SIF="${SIF:-$WORKDIR/parrot_sif}"
+SIF="${SIF:-$WORKDIR/parrot/parrot_sif}"
+OUTPUT_DIR="${OUTPUT_DIR:-$BIDS/derivatives}"       # matches pilot.sbatch's OUT
+HU_CACHE="${HU_CACHE:-$OUTPUT_DIR/.hippunfold_cache}" # matches the orchestrator's HIPPUNFOLD_CACHE_HOST default
 
 # Keep this list in sync with prepull_sifs.sh / bin/images.sh.
 IMAGES=(
@@ -84,6 +90,21 @@ if ls "$BIDS/sub-$SUBJECT/dwi/"*.nii* >/dev/null 2>&1; then
   warn "sub-$SUBJECT/dwi present -> QSIPrep + QSIRecon WILL run (adds hours; fine for a DWI pilot)"
 else
   ok "no dwi/ -> fast anat-only pilot (recon -> forward -> solvers -> QC)"
+fi
+
+echo "== HippUnfold cache: $HU_CACHE =="
+# OSF (files.ca-1.osf.io) is UNREACHABLE from LEONARDO compute nodes, so HippUnfold's
+# atlas/template downloads can't succeed on-node -- they must be prewarmed and rsync'd up
+# (prewarm_hippunfold.sh). Catch a missing/empty cache here, not at hour 3 of the run.
+if [ ! -d "$HU_CACHE" ]; then
+  warn "no HippUnfold cache at $HU_CACHE -- OSF is unreachable from compute nodes; prewarm + rsync it (prewarm_hippunfold.sh)"
+else
+  for r in atlas/multihist7 template/upenn template/CITI168; do
+    if [ -d "$HU_CACHE/$r" ] && [ -n "$(ls -A "$HU_CACHE/$r" 2>/dev/null)" ]; then ok "$r"
+    else bad "HippUnfold cache missing/empty: $r (prewarm_hippunfold.sh, then rsync up)"; fi
+  done
+  [ -n "$(ls -A "$HU_CACHE/model" 2>/dev/null)" ] && ok "model/ present" \
+    || warn "model/ empty -- Zenodo is reachable on-node so it will download once (fine, but ships better prewarmed)"
 fi
 
 echo "== repo / orchestrator =="

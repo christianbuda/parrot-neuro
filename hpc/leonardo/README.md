@@ -10,7 +10,8 @@ holds the cluster glue.
 | `prepull_sifs.sh` | Pull the 8 images into `<work>/parrot_sif` as `.sif` (run on a login/data-mover node). Re-pulls only images that changed on the registry (`FORCE=1` to re-pull all). |
 | `build_sif_fallback.sh` + `build_sif.sbatch` | **Two-phase build** for when `prepull_sifs.sh` OOM-kills on the login node (multi-GB images). Phase A (login) *downloads* each image to a single archive via skopeo/crane — no extraction; Phase B (`lrd_all_serial` job) does the extract+squashfs into `.sif` with real memory. |
 | `build_sif_local.sh` | **Build the `.sif` on your workstation** (real RAM → never OOMs) and rsync them up. The deterministic alternative to the two-phase gamble; recommended for the cohort run. Needs local `apptainer` + `sudo` (see note below). |
-| `check_leonardo.sh` | **Preflight** — run on a login node before `sbatch`; verifies runtime, `.sif` cache, BIDS+license+subject, repo, work area, account. Exits non-zero on any failure. |
+| `prewarm_hippunfold.sh` | **Pre-populate the HippUnfold cache** on your workstation and rsync it up. HippUnfold pulls atlases/templates from OSF at runtime, and **OSF is unreachable from LEONARDO compute nodes** — so the download must happen off-cluster. Version-matched (reads URLs from the image config). |
+| `check_leonardo.sh` | **Preflight** — run on a login node before `sbatch`; verifies runtime, `.sif` cache, **HippUnfold cache**, BIDS+license+subject, repo, work area, account. Exits non-zero on any failure. |
 | `pilot.sbatch` | One-subject end-to-end pilot on the Booster GPU partition, instrumented. |
 
 > **Staying connected.** `sbatch` jobs run on the scheduler regardless of your SSH session —
@@ -68,6 +69,18 @@ Whichever route you use, verify the result with `check_leonardo.sh` (it accepts 
    ```bash
    bash hpc/leonardo/prepull_sifs.sh /leonardo_work/<ACCT>/parrot_sif
    ```
+5. **Pre-warm the HippUnfold cache.** HippUnfold downloads its atlases/templates from **OSF**
+   (`files.ca-1.osf.io`) at runtime, and **OSF is unreachable from LEONARDO compute nodes**
+   (`Network is unreachable`; Zenodo works, OSF does not). So the download can never succeed
+   on-node — populate the cache on your workstation and rsync it into the run's
+   `HIPPUNFOLD_CACHE_DIR` (default `<output_dir>/.hippunfold_cache`):
+   ```bash
+   # on your workstation (docker + internet):
+   bash hpc/leonardo/prewarm_hippunfold.sh ./hippunfold_cache
+   rsync -avP ./hippunfold_cache/ <USER>@login.leonardo.cineca.it:/leonardo_work/<ACCT>/parrot/bids/derivatives/.hippunfold_cache/
+   # (or one-shot: DEST=<USER>@login...:/.../.hippunfold_cache/ bash hpc/leonardo/prewarm_hippunfold.sh)
+   ```
+   The cache is shared across the whole cohort — do this once. `check_leonardo.sh` verifies it.
 
 ## Run the pilot
 
