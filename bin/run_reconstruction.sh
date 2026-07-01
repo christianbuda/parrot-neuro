@@ -756,7 +756,17 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         # No -it: a TTY isn't available in non-interactive/background runs and breaks
         # with "the input device is not a TTY"; this batch BIDS app doesn't need one.
         HIPPUNFOLD_TMP=$(mktemp -d "$OUTPUT_DIR/.hippunfold_tmp.XXXXXX")
-        CE_BINDS=( "$BIDS_DIR:/bids:ro" "$HIPPUNFOLD_TMP:/output" )
+        # HippUnfold downloads ~2.3GB of atlas/template/nnU-Net model at runtime. By default
+        # that goes to ~/.cache/hippunfold, i.e. the ephemeral per-subject $PARROT_HOME_HOST that
+        # is swept on exit -> re-downloaded EVERY subject (wasteful) and one flaky mirror kills
+        # the run. Point HIPPUNFOLD_CACHE_DIR (common.smk:448) at a persistent, SHARED dir so the
+        # download happens once for the whole cohort. Default under OUTPUT_DIR (same derivatives
+        # tree across an array); override with HIPPUNFOLD_CACHE_HOST. NOTE: with an empty cache,
+        # concurrent array tasks would race to download -> pre-warm it once before launching the array.
+        HIPPUNFOLD_CACHE="${HIPPUNFOLD_CACHE_HOST:-$OUTPUT_DIR/.hippunfold_cache}"
+        mkdir -p "$HIPPUNFOLD_CACHE"
+        CE_BINDS=( "$BIDS_DIR:/bids:ro" "$HIPPUNFOLD_TMP:/output" "$HIPPUNFOLD_CACHE:/hippunfold_cache" )
+        CE_ENVS=( "HIPPUNFOLD_CACHE_DIR=/hippunfold_cache" )
         container_exec "$IMG_HIPPUNFOLD" \
             /bids /output participant \
             --participant_label "$SUBJECT" \
