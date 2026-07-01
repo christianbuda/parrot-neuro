@@ -18,6 +18,37 @@ holds the cluster glue.
 > die if SSH drops, so run those inside `tmux`/`screen` (`tmux new -s parrot`, `Ctrl-b d` to
 > detach, `tmux attach -t parrot` to return). `rsync -P` resumes partial transfers on re-run.
 
+## Getting the `.sif` images — three routes
+
+The compute nodes have **no internet**, so the `.sif` cache must be populated ahead of time.
+There are three ways to do it; they produce the same cache, so pick by what fails on you.
+
+| # | Route | Script(s) | When to use | Cost / failure mode |
+|---|-------|-----------|-------------|---------------------|
+| 1 | **Direct pull on login node** | `prepull_sifs.sh` | First thing to try — one command, digest-aware (re-pulls only changed images) | Login node OOM-kills `mksquashfs` (or even the *extract*) on the multi-GB images → `signal: killed` |
+| 2 | **Two-phase (download on login, squashfs in a job)** | `build_sif_fallback.sh` (Phase A) + `build_sif.sbatch` (Phase B) | When #1 OOMs and you have no local box / don't want to transfer | Phase B may still OOM `mksquashfs` inside the serial-QoS 30 G cap on the biggest images → fall back to `SANDBOX=1 sbatch …` (extract-only, no squashfs; slower runtime on Lustre) |
+| 3 | **Build locally, rsync up** | `build_sif_local.sh` | **Recommended for the cohort run** — deterministic, a workstation has real RAM so it never OOMs, and you get proper single-file `.sif` | Needs local Docker + `apptainer` + one-time `sudo`; costs a ~tens-of-GB upload |
+
+**Why the memory pain (#1/#2) exists at all:** building a `.sif` *extracts* the image into a
+full root-owned filesystem tree (root:root files, setuid bits) and then packs it with
+`mksquashfs`. Both steps size their buffers from the node's *total physical RAM* (~512 G on a
+Booster node), not from your cgroup, so on a memory-capped login node — or the 30 G serial-QoS
+slice — they get OOM/arbiter-killed. A workstation (route 3) has the RAM, so it just works.
+
+**Why route 3 needs `sudo` but LEONARDO's build (routes 1/2) doesn't:** the chown/setuid-preserving
+extraction needs privilege from *one* of three sources — real root (`sudo`), a trusted
+**setuid-root** helper, or **unprivileged user namespaces**. LEONARDO (RHEL8) provides the last
+two (userns is allowed; SingularityPRO is installed setuid-root by the admins), so no `sudo`
+there. An Ubuntu 23.10+/24.04 workstation blocks unprivileged userns
+(`kernel.apparmor_restrict_unprivileged_userns=1`) and ships plain `apptainer` (no suid helper),
+so only real root is left → `sudo apptainer build`. Building as root does **not** make the `.sif`
+need root at runtime; it still runs rootless on LEONARDO. (To build locally *without* sudo you'd
+re-enable one of the other two: `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`, or
+`apt install apptainer-suid` — each a one-time sudo.)
+
+Whichever route you use, verify the result with `check_leonardo.sh` (it accepts `<name>.sif` or a
+`<name>/` sandbox dir).
+
 ## One-time prerequisites
 
 0. **Container runtime — confirmed.** On LEONARDO, **Singularity is a system command**
