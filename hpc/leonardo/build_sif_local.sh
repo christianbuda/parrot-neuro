@@ -68,7 +68,7 @@ if [ "$#" -gt 0 ]; then
     done
     [ -n "$hit" ] || miss+=( "$a" )
   done
-  [ "${#miss[@]:-0}" -eq 0 ] || { echo "ERROR: unknown image(s): ${miss[*]}"; echo "known: ${IMAGES[*]##*/}"; exit 2; }
+  [ "${#miss[@]}" -eq 0 ] || { echo "ERROR: unknown image(s): ${miss[*]}"; echo "known: ${IMAGES[*]##*/}"; exit 2; }
   IMAGES=( "${want[@]}" )
 fi
 
@@ -107,7 +107,7 @@ done
 
 echo
 echo "built ${#built[@]}/${#IMAGES[@]} .sif in $OUT"
-if [ "${#failed[@]:-0}" -gt 0 ]; then
+if [ "${#failed[@]}" -gt 0 ]; then
   echo "FAILURES (${#failed[@]}): ${failed[*]}"
 fi
 
@@ -124,4 +124,4 @@ else
   echo "or set DEST=... and re-run to push automatically."
 fi
 
-[ "${#failed[@]:-0}" -eq 0 ] || exit 1
+[ "${#failed[@]}" -eq 0 ] || exit 1
