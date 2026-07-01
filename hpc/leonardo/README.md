@@ -9,6 +9,7 @@ holds the cluster glue.
 |------|------|
 | `prepull_sifs.sh` | Pull the 8 images into `<work>/parrot_sif` as `.sif` (run on a login/data-mover node). Re-pulls only images that changed on the registry (`FORCE=1` to re-pull all). |
 | `build_sif_fallback.sh` + `build_sif.sbatch` | **Two-phase build** for when `prepull_sifs.sh` OOM-kills on the login node (multi-GB images). Phase A (login) *downloads* each image to a single archive via skopeo/crane — no extraction; Phase B (`lrd_all_serial` job) does the extract+squashfs into `.sif` with real memory. |
+| `build_sif_local.sh` | **Build the `.sif` on your workstation** (real RAM → never OOMs) and rsync them up. The deterministic alternative to the two-phase gamble; recommended for the cohort run. Needs local `apptainer` + `sudo` (see note below). |
 | `check_leonardo.sh` | **Preflight** — run on a login node before `sbatch`; verifies runtime, `.sif` cache, BIDS+license+subject, repo, work area, account. Exits non-zero on any failure. |
 | `pilot.sbatch` | One-subject end-to-end pilot on the Booster GPU partition, instrumented. |
 
@@ -90,6 +91,22 @@ mesher+solver (CPU) phase there for free, spend GPU-hours only on recon/DWI.
   ```
   Phase A uses `skopeo`/`crane` (auto-fetches a static `crane` if neither is installed). Phase B
   is idempotent — if it hits the 4 h wall, just re-submit and it resumes.
+- **The deterministic alternative: build `.sif` locally.** The two-phase route only exists
+  because LEONARDO's login/serial memory is too small for `mksquashfs` on the big images. A
+  workstation has real RAM, so `build_sif_local.sh` just builds proper single-file `.sif`
+  and rsyncs them up — no OOM, no sandbox. **Recommended for the cohort run.**
+  ```bash
+  # local box with Docker + apptainer (sudo add-apt-repository -y ppa:apptainer/ppa; apt install apptainer)
+  bash hpc/leonardo/build_sif_local.sh                       # all 8 -> ./parrot_sif_local
+  # or push straight to the login node (host/path kept out of git):
+  DEST=<USER>@login.leonardo.cineca.it:/leonardo_work/<ACCT>/parrot/parrot_sif/ \
+      bash hpc/leonardo/build_sif_local.sh
+  ```
+  It builds as **root** (`sudo apptainer build`): extracting an image into a root-owned tree
+  with setuid bits needs real root or unprivileged user namespaces, and Ubuntu 23.10+/24.04
+  block the latter (`kernel.apparmor_restrict_unprivileged_userns=1`). Building as root does
+  **not** make the `.sif` need root at runtime — it still runs rootless on LEONARDO. Prefers
+  your local Docker image when present (fast); falls back to Docker Hub otherwise.
 - Apptainer sets HOME via `--home` (it rejects `--env HOME`); the orchestrator handles this.
 - Compute nodes lack internet → always `prepull_sifs.sh` first; the in-job auto-pull will fail otherwise.
 - Don't max `--threads`: `place_dipoles` (and BLAS-heavy steps) oversubscribe badly. The pilot uses `--cpus-per-task`.
