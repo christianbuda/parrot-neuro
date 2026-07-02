@@ -649,6 +649,15 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     fi
     echo "Recon backend: surfaces from '$SURF_DIR', CNN subsegs from '$SEG_DIR'." | tee -a "$LOG_FILE"
 
+    # Rootless-safe FreeSurfer SUBJECTS_DIR. Several steps below run FreeSurfer tools that reference
+    # the subject by bare name ($SUBJECT) and also need fsaverage. Historically we symlinked the
+    # subject into the image's $FREESURFER_HOME/subjects/ (where fsaverage lives) -- but that dir is
+    # READ-ONLY under rootless Apptainer ("failed to create symbolic link ... Read-only file system").
+    # Instead point SUBJECTS_DIR at a writable per-subject dir (the bound $HOME=/parrot_home) holding
+    # symlinks to BOTH the real subject surfaces AND the image's fsaverage. This prefix is prepended
+    # to each such command; -sfn keeps it idempotent across the multiple calls / log-guard reruns.
+    FS_SUBJ_SETUP="export SUBJECTS_DIR=/parrot_home/fs_subjects && mkdir -p \$SUBJECTS_DIR && ln -sfn \$FREESURFER_HOME/subjects/fsaverage \$SUBJECTS_DIR/fsaverage && ln -sfn /derivatives/$SURF_DIR/sub-${SUBJECT} \$SUBJECTS_DIR/$SUBJECT"
+
     # =========================================================================
     # 5. EXECUTE PIPELINE STEPS (With Robust Idempotency)
     # =========================================================================
@@ -865,12 +874,12 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         bem_prep=""
         bem_vol=""
         if [ "$MP2RAGE_SUBJECT" = true ]; then
-            bem_prep="mri_convert --conform $INV2_BIDS_DOCKER \$FREESURFER_HOME/subjects/$SUBJECT/mri/INV2.mgz && "
+            bem_prep="mri_convert --conform $INV2_BIDS_DOCKER \$SUBJECTS_DIR/$SUBJECT/mri/INV2.mgz && "
             bem_vol="--volume INV2"
         fi
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
-            "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && \
-             ${bem_prep}micromamba run -n neuro python /scripts/make_bem_surfaces.py --subject $SUBJECT --subjects_dir \$FREESURFER_HOME/subjects $bem_vol"
+            "$FS_SUBJ_SETUP && \
+             ${bem_prep}micromamba run -n neuro python /scripts/make_bem_surfaces.py --subject $SUBJECT --subjects_dir \$SUBJECTS_DIR $bem_vol"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -890,9 +899,9 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         for n_parcels in {100..1000..100}; do
             ATLAS_NAME="Schaefer2018_${n_parcels}Parcels_17Networks_order"
 
-            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_surf2surf --hemi lh --srcsubject fsaverage --trgsubject $SUBJECT --sval-annot /home/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label/lh.${ATLAS_NAME}.annot --tval \$SUBJECTS_DIR/$SUBJECT/label/lh.${ATLAS_NAME}.annot"
-            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_surf2surf --hemi rh --srcsubject fsaverage --trgsubject $SUBJECT --sval-annot /home/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label/rh.${ATLAS_NAME}.annot --tval \$SUBJECTS_DIR/$SUBJECT/label/rh.${ATLAS_NAME}.annot"
-            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && mri_aparc2aseg --s $SUBJECT --o \$SUBJECTS_DIR/$SUBJECT/mri/schaefer${n_parcels}_aparc+aseg.mgz --annot $ATLAS_NAME"
+            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "$FS_SUBJ_SETUP && mri_surf2surf --hemi lh --srcsubject fsaverage --trgsubject $SUBJECT --sval-annot /home/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label/lh.${ATLAS_NAME}.annot --tval \$SUBJECTS_DIR/$SUBJECT/label/lh.${ATLAS_NAME}.annot"
+            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "$FS_SUBJ_SETUP && mri_surf2surf --hemi rh --srcsubject fsaverage --trgsubject $SUBJECT --sval-annot /home/Schaefer2018_LocalGlobal/Parcellations/FreeSurfer5.3/fsaverage/label/rh.${ATLAS_NAME}.annot --tval \$SUBJECTS_DIR/$SUBJECT/label/rh.${ATLAS_NAME}.annot"
+            run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "$FS_SUBJ_SETUP && mri_aparc2aseg --s $SUBJECT --o \$SUBJECTS_DIR/$SUBJECT/mri/schaefer${n_parcels}_aparc+aseg.mgz --annot $ATLAS_NAME"
         done
 
         step_end=$(date +%s)
@@ -910,9 +919,9 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         
         step_start=$(date +%s)
 
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions thalamus --cross $SUBJECT --threads $N_THREADS"
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions hippo-amygdala --cross $SUBJECT --threads $N_THREADS"
-        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "ln -sf /derivatives/$SURF_DIR/sub-${SUBJECT} \$FREESURFER_HOME/subjects/$SUBJECT && segment_subregions brainstem --cross $SUBJECT --threads $N_THREADS"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "$FS_SUBJ_SETUP && segment_subregions thalamus --cross $SUBJECT --threads $N_THREADS"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "$FS_SUBJ_SETUP && segment_subregions hippo-amygdala --cross $SUBJECT --threads $N_THREADS"
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "$FS_SUBJ_SETUP && segment_subregions brainstem --cross $SUBJECT --threads $N_THREADS"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
