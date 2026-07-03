@@ -18,13 +18,19 @@
 
 #SBATCH --account=<YOUR_ACCOUNT>           # <<EDIT>> your SLURM account (find it with: saldo -b)
 #SBATCH --partition=boost_usr_prod
+#SBATCH --qos=boost_qos_lprod              # 4-day wall: the recon CPU tail (ANTs) blows past 24h at 8 cores
 #SBATCH --job-name=parrot-pilot
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8                  # 1/4 of a 32-core node, matching --gres=gpu:1
-#SBATCH --gres=gpu:1
-#SBATCH --mem=120G                         # ~1/4 of 512G
-#SBATCH --time=20:00:00                    # under the 24h boost_usr_prod cap
+#SBATCH --cpus-per-task=32                 # WHOLE node's cores: cerebellum+bigbrain are ANTs SyN registration
+                                           # (ITK_GLOBAL_DEFAULT_NUMBER_OF_THREADS) -- CPU-bound, GPU idle. At 8
+                                           # cores bigbrain alone ran >11.5h and timed out; 32 cores ~4x that.
+                                           # NB: 32 cores + gpu:1 strands the node's other 3 GPUs -> you may be
+                                           # billed ~the whole node. Fine for a one-off pilot; the cohort split
+                                           # (Deliverable 2) runs these steps on a CPU-only partition instead.
+#SBATCH --gres=gpu:1                       # still needed for FastSurfer / QSIPrep(-if-DWI); harmless otherwise
+#SBATCH --mem=240G                         # headroom for ANTs 100um bigbrain registration at 32 threads
+#SBATCH --time=2-00:00:00                  # 48h; ample once the ANTs tail is on 32 cores (lprod allows up to 4d)
 #SBATCH --output=parrot-pilot-%j.out
 #SBATCH --error=parrot-pilot-%j.err
 
