@@ -22,6 +22,12 @@ def save_label_volume(field_value, ref_img, path):
     data = np.asarray(field_value)
     if data.ndim == 4 and data.shape[-1] == 1:
         data = data[..., 0]
+    # Store as uint8: tissue labels are small non-negative integers, universally
+    # readable, and this avoids the int64 NIfTI that newer nibabel REJECTS ("Image
+    # data has type int64 ..."). np.asarray(...).astype(int) is int64 on 64-bit Linux,
+    # which is what triggered the error before this explicit cast. Mirrors the fix in
+    # gather_electrical_labelfields.py.
+    data = data.astype(np.uint8)
     nib.save(nib.Nifti1Image(data, ref_img.affine), path)
 
 

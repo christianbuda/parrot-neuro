@@ -22,6 +22,12 @@ def save_label_volume(field_value, ref_img, path):
     data = np.asarray(field_value)
     if data.ndim == 4 and data.shape[-1] == 1:
         data = data[..., 0]
+    # Store as uint8: tissue labels are small non-negative integers, this matches the
+    # CGAL mesher's contract (nifti_to_inr asserts labels <=255 then casts to uint8),
+    # is universally readable, and avoids the int64 NIfTI that newer nibabel REJECTS
+    # ("Image data has type int64 ..."). Note np.asarray(...).astype(int) is int64 on
+    # 64-bit Linux, which is what triggered the error before this explicit cast.
+    data = data.astype(np.uint8)
     nib.save(nib.Nifti1Image(data, ref_img.affine), path)
 
 # conductivities from https://simnibs.github.io/simnibs/build/html/documentation/conductivity.html
