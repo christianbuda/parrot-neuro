@@ -95,11 +95,12 @@ Whichever route you use, verify the result with `check_leonardo.sh` (it accepts 
 
 ## Run the pilot
 
-Edit the four `# <<EDIT>>` lines in `pilot.sbatch` (account, repo path, BIDS path, subject), then
-**preflight before spending any GPU time** (pass the same values via env, or rely on the defaults):
+With `config.local.sh` filled in (step 2), you don't edit `pilot.sbatch` at all —
+**preflight, then submit via the wrapper** (which sources config and injects `--account`,
+since a `#SBATCH` directive can't read a shell variable):
 ```bash
-ACCT=<ACCT> SUBJECT=<ID> bash hpc/leonardo/check_leonardo.sh   # must say PREFLIGHT PASSED
-sbatch hpc/leonardo/pilot.sbatch
+bash hpc/leonardo/check_leonardo.sh          # must say PREFLIGHT PASSED (add --fix to prewarm caches)
+bash hpc/leonardo/submit_pilot.sh            # sources config, sbatch --account=$ACCT pilot.sbatch
 squeue --me            # PD = pending, R = running
 ```
 It takes **one GPU** (`--gres=gpu:1`) and a 1/4-node CPU/RAM slice — Booster shares nodes and bills per-GPU, so this is the cheapest honest pilot. A **no-DWI** subject is fastest for a first run (skips the multi-hour QSIPrep/QSIRecon).
