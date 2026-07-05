@@ -17,6 +17,17 @@ TITLE = "Electrodes & fiducials"
 
 
 def _scalp_mesh(ctx):
+    """The reference scalp for the 3D overlays (electrodes, dipoles, leadfields,
+    artifacts all share this). Prefer the SimNIBS charm scalp -- it's the clean
+    surface the forward model actually uses (electrode placement, artifact warp,
+    MNI reg). The MNE dense scalp (bem/*-scalp.npy) is a QC-only fallback and, on
+    MP2RAGE, mkheadsurf wraps the residual background noise into a box."""
+    charm = ctx.stage_dir("surfaces") / "charm_scalp.ply"
+    if charm.exists():
+        try:
+            return render3d.load_surface(charm)
+        except Exception:  # noqa: BLE001 - fall back to the MNE scalp below
+            pass
     for backend in ("fastsurfer", "freesurfer"):
         bem = ctx.stage_dir(backend) / "bem"
         vs, fs = bem / "vertices-scalp.npy", bem / "faces-scalp.npy"

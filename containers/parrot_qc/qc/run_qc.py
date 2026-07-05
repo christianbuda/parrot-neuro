@@ -47,6 +47,14 @@ def run_subject(deriv: str, subject: str) -> str:
     overall = write_subject_report(ctx, results)
     print(f"\nsub-{subject}: overall = {overall.upper()}")
     print(f"report -> {ctx.out_dir / 'index.html'}")
+    # Keep the group index in sync after a standalone subject rerun. The
+    # orchestrator runs a dedicated --group pass after the subject loop, but a
+    # manual per-subject rerun would otherwise leave qc/index.html stale (still
+    # showing the previous run's status). Cheap (JSON re-scan) and never fatal.
+    try:
+        write_group_report(deriv)
+    except Exception:  # noqa: BLE001 - a group refresh failure must not sink the subject run
+        traceback.print_exc()
     return overall
 
 
