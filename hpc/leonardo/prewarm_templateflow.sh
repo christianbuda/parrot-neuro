@@ -35,7 +35,7 @@ done
 CACHE="${1:-${OUTPUT_DIR:+$OUTPUT_DIR/.templateflow}}"; CACHE="${CACHE:-$PWD/templateflow_cache}"  # populate <output_dir>/.templateflow by default when configured
 SRC="${SRC:-}"                            # existing cache to COPY from; empty => BUILD via the container
 RUNTIME="${RUNTIME:-docker}"              # docker (workstation) | apptainer (login node, uses SIF_DIR)
-SIF_DIR="${SIF_DIR:-}"                    # .sif cache dir (apptainer only)
+SIF_DIR="${SIF_DIR:-${SIF:-}}"            # .sif cache dir (apptainer only); falls back to $SIF from config
 IMG="${QSIPREP_IMAGE:-pennlinc/qsiprep:latest}"   # docker image ref (docker runtime)
 # Template superset for BUILD: QSIPrep outputs to MNI152NLin2009cAsym and skull-strips via
 # MNI152NLin6Asym/OASIS30ANTs; QSIRecon surface work uses fsLR/fsaverage. Override with TEMPLATES=.

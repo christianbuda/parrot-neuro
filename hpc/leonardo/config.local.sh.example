@@ -10,13 +10,16 @@
 #
 # This is plain bash; keep it to variable assignments (no side effects).
 
-ACCT="${ACCT:-<YOUR_ACCOUNT>}"                 # SLURM billing account (find it with: saldo -b)
-WORKDIR="${WORKDIR:-/leonardo_work/$ACCT}"     # storage area -- set explicitly ($WORK is ambiguous with multiple accounts)
-REPO="${REPO:-$HOME/parrot-neuro}"             # clone location of this repo
-SUBJECT="${SUBJECT:-010002}"                   # default subject for the pilot / preflight
+# BILLING account only -- the --account / saldo value. NOT used to build any path.
+ACCT="${ACCT:-<BILLING_ACCOUNT>}"                     # find it with: saldo -b
+# STORAGE area -- INDEPENDENT of ACCT (you may bill one allocation but store in another
+# account's work area). Set the actual path; it does NOT track $ACCT. ($WORK is ambiguous
+# with multiple accounts, so give it explicitly.)
+WORKDIR="${WORKDIR:-/leonardo_work/<STORAGE_ACCOUNT>}"
+REPO="${REPO:-$HOME/parrot-neuro}"                    # clone location of this repo
+SUBJECT="${SUBJECT:-010002}"                          # default subject for the pilot / preflight
 
 # Derived layout -- override only if yours differs:
-BIDS="${BIDS:-$WORKDIR/parrot/bids}"           # staged BIDS dataset on the cluster
-OUTPUT_DIR="${OUTPUT_DIR:-$BIDS/derivatives}"  # derivatives (also where the prewarmed caches live)
-SIF="${SIF:-$WORKDIR/parrot/parrot_sif}"       # .sif cache (check_leonardo.sh / pilot.sbatch)
-SIF_DIR="${SIF_DIR:-$SIF}"                     # same cache, name the prewarm_*.sh scripts expect
+BIDS="${BIDS:-$WORKDIR/parrot/bids}"                  # staged BIDS dataset on the cluster
+OUTPUT_DIR="${OUTPUT_DIR:-$BIDS/derivatives}"         # derivatives (also where the prewarmed caches live)
+SIF="${SIF:-$WORKDIR/parrot/parrot_sif}"              # .sif cache; prewarm_*.sh read this too (as SIF_DIR)

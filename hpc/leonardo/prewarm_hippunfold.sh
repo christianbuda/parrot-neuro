@@ -33,7 +33,7 @@ done
 
 CACHE="${1:-${OUTPUT_DIR:+$OUTPUT_DIR/.hippunfold_cache}}"; CACHE="${CACHE:-$PWD/hippunfold_cache}"  # populate <output_dir>/.hippunfold_cache by default when configured
 RUNTIME="${RUNTIME:-docker}"            # docker (workstation) | apptainer (login node, uses SIF_DIR)
-SIF_DIR="${SIF_DIR:-}"                  # .sif cache dir (apptainer only)
+SIF_DIR="${SIF_DIR:-${SIF:-}}"          # .sif cache dir (apptainer only); falls back to $SIF from config
 IMG="${HIPPUNFOLD_IMAGE:-khanlab/hippunfold:latest}"   # docker image ref (docker runtime)
 ATLASES="${ATLASES:-multihist7}"        # space-separated
 TEMPLATES="${TEMPLATES:-upenn CITI168}" # upenn = nnU-Net T1w train space; CITI168 = default output template
