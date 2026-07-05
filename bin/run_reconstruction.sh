@@ -501,6 +501,48 @@ run_in_docker_QC() {
     fi
 }
 
+# -----------------------------------------------------------------------------
+# EEG artifact source modeling: one-time template-asset setup (before the loop).
+# Fetches HArtMuT's muscle template + NYhead meshes (GPL-3.0, fetched-at-use not vendored -- see
+# template_data/hartmut/README.md) into a cache, plus the MNI152NLin2009cAsym T1w that the
+# subject<->MNI affine registers to. Both are subject-independent and shared across the whole run.
+# This needs network egress, so on egress-less HPC compute nodes prewarm them off-cluster: point
+# HARTMUT_CACHE_HOST at a prepared cache and pre-place the MNI template in the templateflow cache.
+# NON-FATAL: if it can't complete, the per-subject artifact stages skip gracefully and the brain
+# pipeline is unaffected. Always resolved to $OUTPUT_DIR/.hartmut_cache so every stage sees it at
+# /derivatives/.hartmut_cache.
+# -----------------------------------------------------------------------------
+HARTMUT_CACHE="$OUTPUT_DIR/.hartmut_cache"
+MNI_TEMPLATE="$TEMPLATEFLOW_DIR/tpl-MNI152NLin2009cAsym/tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz"
+ART_SETUP_LOG="$OUTPUT_DIR/logs/artifact-setup_log.txt"
+if [ ! -f "$ART_SETUP_LOG" ]; then
+    echo "Setting up EEG-artifact template assets (HArtMuT + MNI template)..."
+    mkdir -p "$OUTPUT_DIR/logs" "$(dirname "$MNI_TEMPLATE")"
+    art_ok=1
+    # Reuse a prewarmed shared HArtMuT cache if provided (avoids re-download, e.g. on HPC).
+    if [ -n "${HARTMUT_CACHE_HOST:-}" ] && [ -f "$HARTMUT_CACHE_HOST/MANIFEST.json" ] && [ ! -f "$HARTMUT_CACHE/MANIFEST.json" ]; then
+        mkdir -p "$HARTMUT_CACHE"; cp -r "$HARTMUT_CACHE_HOST/." "$HARTMUT_CACHE/"
+    fi
+    if [ ! -f "$HARTMUT_CACHE/MANIFEST.json" ]; then
+        mkdir -p "$HARTMUT_CACHE"
+        CE_HOME=1; CE_EXEC=python3
+        CE_BINDS=( "$OUTPUT_DIR:/derivatives" "$PARROT_SCRIPT_DIR/template_data/hartmut:/hartmut_src:ro" )
+        container_exec "$IMG_FORWARD_MODEL" /hartmut_src/fetch_hartmut.py --dest /derivatives/.hartmut_cache \
+            > "${ART_SETUP_LOG}.partial" 2>&1 || art_ok=0
+    fi
+    if [ ! -f "$MNI_TEMPLATE" ]; then
+        curl -fsSL -o "$MNI_TEMPLATE" \
+            "https://templateflow.s3.amazonaws.com/tpl-MNI152NLin2009cAsym/tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz" \
+            >> "${ART_SETUP_LOG}.partial" 2>&1 || art_ok=0
+    fi
+    if [ "$art_ok" = 1 ]; then
+        mv -f "${ART_SETUP_LOG}.partial" "$ART_SETUP_LOG" 2>/dev/null || : > "$ART_SETUP_LOG"
+        echo "EEG-artifact template assets ready."
+    else
+        echo "WARNING: EEG-artifact setup incomplete (no network egress?). Per-subject artifact stages will skip; prewarm HARTMUT_CACHE_HOST + the MNI template to enable them."
+    fi
+fi
+
 # =============================================================================
 # 4. MAIN PROCESSING LOOP
 # =============================================================================
@@ -1666,6 +1708,72 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     else
         echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
     fi    
+
+
+    # ---------------------------------------------------------------------
+    # EEG ARTIFACT SOURCE MODELING (eyes + face/neck muscle) -> geometry-only
+    # artifact leadfields, stackable with the brain leadfield. FEM/CGAL only
+    # (BEM has no eye/muscle compartments). Log-guarded like the other stages;
+    # skips gracefully (non-fatal) if the shared template assets weren't set up
+    # (e.g. no network egress on this node -- see the pre-loop artifact setup).
+    # ---------------------------------------------------------------------
+    # Three independently log-guarded sub-steps (like the per-spacing dipoles block) so a failure
+    # in one doesn't force redoing the others on rerun -- the leadfield solve alone is ~15 min.
+    NAME="artifacts"
+    if [ ! -f "$HARTMUT_CACHE/MANIFEST.json" ] || [ ! -f "$MNI_TEMPLATE" ]; then
+        echo "EEG-artifact template assets missing; skipping $NAME for sub-${SUBJECT} (prewarm to enable)." | tee -a "$LOG_FILE"
+    else
+        log_step "Running EEG-artifact source modeling ($NAME) for sub-${SUBJECT}..."
+        step_start=$(date +%s)
+
+        # Eye compartment name depends on which tissue volume was meshed (ITIS vs Sim4Life).
+        if [ "$VOLUME_TO_MESH" = "sim4life" ]; then ART_EYE_TISSUE="Eyes"; else ART_EYE_TISSUE="Eye (Aqueous Humor)"; fi
+
+        # 1. subject<->MNI affine (mri image, antspyx). Full-head T1 in the surface/mesh frame.
+        if [ ! -f "$LOG_DIR/${NAME}-registration_log.txt" ]; then
+            run_in_docker_MRI "$NAME-registration" "$LOG_DIR/${NAME}-registration_log.txt" \
+                "micromamba run -n neuro python /scripts/mni_registration.py --subject $SUBJECT --output_dir /derivatives --t1 /derivatives/raw/sub-${SUBJECT}/T1.nii.gz --template /derivatives/.templateflow/tpl-MNI152NLin2009cAsym/tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz --template-scalp /derivatives/.hartmut_cache/nyhead_scalp.stl --subject-scalp /derivatives/surfaces/sub-${SUBJECT}/charm_scalp.ply"
+        fi
+
+        # 2. artifact dipoles (forward_model image): eyes native + muscle warp. Writes
+        #    artifactdipoles/sub-<S>/artifactsources.json (counts + neck-coverage flag).
+        if [ ! -f "$LOG_DIR/${NAME}-dipoles_log.txt" ]; then
+            run_in_docker_FWD "$NAME-dipoles" "$LOG_DIR/${NAME}-dipoles_log.txt" "$IMG_FORWARD_MODEL" \
+                "cd /scripts && python place_artifact_dipoles.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
+        fi
+
+        # 3. artifact leadfields (solvers image). Eyes + muscle share ONE transfer matrix; muscle
+        #    falls back to HArtMuT's canned leadfield when the warp under-hosted (no neck FOV).
+        if [ ! -f "$LOG_DIR/${NAME}-leadfields_log.txt" ]; then
+            # Did enough muscle sources survive the warp to solve on the subject's own mesh?
+            neck_ok=$(python3 -c "import json;print(json.load(open('$OUTPUT_DIR/artifactdipoles/sub-${SUBJECT}/artifactsources.json')).get('muscle',{}).get('neck_coverage',False))" 2>/dev/null || echo False)
+
+            # Group spec written to a file to avoid shell-quoting tissue names (spaces/parens).
+            SOLVE_GROUPS="$OUTPUT_DIR/artifactdipoles/sub-${SUBJECT}/solve_groups.json"
+            SUBJECT="$SUBJECT" ART_EYE_TISSUE="$ART_EYE_TISSUE" NECK_OK="$neck_ok" python3 - "$SOLVE_GROUPS" <<'PY'
+import json, os, sys
+subj = os.environ['SUBJECT']; eye = os.environ['ART_EYE_TISSUE']; neck = os.environ['NECK_OK'] == 'True'
+groups = [{"name": "eyes", "dipoles_dir": f"artifactdipoles/sub-{subj}/eyes",
+           "valid_tissues": [eye], "out_tag": "_artifact-eyes-CGAL"}]
+if neck:  # muscle solved on the subject mesh only when the warp hosted enough sources
+    groups.append({"name": "muscle", "dipoles_dir": f"artifactdipoles/sub-{subj}/muscle",
+                   "valid_tissues": ["Muscle", "Skin"], "out_tag": "_artifact-muscle-CGAL"})
+json.dump(groups, open(sys.argv[1], "w"), indent=2)
+PY
+            run_in_docker_SOLVER "$NAME-leadfields" "$LOG_DIR/${NAME}-leadfields_log.txt" "$IMG_FORWARD_SOLVERS" \
+                "python3 /scripts/make_leadfield_artifacts.py --subject $SUBJECT --output_dir /derivatives --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --groups_json_file /derivatives/artifactdipoles/sub-${SUBJECT}/solve_groups.json"
+
+            # Muscle fallback: interpolate HArtMuT's canned muscle leadfield onto the subject montage.
+            if [ "$neck_ok" != "True" ]; then
+                echo "Muscle warp under-hosted (neck_coverage=false); using HArtMuT canned muscle leadfield fallback for sub-${SUBJECT}." | tee -a "$LOG_FILE"
+                run_in_docker_SOLVER "$NAME-leadfields" "$LOG_DIR/${NAME}-leadfields_log.txt" "$IMG_FORWARD_SOLVERS" \
+                    "python3 /scripts/make_leadfield_hartmut_muscle.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache"
+            fi
+        fi
+
+        step_end=$(date +%s)
+        echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+    fi
 
 
     # ---------------------------------------------------------------------

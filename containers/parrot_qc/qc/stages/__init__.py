@@ -21,6 +21,7 @@ from . import (
     anisotropy,
     connectivity,
     leadfields,
+    artifacts,
 )
 
 STAGES = [
@@ -41,4 +42,5 @@ STAGES = [
     anisotropy,
     connectivity,
     leadfields,
+    artifacts,
 ]

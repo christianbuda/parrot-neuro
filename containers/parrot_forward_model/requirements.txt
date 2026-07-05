@@ -4,6 +4,8 @@ potpourri3d
 scipy
 scikit-learn
 trimesh
+embreex     # fast C++ ray-casting backend trimesh auto-selects (HArtMuT muscle-source warp)
+rtree       # spatial index for trimesh ray/proximity queries (ray-cast fallback)
 nibabel
 numpy
 meshio

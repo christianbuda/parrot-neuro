@@ -100,6 +100,12 @@ parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
 | `bin/make_connectomes.sh` | Subject connectome via `tck2connectome` (T1 space), run inside the QSIRecon image |
 | `containers/parrot_mri_reconstruction/scripts/prepare_connectivity_atlas.py` | Collapse the Parrot atlas into the connectivity node parcellations |
 | `template_data/connectivity/` | Group-average TVB connectivity (100 & 1000 regions); template fallback when no subject DWI |
+| `containers/parrot_mri_reconstruction/scripts/mni_registration.py` | Subject↔MNI affine (antspyx) bridging the HArtMuT template and the subject for the artifact warp (also feeds the fallback electrode interp) |
+| `containers/parrot_forward_model/place_artifact_dipoles.py` | EEG artifact dipoles: eyes (native, sampled in `Eye_balls`) + muscle (HArtMuT template positions warped via `hartmut_warp.py`); writes `artifactsources.json` |
+| `containers/parrot_forward_model/hartmut_warp.py` | Ray-cast layer-normalized source warp — clean-room port of HArtMuT `project_points.jl` (skull↔scalp depth-fraction preservation) |
+| `containers/parrot_forward_solvers/make_leadfield_artifacts.py` | Geometry-only artifact leadfields (eyes + muscle share ONE DUNEuro transfer matrix) |
+| `containers/parrot_forward_solvers/make_leadfield_hartmut_muscle.py` | Fallback muscle leadfield (HArtMuT's canned leadfield interpolated onto the subject montage) |
+| `template_data/hartmut/` | HArtMuT fetch-at-use downloader (`fetch_hartmut.py`) + README — GPL-3.0 assets fetched, not vendored |
 
 ## Conventions & Gotchas
 
@@ -141,6 +147,26 @@ parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
   - **Edit/iterate:** the QC code is the baked `qc/` package (like the other images' scripts), so
     changes need a rebuild: `./bin/build.sh qc`. Add a stage by dropping a `stages/<name>.py`
     (exposing `NAME`, `TITLE`, `run(ctx)`) into the ordered list in `qc/stages/__init__.py`.
+- **EEG artifacts stage (`artifacts`).** Adds extra-brain eye/muscle noise sources → geometry-only
+  artifact leadfields (see the roadmap entry + `legend_of_files.txt`). Runs per subject after the
+  solvers, spans three images (registration in `parrot_mri_reconstruction`; dipoles in
+  `parrot_forward_model`; leadfields in `parrot_forward_solvers`), FEM/CGAL only. Gotchas:
+  - **Fetched, not vendored.** HArtMuT is GPL-3.0; a one-time pre-loop step downloads its assets to
+    `<output_dir>/.hartmut_cache` and the MNI152NLin2009cAsym T1w to the templateflow cache. This
+    **needs network egress** — on egress-less HPC nodes prewarm off-cluster (set `HARTMUT_CACHE_HOST`
+    to a prepared cache and pre-place the MNI template), like the hippunfold prewarm. If setup can't
+    complete, the per-subject `artifacts` stage **skips gracefully** (non-fatal).
+  - **Muscle solve vs fallback.** `place_artifact_dipoles.py` warps HArtMuT muscle positions onto the
+    subject; if too few survive (no neck FOV → `neck_coverage:false` in `artifactsources.json`), the
+    orchestrator uses HArtMuT's canned muscle leadfield interpolated onto the montage instead of solving.
+  - **Eyes + muscle share ONE transfer matrix** (`make_leadfield_artifacts.py`) — the expensive
+    DUNEuro step depends only on mesh/conductivities/electrodes, not the dipoles.
+  - **QC:** the `parrot_qc` stage `artifacts` validates the registration/dipole/leadfield outputs and
+    renders source positions + sample EOG/EMG topographies (it `skip`s when the stage didn't run).
+  - **New deps/rebuilds:** `parrot_forward_model` needs `embreex`+`rtree` (fast ray-casting) and the
+    new scripts baked; `parrot_mri_reconstruction` needs `mni_registration.py` baked; `parrot_qc`
+    needs the new `stages/artifacts.py` baked. Rebuild those three images (+ `parrot_forward_solvers`
+    for the new solver scripts) after pulling this feature.
 
 ## Repo Layout Notes
 
@@ -164,5 +190,11 @@ Branch `feat/dwi-connectivity-anisotropy-hartmut` and beyond — keep these in m
   (`dwitensor`) and registration into mesh space (`dwi2t1`) are done; remaining: map eigenvalues →
   per-element conductivity tensors (shape-preserving orthotropic) and feed full 3×3 tensors to
   DUNEuro in `make_leadfield_duneuro.py` (which currently uses isotropic per-label conductivities).
-- EEG noise modeling.
+- EEG noise modeling (extra-brain artifact sources). **[done — source geometry/leadfields]**
+  HArtMuT-informed eye (native, sampled in the subject `Eye_balls`) + face/neck muscle (template
+  positions warped into the subject via a subject↔MNI affine + a ray-cast layer-normalized
+  projection) artifact sources → **geometry-only** DUNEuro artifact leadfields, stackable with the
+  brain leadfield (`artifacts` stage; FEM/CGAL only). HArtMuT assets are fetched-at-use (GPL-3.0,
+  not vendored — `template_data/hartmut/`). Remaining: the amplitude/noise generator (MUAP-EMG +
+  gaze/blink EOG time series projected through these leadfields) — a future stage.
 - JAX-accelerated TVB simulation stage with TVB-optim parameter fitting.

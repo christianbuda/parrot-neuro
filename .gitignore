@@ -69,3 +69,8 @@ temp/
 # Local .sif build output (hpc/leonardo/build_sif_local.sh) + hippunfold cache — never commit
 parrot_sif_local/
 hippunfold_cache/
+
+# HArtMuT template assets are fetched at first use (GPL-3.0, not vendored) — never commit.
+# Only template_data/hartmut/{fetch_hartmut.py,README.md} are tracked; the cache is not.
+.hartmut_cache/
+template_data/hartmut/assets/
