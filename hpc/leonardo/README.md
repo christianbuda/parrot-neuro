@@ -60,6 +60,13 @@ Whichever route you use, verify the result with `check_leonardo.sh` (it accepts 
 1. **Publish the rootless images.** From a machine with Docker:
    `./bin/build.sh --push` (pushes `christianbuda/parrot_*:latest`).
 2. **Get the code on the cluster.** Clone this repo to `$HOME/parrot-neuro` (or edit the path in `pilot.sbatch`).
+   Then set your account + paths **once** in a gitignored config, so you never hand-edit the scripts:
+   ```bash
+   cp hpc/leonardo/config.local.sh.example hpc/leonardo/config.local.sh   # then edit ACCT + paths
+   ```
+   `check_leonardo.sh`, `pilot.sbatch`, and both `prewarm_*.sh` source it automatically (env vars still
+   override). It's found whether you run a script directly or via `sbatch` (resolved from `$SLURM_SUBMIT_DIR`
+   / `$HOME/parrot-neuro`), or point anywhere with `PARROT_CONFIG=/path/to/config.local.sh`.
 3. **Stage one subject's BIDS** to your work area (e.g. `/leonardo_work/<ACCT>/parrot/bids`), with
    `license.txt` at the dataset root, via the data-mover `data.leonardo.cineca.it` (rsync/rclone).
    The per-account work area is large (tens of TB on this allocation), so data **and** derivatives

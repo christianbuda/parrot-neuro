@@ -14,9 +14,6 @@ env/
 venv/
 .env
 
-# --- Pixi envs ---
-.pixi/
-
 # --- Distribution / Packaging ---
 dist/
 build/
@@ -81,3 +78,4 @@ template_data/hartmut/assets/
 .pixi/*
 !.pixi/config.toml
 templateflow_cache/
+hpc/leonardo/config.local.sh

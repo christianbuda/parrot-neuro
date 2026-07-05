@@ -26,6 +26,14 @@ PREWARM=0
 for a in "$@"; do case "$a" in --fix) PREWARM=1 ;; esac; done
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # for locating the prewarm_*.sh siblings
 
+# --- personal config (gitignored): set ACCT/WORKDIR/REPO/SUBJECT/SIF once -----
+# First match wins; call-time env vars still override it (config uses ${VAR:-...}).
+for _c in "${PARROT_CONFIG:-}" "$HERE/config.local.sh" \
+          "${SLURM_SUBMIT_DIR:-}/hpc/leonardo/config.local.sh" \
+          "$HOME/parrot-neuro/hpc/leonardo/config.local.sh"; do
+  [ -n "$_c" ] && [ -f "$_c" ] && { . "$_c"; echo "[config] loaded $_c"; break; }
+done
+
 ACCT="${ACCT:-<YOUR_ACCOUNT>}"            # SLURM BILLING account (saldo -b); the -A / --account value
 # Storage area, INDEPENDENT of the billing account (you may bill one allocation but store on
 # another). Default to $WORK for convenience -- but $WORK is AMBIGUOUS if you belong to several

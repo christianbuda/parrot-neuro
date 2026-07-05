@@ -36,7 +36,17 @@
 
 set -euo pipefail
 
-# --- account / paths / subject (EDIT) ----------------------------------------
+# --- personal config (gitignored): set ACCT/WORKDIR/REPO/SUBJECT once ---------
+# sbatch spools this script, so $BASH_SOURCE is not the repo copy -- resolve via
+# $SLURM_SUBMIT_DIR (where you ran sbatch) or the default clone at $HOME/parrot-neuro.
+# Fill hpc/leonardo/config.local.sh once and you can stop editing the <<EDIT>>s below.
+for _c in "${PARROT_CONFIG:-}" \
+          "${SLURM_SUBMIT_DIR:-}/hpc/leonardo/config.local.sh" \
+          "$HOME/parrot-neuro/hpc/leonardo/config.local.sh"; do
+  [ -n "$_c" ] && [ -f "$_c" ] && { . "$_c"; echo "[config] loaded $_c"; break; }
+done
+
+# --- account / paths / subject (EDIT, or set them once in config.local.sh) ----
 # $WORK/$SCRATCH are ambiguous on LEONARDO if you belong to several accounts -- use explicit
 # /leonardo_work/<ACCT> paths. The per-account work area is large (tens of TB), so data +
 # derivatives live there; see `cindata` for your areas.

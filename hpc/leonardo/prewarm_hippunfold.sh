@@ -25,7 +25,13 @@
 ###############################################################################
 set -uo pipefail
 
-CACHE="${1:-$PWD/hippunfold_cache}"     # cache dir to populate (point at <output_dir>/.hippunfold_cache on the cluster)
+# Optional personal config (gitignored) -- picks up SIF_DIR/OUTPUT_DIR if you set them there.
+for _c in "${PARROT_CONFIG:-}" "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd)/config.local.sh" \
+          "${SLURM_SUBMIT_DIR:-}/hpc/leonardo/config.local.sh" "$HOME/parrot-neuro/hpc/leonardo/config.local.sh"; do
+  [ -n "$_c" ] && [ -f "$_c" ] && { . "$_c"; break; }
+done
+
+CACHE="${1:-${OUTPUT_DIR:+$OUTPUT_DIR/.hippunfold_cache}}"; CACHE="${CACHE:-$PWD/hippunfold_cache}"  # populate <output_dir>/.hippunfold_cache by default when configured
 RUNTIME="${RUNTIME:-docker}"            # docker (workstation) | apptainer (login node, uses SIF_DIR)
 SIF_DIR="${SIF_DIR:-}"                  # .sif cache dir (apptainer only)
 IMG="${HIPPUNFOLD_IMAGE:-khanlab/hippunfold:latest}"   # docker image ref (docker runtime)
