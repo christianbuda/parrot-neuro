@@ -58,10 +58,21 @@ def _check_leadfield(r, name, path, n_src_expected):
     return L if (finite and nonzero) else None
 
 
-def _source_cap_magnitude(L, src_idx):
-    """Per-electrode magnitude (RMS over the source's 3 free-orientation columns) -> (n_elec,)."""
-    block = L[:, 3 * src_idx: 3 * src_idx + 3]
-    return np.sqrt((block ** 2).sum(axis=1))
+def _oriented_potential(L, orientations):
+    """Signed per-electrode potential for unit dipole moments along `orientations`, summed over
+    sources -> (n_elec,). For eyes this projects each source onto its corneo-retinal axis, giving
+    the recognisable *dipolar* EOG topography rather than a magnitude blob."""
+    n_src = L.shape[1] // 3
+    o = np.asarray(orientations, dtype=float)[:n_src]
+    Lr = L.reshape(L.shape[0], n_src, 3)               # (n_elec, n_src, 3)
+    return np.einsum("esc,sc->e", Lr, o)               # sum_s L_s . orient_s
+
+
+def _total_footprint(L):
+    """Per-electrode total sensitivity across ALL sources/orientations (row L2 norm) -> (n_elec,).
+    Shows a source group's whole spatial footprint (eyes -> frontal; muscle -> bilateral
+    temporal/facial/neck ring) instead of one focal source."""
+    return np.linalg.norm(L, axis=1)
 
 
 def _electrode_positions(ctx, n_rows):
@@ -167,32 +178,37 @@ def run(ctx) -> StageResult:
                                                           title="artifact sources", point_size=5,
                                                           cmap="cividis"))
 
-    # 2. Sample EOG cap topography: the electrodes coloured by one eye source's cap magnitude.
+    # 2. EOG topography: signed potential from the corneo-retinal axis, summed over both eyes ->
+    #    the recognisable dipolar frontal EOG pattern (diverging colour scale).
     if eye_L is not None:
         elec = _electrode_positions(ctx, eye_L.shape[0])
-        if elec is not None:
-            mag = _source_cap_magnitude(eye_L, 0)
+        axes = _load(adip / "eyes" / "dipole_preferential_direction.npy")
+        if elec is not None and axes is not None and len(axes) == eye_L.shape[1] // 3:
+            pot = _oriented_potential(eye_L, axes)
+            pot = pot / (np.abs(pot).max() + 1e-30)       # normalise for a symmetric diverging map
             ctx.add_figure(r, "eog_topography",
-                           "Sample EOG topography (one eye source, cap magnitude)",
-                           lambda p: render3d.snapshot_points(elec, p, scalars=mag, ref_mesh=scalp,
+                           "EOG topography (corneo-retinal projection, both eyes)",
+                           lambda p: render3d.snapshot_points(elec, p, scalars=pot, ref_mesh=scalp,
+                                                             title="EOG", point_size=12,
+                                                             cmap="coolwarm"))
+        elif elec is not None:  # no stored axes -> fall back to the group footprint
+            fp = _total_footprint(eye_L)
+            ctx.add_figure(r, "eog_topography", "Eye sensitivity footprint (all eye sources)",
+                           lambda p: render3d.snapshot_points(elec, p, scalars=fp, ref_mesh=scalp,
                                                              title="EOG", point_size=12,
                                                              cmap="inferno"))
 
-    # 3. Sample EMG cap topography: a temporalis source if labelled, else the first muscle source.
+    # 3. EMG footprint: per-electrode total sensitivity over ALL muscle sources -> the bilateral
+    #    temporal/facial/neck ring. Log scale, because the superficial neck muscles have far larger
+    #    gains than the facial ones and on a linear scale would saturate the map to a focal blob.
     if muscle_L is not None:
         elec = _electrode_positions(ctx, muscle_L.shape[0])
-        n_src = muscle_L.shape[1] // 3
-        if elec is not None and n_src > 0:
-            src_idx = 0
-            mlab = _load(adip / "muscle" / "dipole_labels.npy")
-            if mlab is not None and len(mlab) == n_src:
-                hits = [i for i, l in enumerate(mlab) if "Temporalis" in str(l)]
-                if hits:
-                    src_idx = hits[0]
-            mag = _source_cap_magnitude(muscle_L, src_idx)
-            ctx.add_figure(r, "emg_topography",
-                           "Sample EMG topography (temporalis source, cap magnitude)",
-                           lambda p: render3d.snapshot_points(elec, p, scalars=mag, ref_mesh=scalp,
+        if elec is not None:
+            fp = _total_footprint(muscle_L)
+            fp = np.log10(fp + fp[fp > 0].min() * 1e-3) if np.any(fp > 0) else fp
+            ctx.add_figure(r, "emg_footprint",
+                           "Muscle sensitivity footprint (all muscle sources, log scale)",
+                           lambda p: render3d.snapshot_points(elec, p, scalars=fp, ref_mesh=scalp,
                                                              title="EMG", point_size=12,
                                                              cmap="inferno"))
     return r
