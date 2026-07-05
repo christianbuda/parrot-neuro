@@ -7,6 +7,7 @@ from ._common import load_nifti, voxel_volume_ml
 
 NAME = "synthstrip"
 TITLE = "SynthStrip — brain extraction"
+DESCRIPTION = ("Brain-extraction mask. The red edge should hug the brain (including cerebellum) without clipping cortex or leaking into skull/dura, and the volume should be a plausible whole-brain size.")
 
 
 def run(ctx) -> StageResult:

@@ -30,6 +30,7 @@ def _result_to_dict(r) -> dict:
         "title": r.title,
         "present": r.present,
         "status": r.status,
+        "description": r.description,
         "notes": r.notes,
         "checks": [{"name": c.name, "status": c.status, "detail": c.detail} for c in r.checks],
         "figures": [{"caption": cap, "path": path} for cap, path in r.figures],

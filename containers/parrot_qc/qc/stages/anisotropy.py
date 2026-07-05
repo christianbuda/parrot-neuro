@@ -14,6 +14,7 @@ from ._common import first_existing
 
 NAME = "anisotropy"
 TITLE = "WM anisotropic conductivity"
+DESCRIPTION = ("White-matter conductivity tensors for the FEM. Tensors should be SPD with bounded anisotropy; the DEC map should show the corpus callosum red (L-R) and the cortico-spinal tract blue (S-I) -- the standard direction check.")
 
 CC_LABELS = (251, 252, 253, 254, 255)
 BRAINSTEM = 16

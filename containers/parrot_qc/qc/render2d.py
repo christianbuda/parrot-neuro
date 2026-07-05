@@ -17,6 +17,7 @@ import os
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt           # noqa: E402
+from matplotlib.colors import ListedColormap  # noqa: E402
 from matplotlib.patches import Patch      # noqa: E402
 import numpy as np                        # noqa: E402
 import nibabel as nib                     # noqa: E402
@@ -72,7 +73,10 @@ def _masked_bg(path):
     # noise. (Computing it over >0 only would split within tissue and eat CSF.)
     finite = data[np.isfinite(data)]
     if finite.size and finite.min() != finite.max():
-        thr = _otsu(finite)
+        # 1.25x the Otsu split: the background is always covered by the overlay, so a
+        # slightly aggressive cut cleanly removes the residual MP2RAGE speckle in the
+        # low-FOV neck slices without touching anything that shows through the overlay.
+        thr = 1.25 * _otsu(finite)
         out = np.where(data > thr, data, 0.0).astype(np.float32)
     else:
         out = data
@@ -119,12 +123,47 @@ def mosaic(bg, out, title=None, cmap="gray"):
     disp.close()
 
 
-def roi_overlay(bg, roi, out, title=None, alpha=0.55, cmap="tab20", legend=None):
+def roi_overlay(bg, roi, out, title=None, alpha=0.55, cmap="tab20", legend=None,
+                colorbar=False):
     """Integer label / mask volume overlaid (filled) on a background volume.
-    `legend`: optional list of (label, color) drawn as a discrete key."""
+    `colorbar` defaults off: for a categorical parcellation the value axis is
+    meaningless. `legend`: optional list of (label, color) drawn as a discrete key."""
     disp = plotting.plot_roi(
         str(roi), bg_img=_masked_bg(bg), display_mode="mosaic", title=title,
-        alpha=alpha, cmap=cmap, black_bg=False,
+        alpha=alpha, cmap=cmap, black_bg=False, colorbar=colorbar,
+    )
+    add_patch_legend(disp, legend)
+    disp.savefig(out, dpi=_DPI)
+    disp.close()
+
+
+def label_overlay(bg, roi, out, entries, title=None, alpha=0.6, base_cmap="tab20"):
+    """Discrete integer-label overlay whose legend is guaranteed to match the fill.
+
+    entries: list of (label_value, name). The ROI is remapped to consecutive ids
+    and drawn with a ListedColormap so each class gets one distinct colour, and the
+    legend is built from that same colour list. Labels absent from the volume are
+    dropped. Falls back to a plain roi_overlay if nothing matches."""
+    roi_img = roi if hasattr(roi, "dataobj") else nib.load(str(roi))
+    data = np.asanyarray(roi_img.dataobj)
+    if data.ndim > 3:
+        data = data.reshape(data.shape[:3])
+    present = [(int(v), n) for v, n in entries if np.any(data == v)]
+    if not present:
+        return roi_overlay(bg, roi, out, title=title, alpha=alpha, cmap=base_cmap)
+    cmap0 = plt.get_cmap(base_cmap)
+    remap = np.zeros(data.shape, dtype=np.int16)
+    colors, legend = [], []
+    for i, (v, n) in enumerate(present):
+        remap[data == v] = i + 1
+        c = cmap0(i % cmap0.N)
+        colors.append(c)
+        legend.append((n, c))
+    rel_img = nib.Nifti1Image(remap, roi_img.affine)
+    disp = plotting.plot_roi(
+        rel_img, bg_img=_masked_bg(bg), display_mode="mosaic", title=title,
+        alpha=alpha, cmap=ListedColormap(colors), black_bg=False,
+        vmin=1, vmax=len(present), colorbar=False,
     )
     add_patch_legend(disp, legend)
     disp.savefig(out, dpi=_DPI)

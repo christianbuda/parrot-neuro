@@ -164,13 +164,21 @@ def snapshot_points(points, out, scalars=None, ref_mesh=None, title=None,
 
     glyphs = None
     if vectors is not None and len(vectors) == len(pts):
-        step = max(1, len(pts) // arrow_max)
-        vc = pv.PolyData(pts[::step])
-        vc["v"] = np.asarray(vectors, dtype=float)[::step]
-        try:
-            glyphs = vc.glyph(orient="v", scale=False, factor=arrow_scale, geom=pv.Arrow())
-        except Exception:  # noqa: BLE001
-            glyphs = None
+        # Arrows only where the vector is non-zero/finite (callers zero-out sources
+        # whose orientation is trivial, e.g. surface normals), subsampled AFTER that
+        # filter so sparse oriented sources aren't skipped by the stride.
+        v = np.asarray(vectors, dtype=float)
+        norm = np.linalg.norm(v, axis=1)
+        keep = np.where(np.isfinite(norm) & (norm > 1e-6))[0]
+        if keep.size:
+            step = max(1, keep.size // arrow_max)
+            sel = keep[::step]
+            vc = pv.PolyData(pts[sel])
+            vc["v"] = v[sel]
+            try:
+                glyphs = vc.glyph(orient="v", scale=False, factor=arrow_scale, geom=pv.Arrow())
+            except Exception:  # noqa: BLE001
+                glyphs = None
 
     def draw(p):
         if ref_mesh is not None:
@@ -244,14 +252,14 @@ def snapshot_clip(grid_or_path, out, scalars=None, title=None, cmap="tab20",
 
 
 def snapshot_volume_clip(grid_or_path, out, scalars=None, title=None, cmap="tab20",
-                         normal="x", legend_items=None):
+                         normal="x", legend_items=None, clim=None):
     """Single planar cut of a volume mesh: clip away one half and view the exposed
     tetrahedra on the cut plane (the "bumps" of the interior), coloured by label."""
     _ensure_display()
     grid = grid_or_path if isinstance(grid_or_path, pv.DataSet) else pv.read(str(grid_or_path))
-    clipped = grid.clip(normal=normal, crop=False)
+    clipped = grid.clip(normal=normal)
     pl = pv.Plotter(off_screen=True, window_size=(760, 640), border=False)
-    pl.add_mesh(clipped, scalars=scalars, cmap=cmap, show_scalar_bar=legend_items is None,
+    pl.add_mesh(clipped, scalars=scalars, cmap=cmap, clim=clim, show_scalar_bar=legend_items is None,
                 show_edges=True, edge_color="black", line_width=0.2)
     if legend_items:
         try:

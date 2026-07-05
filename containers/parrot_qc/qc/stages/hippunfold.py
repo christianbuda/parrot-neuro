@@ -2,11 +2,16 @@
 import nibabel as nib
 
 from ..checks import StageResult, PASS, FAIL
-from .. import render2d
+from .. import render2d, render3d
 from ._common import load_nifti
+
+# HippUnfold multihist7 subfield labels (used for the 2D overlay legend).
+_SUBFIELDS = [(1, "Sub"), (2, "CA1"), (3, "CA2"), (4, "CA3"),
+              (5, "CA4"), (6, "DG"), (7, "SRLM"), (8, "Cyst")]
 
 NAME = "hippunfold"
 TITLE = "HippUnfold — hippocampus"
+DESCRIPTION = ("Hippocampal subfield segmentation + midthickness surfaces per hemisphere. Subfields should form the expected medial-temporal ribbon; the L/R surfaces should be smooth and complete and sit in the hippocampal formation.")
 
 
 def run(ctx) -> StageResult:
@@ -26,8 +31,8 @@ def run(ctx) -> StageResult:
         load_nifti(r, ds, f"subfield dseg ({hemi})", ndim=3)
     if dsegs and ctx.t1_path().exists():
         ctx.add_figure(r, "hipp_subfields_on_t1", "Hippocampal subfields on T1",
-                       lambda p: render2d.roi_overlay(ctx.t1_path(), dsegs[0], p,
-                                                      "subfields (one hemi)"))
+                       lambda p: render2d.label_overlay(ctx.t1_path(), dsegs[0], p,
+                                                        _SUBFIELDS, "subfields (one hemi)"))
 
     # midthickness surfaces
     surfs = sorted((d / "surf").glob("*space-T1w*label-hipp_midthickness.surf.gii")) if (d / "surf").exists() else []
@@ -41,4 +46,24 @@ def run(ctx) -> StageResult:
             r.fail(f"midthickness surf ({hemi})", f"unreadable: {e}")
     if not surfs:
         r.warn("midthickness surfaces", "none found")
+
+    # 3D of the (tiny) hippocampal midthickness surfaces, zoomed, L/R coloured, with
+    # a translucent brain for anatomical context (the co-registered world-space plys).
+    surf_dir = ctx.stage_dir("surfaces")
+    lp, rp = surf_dir / "hippunfold_L_hipp_middle.ply", surf_dir / "hippunfold_R_hipp_middle.ply"
+    if lp.exists() or rp.exists():
+        def _render(p):
+            items, foc = [], None
+            for fp, col, lab in ((lp, "#1f77b4", "L hippocampus"), (rp, "#d62728", "R hippocampus")):
+                if fp.exists():
+                    m = render3d.load_surface(fp)
+                    items.append({"mesh": m, "color": col, "opacity": 1.0, "label": lab})
+                    foc = m if foc is None else foc.merge(m)
+            brain = surf_dir / "freesurfer_BEM_brain.ply"
+            if brain.exists():
+                items.append({"mesh": render3d.load_surface(brain), "color": "lightgray",
+                              "opacity": 0.08})
+            render3d.snapshot_meshes(items, p, title="hippocampus", legend=True, focus=foc,
+                                     views=("left", "anterior", "superior"))
+        ctx.add_figure(r, "hipp_surfaces_3d", "Hippocampal surfaces (3D, zoomed)", _render)
     return r

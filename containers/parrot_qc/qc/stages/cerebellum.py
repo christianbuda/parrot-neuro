@@ -1,10 +1,11 @@
 """Cerebellum QC: template->subject warped labels/surfaces (registration sanity)."""
 from ..checks import StageResult, PASS, WARN
 from .. import render2d, render3d
-from ._common import load_nifti, n_labels
+from ._common import load_nifti, n_labels, first_existing
 
 NAME = "cerebellum"
 TITLE = "Cerebellum — warped atlas"
+DESCRIPTION = ("Template->subject warped cerebellar atlas + surface. The cerebellum should nest snugly below/behind the cerebrum (shown translucent) and its labels should follow the folia -- a registration sanity check.")
 
 
 def run(ctx) -> StageResult:
@@ -25,13 +26,24 @@ def run(ctx) -> StageResult:
     if white.exists():
         load_nifti(r, white, "nonlinear white labels", ndim=3)
 
-    surf = d / "nonlinear_Cerebellum_Inner_Surf_With_Features.vtk"
-    if surf.exists():
+    # 3D from the co-registered world-space cereb_*.ply, zoomed onto the cerebellum,
+    # with a translucent cerebrum for registration context (the cerebellum should
+    # sit snugly below/behind the occipital lobes).
+    surf_dir = ctx.stage_dir("surfaces")
+    cereb = first_existing(surf_dir / "cereb_gray.ply",
+                           surf_dir / "cereb_inner_processed.ply",
+                           surf_dir / "cereb_inner.ply")
+    if cereb is not None:
         def _render(p):
-            m = render3d.load_surface(surf)
-            render3d.snapshot_meshes([{"mesh": m, "color": "tan", "opacity": 1.0}], p,
-                                     "cerebellum inner surface")
-        ctx.add_figure(r, "cereb_surface", "Warped cerebellar surface (3D)", _render)
+            cm = render3d.load_surface(cereb)
+            items = [{"mesh": cm, "color": "tan", "opacity": 1.0, "label": "cerebellum"}]
+            brain = surf_dir / "freesurfer_BEM_brain.ply"
+            if brain.exists():
+                items.append({"mesh": render3d.load_surface(brain), "color": "lightgray",
+                              "opacity": 0.10, "label": "cerebrum"})
+            render3d.snapshot_meshes(items, p, title="cerebellum", legend=True, focus=cm,
+                                     views=("left", "anterior", "superior"))
+        ctx.add_figure(r, "cereb_surface", "Warped cerebellar surface (3D, zoomed)", _render)
     else:
-        r.warn("cerebellar surface", "nonlinear inner surface vtk missing")
+        r.warn("cerebellar surface", "no surfaces/cereb_*.ply")
     return r

@@ -14,6 +14,7 @@ from ._common import load_nifti, n_labels, first_existing
 
 NAME = "fastsurfer"
 TITLE = "Cortical segmentation & surfaces"
+DESCRIPTION = ("Cortical segmentation (aseg/aparc) and the white/pial surfaces. The parcellation should follow the cortical ribbon on the T1; the pial surface should be smooth with the expected gyral/sulcal pattern and topologically closed (Euler chi=2 -- no handles or holes).")
 
 _SURFS = ["lh.white", "rh.white", "lh.pial", "rh.pial"]
 

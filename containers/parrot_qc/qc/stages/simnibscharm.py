@@ -7,6 +7,7 @@ from ._common import load_nifti, n_labels
 
 NAME = "simnibscharm"
 TITLE = "SimNIBS charm — tissues & mesh"
+DESCRIPTION = ("SimNIBS charm whole-head tissue segmentation, the tetrahedral head mesh, and the scalp fiducials. Tissues should be cleanly layered; each fiducial (NAS/LPA/RPA/IN) should sit on its true landmark on the scalp relief.")
 
 
 def run(ctx) -> StageResult:

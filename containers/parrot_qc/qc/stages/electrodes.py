@@ -14,6 +14,7 @@ from .. import render3d
 
 NAME = "electrodes"
 TITLE = "Electrodes & fiducials"
+DESCRIPTION = ("10-5 electrode positions + fiducials on the scalp. Electrodes should sit on the scalp in a regular cap layout; selected (red) exclude ears/eyes; fiducials should match NAS/LPA/RPA.")
 
 
 def _scalp_mesh(ctx):
@@ -104,9 +105,14 @@ def run(ctx) -> StageResult:
         if finite:
             sel_set = set(selected)
             scal = np.asarray([1.0 if k in sel_set else 0.0 for k in names]) if selected else None
+            palette = ["#3b4cc0", "#b40426"]   # excluded (blue) / selected (red)
+            legend_items = [["excluded", palette[0]], ["selected", palette[1]]] if selected else None
             scalp = _scalp_mesh(ctx)
-            ctx.add_figure(r, "electrodes_3d", "Electrodes on scalp (selected = warm)",
+            ctx.add_figure(r, "electrodes_3d", "Electrodes on scalp (selected = red)",
                            lambda p: render3d.snapshot_points(
-                               pts, p, scalars=scal, ref_mesh=scalp, title="electrodes",
-                               point_size=10, cmap="coolwarm"))
+                               pts, p, scalars=scal, ref_mesh=scalp, ref_opacity=0.35,
+                               views=("left", "anterior", "superior"), title="electrodes",
+                               point_size=6, cmap=palette if selected else "coolwarm",
+                               clim=(-0.5, 1.5) if selected else None,
+                               legend_items=legend_items))
     return r

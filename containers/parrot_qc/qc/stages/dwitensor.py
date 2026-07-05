@@ -8,6 +8,7 @@ from ._common import load_nifti
 
 NAME = "dwitensor"
 TITLE = "DWI tensor — FA / eigenvalues"
+DESCRIPTION = ("The DTI fit (FA + eigenvalues) in mesh/T1 space. FA should be high in white-matter tracts (CC, CST) and low in grey matter/CSF, with ordered non-negative eigenvalues. FA>1 in noisy/CSF voxels is normal least-squares fit noise.")
 
 
 def _pick(d, pattern):

@@ -6,6 +6,7 @@ from .. import render2d, render3d
 
 NAME = "tetmesh"
 TITLE = "Tetrahedral FEM mesh"
+DESCRIPTION = ("The CGAL tetrahedral FEM mesh. The planar section should show clean, well-shaped tetrahedra with tissue labels in the right places, and no degenerate/inverted elements (see the volume histogram).")
 
 
 def _int_cell_key(grid):
@@ -56,12 +57,37 @@ def run(ctx) -> StageResult:
     except Exception as e:  # noqa: BLE001
         r.warn("element volumes", f"could not compute: {e}")
 
-    # label cross-section
+    # label cross-section: a single planar cut showing the interior tetrahedra,
+    # coloured by tissue label with a legend from the tetmesh labels.txt.
     lk = _int_cell_key(grid)
+    clip_grid = grid
+    scal_key = lk
+    palette = clim = legend_items = None
     if lk is not None:
-        labels = np.asarray(grid.cell_data[lk])
-        r.add(PASS, "tissue labels", f"{np.unique(labels).size} classes (cell array '{lk}')")
-    ctx.add_figure(r, "tetmesh_clip", "Mesh cross-section by tissue label",
-                   lambda p: render3d.snapshot_clip(grid, p, scalars=lk,
-                                                    title="tet mesh labels"))
+        # Section only the tetrahedra (drop the boundary-facet triangles, whose marker
+        # labels aren't tissues). The .vtu tet label encodes tissue + 10*group
+        # (range 1..39); the tissue is recovered by (label-1)%10+1 -- verified to
+        # reproduce the .mesh medit:ref tissue counts the solver uses.
+        clip_grid = grid.extract_cells(tet_mask) if n_tet else grid
+        labels = np.asarray(clip_grid.cell_data[lk])
+        tissue = ((labels - 1) % 10) + 1
+        clip_grid.cell_data["tissue"] = tissue
+        scal_key = "tissue"
+        uniq = np.unique(tissue)
+        r.add(PASS, "tissue labels", f"{uniq.size} tissues (from cell array '{lk}')")
+        import matplotlib.pyplot as plt
+        from matplotlib.colors import ListedColormap
+        from ._common import read_label_table
+        table = dict(read_label_table(ctx.stage_dir("tetmesh") / "labels.txt"))
+        cmap0 = plt.get_cmap("tab10")
+        hi = int(uniq.max())
+        colors = [tuple(cmap0(i % 10)[:3]) for i in range(hi + 1)]  # indexed by tissue id
+        palette = ListedColormap(colors)
+        clim = (0.5, hi + 0.5)
+        legend_items = [[table[int(v)], colors[int(v)]] for v in uniq if int(v) in table]
+    ctx.add_figure(r, "tetmesh_clip", "Mesh planar section by tissue",
+                   lambda p: render3d.snapshot_volume_clip(clip_grid, p, scalars=scal_key,
+                                                           normal="x", cmap=palette or "tab20",
+                                                           clim=clim, legend_items=legend_items,
+                                                           title="tet mesh tissues"))
     return r

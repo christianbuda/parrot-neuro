@@ -18,6 +18,7 @@ from .electrodes import _scalp_mesh
 
 NAME = "leadfields"
 TITLE = "Leadfields — forward solution"
+DESCRIPTION = ("The forward-solution leadfield(s). Each should be finite, non-zero, and have the expected (n_elec, 3*n_dip) shape; the sensitivity map should show superficial sources brighter than deep ones.")
 
 
 def _dipole_positions(ctx, spacing):
@@ -92,6 +93,7 @@ def run(ctx) -> StageResult:
             ctx.add_figure(r, "lf_sensitivity_3d",
                            "Per-dipole sensitivity (cap's total gain, log scale)",
                            lambda p: render3d.snapshot_points(
-                               positions, p, scalars=log_sens, ref_mesh=scalp,
-                               title=f"sensitivity {tag}", point_size=5, cmap="inferno"))
+                               positions, p, scalars=log_sens, ref_mesh=scalp, ref_opacity=0.15,
+                               views=("left", "anterior", "superior"),
+                               title=f"sensitivity {tag}", point_size=3, cmap="inferno"))
     return r

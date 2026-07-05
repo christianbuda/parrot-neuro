@@ -7,6 +7,7 @@ from ._common import load_nifti, n_labels
 
 NAME = "atlas"
 TITLE = "Atlas — multi-resolution parcellation"
+DESCRIPTION = ("The aggregated parcellation (connectivity nodes) on the cleaned T1. It should tile the cortical ribbon following anatomy, with no large gaps and no spill into white matter or CSF.")
 
 _RES = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
 
@@ -39,9 +40,12 @@ def run(ctx) -> StageResult:
         if img is not None:
             r.add(PASS, "aggregated regions", f"{n_labels(img)} labels")
 
-    a100 = d / "atlas100.nii.gz"
-    if a100.exists() and ctx.t1_path().exists():
-        ctx.add_figure(r, "atlas100_on_t1", "Atlas (100) on T1",
-                       lambda p: render2d.roi_overlay(ctx.t1_path(), a100, p,
-                                                      "atlas100", cmap="gist_ncar"))
+    # Show only the aggregated parcellation (the ~121-node connectivity atlas) on the
+    # cleaned T1. A per-region legend is impractical at 121 nodes, so the colorbar is
+    # off; the point is coverage + segmentation-follows-anatomy, not region identity.
+    if agg.exists() and ctx.t1_path().exists():
+        ctx.add_figure(r, "atlas_aggregated_on_t1",
+                       "Aggregated parcellation on T1 (connectivity nodes)",
+                       lambda p: render2d.roi_overlay(ctx.t1_path(), agg, p,
+                                                      "aggregated atlas", cmap="gist_ncar"))
     return r

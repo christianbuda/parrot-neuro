@@ -21,6 +21,7 @@ from .electrodes import _scalp_mesh, _read_csv_coords
 
 NAME = "artifacts"
 TITLE = "EEG artifact sources (eyes + muscle)"
+DESCRIPTION = ("Extra-brain EEG artifact sources (eyes + face/neck muscle) and their geometry-only leadfields. Eyes should sit in the orbits and muscle around the face/neck; the EOG topography should be a frontal dipolar pattern and the EMG a peripheral ring.")
 
 EYE_LF = "processed_duneuro_artifact-eyes-CGAL-leadfield.npy"
 MUSCLE_LF = "processed_duneuro_artifact-muscle-CGAL-leadfield.npy"
@@ -175,6 +176,7 @@ def run(ctx) -> StageResult:
         ctx.add_figure(r, "artifact_dipoles_3d",
                        "Artifact source positions (blue = eyes, yellow = muscle)",
                        lambda p: render3d.snapshot_points(pts, p, scalars=grp, ref_mesh=scalp,
+                                                          views=("anterior", "left", "superior"),
                                                           title="artifact sources", point_size=5,
                                                           cmap="cividis"))
 
@@ -189,12 +191,14 @@ def run(ctx) -> StageResult:
             ctx.add_figure(r, "eog_topography",
                            "EOG topography (corneo-retinal projection, both eyes)",
                            lambda p: render3d.snapshot_points(elec, p, scalars=pot, ref_mesh=scalp,
+                                                             views=("anterior", "left", "superior"),
                                                              title="EOG", point_size=12,
                                                              cmap="coolwarm"))
         elif elec is not None:  # no stored axes -> fall back to the group footprint
             fp = _total_footprint(eye_L)
             ctx.add_figure(r, "eog_topography", "Eye sensitivity footprint (all eye sources)",
                            lambda p: render3d.snapshot_points(elec, p, scalars=fp, ref_mesh=scalp,
+                                                             views=("anterior", "left", "superior"),
                                                              title="EOG", point_size=12,
                                                              cmap="inferno"))
 
@@ -209,6 +213,7 @@ def run(ctx) -> StageResult:
             ctx.add_figure(r, "emg_footprint",
                            "Muscle sensitivity footprint (all muscle sources, log scale)",
                            lambda p: render3d.snapshot_points(elec, p, scalars=fp, ref_mesh=scalp,
+                                                             views=("anterior", "left", "superior"),
                                                              title="EMG", point_size=12,
                                                              cmap="inferno"))
     return r

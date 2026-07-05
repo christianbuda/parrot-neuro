@@ -43,6 +43,8 @@ class StageResult:
     # figures: (caption, html-relative png path e.g. "figures/foo.png")
     figures: List[Tuple[str, str]] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    # one-paragraph "what this shows / what good looks like" (from the stage module)
+    description: str = ""
 
     # --- mutators used by stage modules -------------------------------------
     def ok(self, name, detail=""):

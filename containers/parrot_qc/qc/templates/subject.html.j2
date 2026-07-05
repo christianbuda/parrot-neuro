@@ -19,6 +19,7 @@
   table.checks { border-collapse:collapse; width:100%; font-size:13px; margin:6px 0 12px; }
   table.checks td { border-bottom:1px solid #eee; padding:4px 8px; vertical-align:top; }
   table.checks td.s { width:60px; }
+  .desc { color:#444; font-size:13px; background:#f4f7fb; border-left:3px solid #90a4ae; padding:8px 12px; margin:0 0 10px; border-radius:0 4px 4px 0; }
   .note { color:#777; font-style:italic; font-size:13px; }
   .figs { display:flex; flex-wrap:wrap; gap:14px; }
   .fig { flex:1 1 360px; }
@@ -43,6 +44,7 @@
   {% for s in report.stages %}
   <section id="{{ s.name }}">
     <h2>{{ s.title }} <span class="badge {{ s.status }}">{{ s.status }}</span></h2>
+    {% if s.description %}<div class="desc">{{ s.description }}</div>{% endif %}
     {% if not s.present %}
       <div class="note">not produced{% if s.notes %} — {{ s.notes|join('; ') }}{% endif %}</div>
     {% else %}

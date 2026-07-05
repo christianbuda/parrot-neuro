@@ -2,12 +2,28 @@
 import numpy as np
 
 from ..checks import StageResult, PASS, WARN, FAIL
-from .. import render2d
+from .. import render2d, render3d
 
 NAME = "connectivity"
 TITLE = "Structural connectome"
+DESCRIPTION = ("The structural connectome (weights/distances) and the tractogram it is built from. The matrix should be symmetric, non-negative and non-empty; streamlines should fill the white matter with anatomically sensible bundles.")
 
 _RES = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
+
+
+def _add_tractography(ctx, r):
+    """Subsampled, direction-coloured render of the streamlines the connectome is
+    built from (T1/mesh space), inside a translucent brain."""
+    qr = ctx.stage_dir("qsirecon") / "dwi"
+    hits = sorted(qr.glob("*space-T1*streamlines.tck*")) if qr.exists() else []
+    if not hits:
+        return
+    tck = hits[0]
+    brain_f = ctx.stage_dir("surfaces") / "freesurfer_BEM_brain.ply"
+    brain = render3d.load_surface(brain_f) if brain_f.exists() else None
+    ctx.add_figure(r, "tractography_3d", "Tractography (subsampled, direction-coloured)",
+                   lambda p: render3d.snapshot_streamlines(tck, p, brain_mesh=brain,
+                                                           title="tractography", max_lines=5000))
 
 
 def run(ctx) -> StageResult:
@@ -15,6 +31,8 @@ def run(ctx) -> StageResult:
     d = ctx.stage_dir("connectivity")
     if not d.exists():
         return r.skip("no connectivity/ (no DWI / no template)")
+
+    _add_tractography(ctx, r)
 
     found = 0
     for n in _RES:

@@ -42,6 +42,7 @@ def run_subject(deriv: str, subject: str) -> str:
             r = StageResult(mod.NAME, mod.TITLE)
             r.fail("stage error", f"{type(e).__name__}: {e}")
             traceback.print_exc()
+        r.description = getattr(mod, "DESCRIPTION", "")
         results.append(r)
         print(f"  [{r.status:>4}] {r.title}", flush=True)
     overall = write_subject_report(ctx, results)

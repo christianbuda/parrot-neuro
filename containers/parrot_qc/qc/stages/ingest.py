@@ -7,6 +7,7 @@ from ._common import load_nifti
 
 NAME = "ingest"
 TITLE = "Ingest — raw T1 / T2"
+DESCRIPTION = ("The standardized T1 (and optional T2) every downstream stage builds on; MP2RAGE UNI images are MPRAGEised here. Look for good grey/white contrast, no wrap/ghosting, correct orientation, and the whole head present.")
 
 
 def run(ctx) -> StageResult:

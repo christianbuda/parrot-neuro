@@ -1,10 +1,11 @@
 """Tissue-labels QC: electrical (and acoustic) conductivity label fields + tables."""
 from ..checks import StageResult, PASS, WARN, FAIL
 from .. import render2d
-from ._common import load_nifti, n_labels, first_existing
+from ._common import load_nifti, n_labels, first_existing, read_label_table
 
 NAME = "tissuelabels"
 TITLE = "Tissue labels — electrical / acoustic"
+DESCRIPTION = ("The electrical (and optional acoustic) conductivity tissue label field feeding the FEM. Each tissue (WM/GM/CSF/skull/scalp/...) should occupy its correct anatomical compartment -- check the legend colours follow anatomy.")
 
 
 def _check_table(r, path, name):
@@ -33,9 +34,10 @@ def run(ctx) -> StageResult:
         if img is not None:
             r.add(PASS, "electrical tissue classes", f"{n_labels(img)} labels")
             if ctx.t1_path().exists():
+                entries = read_label_table(elec / "simnibs_labels.txt")
                 ctx.add_figure(r, "electrical_labels", "Electrical tissue labels on T1",
-                               lambda p: render2d.roi_overlay(ctx.t1_path(), vol, p,
-                                                              "electrical", cmap="tab20"))
+                               lambda p: render2d.label_overlay(ctx.t1_path(), vol, p,
+                                                                entries, "electrical tissues"))
     _check_table(r, elec / "simnibs_conductivities.txt", "conductivity table")
     _check_table(r, elec / "simnibs_labels.txt", "label table")
 

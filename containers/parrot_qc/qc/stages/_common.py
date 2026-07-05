@@ -55,3 +55,26 @@ def first_existing(*paths):
         if p.exists():
             return p
     return None
+
+
+def read_label_table(path):
+    """Parse a 'id,name' table (SimNIBS labels.txt / tetmesh labels.txt) into a
+    list of (int_id, name), skipping background (id 0) and unparseable rows."""
+    entries = []
+    if not path or not path.exists():
+        return entries
+    for ln in path.read_text().splitlines():
+        ln = ln.strip()
+        if not ln:
+            continue
+        parts = ln.split(",", 1)
+        if len(parts) != 2:
+            continue
+        try:
+            lid = int(parts[0])
+        except ValueError:
+            continue
+        if lid == 0:
+            continue
+        entries.append((lid, parts[1].strip()))
+    return entries
