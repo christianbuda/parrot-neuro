@@ -30,9 +30,10 @@ def run(ctx) -> StageResult:
         hemi = "L" if "hemi-L" in ds.name else ("R" if "hemi-R" in ds.name else "?")
         load_nifti(r, ds, f"subfield dseg ({hemi})", ndim=3)
     if dsegs and ctx.t1_path().exists():
-        ctx.add_figure(r, "hipp_subfields_on_t1", "Hippocampal subfields on T1",
+        ctx.add_figure(r, "hipp_subfields_on_t1", "Hippocampal subfields on T1 (zoomed)",
                        lambda p: render2d.label_overlay(ctx.t1_path(), dsegs[0], p,
-                                                        _SUBFIELDS, "subfields (one hemi)"))
+                                                        _SUBFIELDS, "subfields (one hemi)",
+                                                        crop=True, crop_pad=10))
 
     # midthickness surfaces
     surfs = sorted((d / "surf").glob("*space-T1w*label-hipp_midthickness.surf.gii")) if (d / "surf").exists() else []
@@ -59,11 +60,13 @@ def run(ctx) -> StageResult:
                     m = render3d.load_surface(fp)
                     items.append({"mesh": m, "color": col, "opacity": 1.0, "label": lab})
                     foc = m if foc is None else foc.merge(m)
-            brain = surf_dir / "freesurfer_BEM_brain.ply"
-            if brain.exists():
-                items.append({"mesh": render3d.load_surface(brain), "color": "lightgray",
-                              "opacity": 0.08})
-            render3d.snapshot_meshes(items, p, title="hippocampus", legend=True, focus=foc,
+            for h in ("freesurfer_lh_pial.ply", "freesurfer_rh_pial.ply"):
+                hp = surf_dir / h
+                if hp.exists():
+                    items.append({"mesh": render3d.load_surface(hp), "color": "lightgray",
+                                  "opacity": 0.08})
+            # L=blue / R=red is obvious from the view labels; no 2-entry legend.
+            render3d.snapshot_meshes(items, p, title="hippocampus (blue=L, red=R)", focus=foc,
                                      views=("left", "anterior", "superior"))
         ctx.add_figure(r, "hipp_surfaces_3d", "Hippocampal surfaces (3D, zoomed)", _render)
     return r

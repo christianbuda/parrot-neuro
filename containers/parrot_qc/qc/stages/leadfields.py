@@ -89,11 +89,10 @@ def run(ctx) -> StageResult:
         if positions is not None:
             sens = _per_dipole_sensitivity(L, len(positions))
             log_sens = np.log10(sens + sens[sens > 0].min() * 1e-3) if np.any(sens > 0) else sens
-            scalp = _scalp_mesh(ctx)
             ctx.add_figure(r, "lf_sensitivity_3d",
                            "Per-dipole sensitivity (cap's total gain, log scale)",
                            lambda p: render3d.snapshot_points(
-                               positions, p, scalars=log_sens, ref_mesh=scalp, ref_opacity=0.15,
+                               positions, p, scalars=log_sens, ref_mesh=None, focus=True,
                                views=("left", "anterior", "superior"),
-                               title=f"sensitivity {tag}", point_size=3, cmap="inferno"))
+                               title=f"sensitivity {tag}", point_size=2, cmap="inferno"))
     return r

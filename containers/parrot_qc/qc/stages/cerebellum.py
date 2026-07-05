@@ -37,10 +37,15 @@ def run(ctx) -> StageResult:
         def _render(p):
             cm = render3d.load_surface(cereb)
             items = [{"mesh": cm, "color": "tan", "opacity": 1.0, "label": "cerebellum"}]
-            brain = surf_dir / "freesurfer_BEM_brain.ply"
-            if brain.exists():
-                items.append({"mesh": render3d.load_surface(brain), "color": "lightgray",
-                              "opacity": 0.10, "label": "cerebrum"})
+            # translucent pial hemispheres (the real cortical surface, not the rough
+            # BEM brain mask) for the registration context.
+            labelled = False
+            for h in ("freesurfer_lh_pial.ply", "freesurfer_rh_pial.ply"):
+                hp = surf_dir / h
+                if hp.exists():
+                    items.append({"mesh": render3d.load_surface(hp), "color": "lightpink",
+                                  "opacity": 0.12, "label": None if labelled else "cerebrum (pial)"})
+                    labelled = True
             render3d.snapshot_meshes(items, p, title="cerebellum", legend=True, focus=cm,
                                      views=("left", "anterior", "superior"))
         ctx.add_figure(r, "cereb_surface", "Warped cerebellar surface (3D, zoomed)", _render)

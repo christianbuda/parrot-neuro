@@ -3,11 +3,45 @@ import numpy as np
 
 from ..checks import StageResult, PASS, WARN, FAIL
 from .. import render3d
-from .electrodes import _scalp_mesh
 
 NAME = "dipoles"
 TITLE = "Dipoles — source sampling"
-DESCRIPTION = ("Sampled source dipoles, coloured by orientation model (surface-normal vs volumetric gradient/principal-axis/random). Sources should fill the grey matter and subcortical/cerebellar volumes uniformly at the target spacing; arrows show the volumetric sources' preferential directions.")
+DESCRIPTION = ("Sampled source dipoles, coloured by anatomical compartment (cerebrum / "
+               "cerebellum / hippocampus / subcortical). Sources should fill the grey matter "
+               "and subcortical/cerebellar volumes uniformly at the target spacing; arrows show "
+               "the volumetric sources' preferential directions.")
+
+# per-source subdir name -> compartment (for colouring the aggregated cloud)
+_SOURCE_COMPARTMENT = {
+    "freesurfer_lh_middle": "cerebrum", "freesurfer_rh_middle": "cerebrum",
+    "cereb_inner_processed": "cerebellum",
+    "hippunfold_L_dentate_middle": "hippocampus", "hippunfold_R_dentate_middle": "hippocampus",
+    "hippunfold_L_hipp_middle": "hippocampus", "hippunfold_R_hipp_middle": "hippocampus",
+}
+
+
+def _key(p):
+    return (round(float(p[0]), 3), round(float(p[1]), 3), round(float(p[2]), 3))
+
+
+def _compartment_labels(sdir, pos):
+    """Compartment per aggregated dipole. The aggregated cloud is the exact
+    concatenation of the per-source dipole_positions (surfaces/<mesh>/ + volumetric/),
+    so we match each position back to its source by coordinate. Returns str array."""
+    lut = {}
+    surf = sdir / "surfaces"
+    if surf.exists():
+        for d in surf.iterdir():
+            comp = _SOURCE_COMPARTMENT.get(d.name)
+            f = d / "dipole_positions.npy"
+            if comp and f.exists():
+                for p in np.load(f):
+                    lut[_key(p)] = comp
+    vf = sdir / "volumetric" / "dipole_positions.npy"
+    if vf.exists():
+        for p in np.load(vf):
+            lut[_key(p)] = "subcortical"
+    return np.array([lut.get(_key(q), "other") for q in pos])
 
 
 def _check_spacing(ctx, r, sdir, tag):
@@ -40,46 +74,34 @@ def _check_spacing(ctx, r, sdir, tag):
               f"min={np.nanmin(vol):.3g}, max={np.nanmax(vol):.3g} mm³, "
               f"zeros={zeros}, negative={neg}")
 
-    # 3D scatter coloured by orientation type -- the source model, not the region:
-    #   N = surface normal (fixed; cortex/cerebellum/hippocampus surfaces)
-    #   G = gradient, P = principal axis, R = random  (all volumetric)
-    # Direction arrows show each source's preferential orientation.
-    scal = None
-    legend_items = None
-    cmap = "tab10"
-    clim = None
-    ot = None
-    ot_f = sdir / "orient_type.npy"
-    if ot_f.exists():
-        try:
-            ot = np.load(ot_f, allow_pickle=True).astype(str)
-            if len(ot) == n:
-                names = {"N": "surface normal", "G": "gradient",
-                         "P": "principal axis", "R": "random", "U": "unassigned"}
-                palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
-                present = [c for c in ["N", "G", "P", "R", "U"] if np.any(ot == c)]
-                idx = {c: i for i, c in enumerate(present)}
-                scal = np.array([idx.get(c, 0) for c in ot], dtype=float)
-                cmap = palette[:len(present)]
-                clim = (-0.5, len(present) - 0.5)
-                legend_items = [[names.get(c, c), palette[i]] for i, c in enumerate(present)]
-        except Exception:  # noqa: BLE001
-            scal = None
+    # 3D scatter coloured by anatomical compartment (cerebrum / cerebellum /
+    # hippocampus / subcortical), recovered by matching each aggregated dipole back
+    # to the per-source file it was concatenated from. Direction arrows show the
+    # volumetric sources' preferential orientation (surface normals are omitted --
+    # obvious and cloud-burying).
+    comp = _compartment_labels(sdir, pos)
+    _COLORS = {"cerebrum": "#1f77b4", "cerebellum": "#ff7f0e", "hippocampus": "#2ca02c",
+               "subcortical": "#d62728", "other": "#7f7f7f"}
+    present = [c for c in ("cerebrum", "cerebellum", "hippocampus", "subcortical", "other")
+               if np.any(comp == c)]
+    idx = {c: i for i, c in enumerate(present)}
+    scal = np.array([idx[c] for c in comp], dtype=float)
+    cmap = [_COLORS[c] for c in present]
+    clim = (-0.5, len(present) - 0.5)
+    legend_items = [[c, _COLORS[c]] for c in present]
 
-    # Arrows only for the volumetric sources (G/P/R): their preferential direction is
-    # the non-trivial one. Surface-normal (N) sources are zeroed out so their (obvious,
-    # and cloud-burying) normals don't clutter the figure.
+    ot = np.load(ot_f, allow_pickle=True).astype(str) if (ot_f := sdir / "orient_type.npy").exists() else None
     dirs_for_arrows = None
     if dirs_f.exists():
         dirs_for_arrows = np.load(dirs_f).astype(float).copy()
         if ot is not None and len(ot) == len(dirs_for_arrows):
             dirs_for_arrows[ot == "N"] = 0.0
-    scalp = _scalp_mesh(ctx)
-    ctx.add_figure(r, f"dipoles_{tag}", f"Dipole cloud ({tag}) — coloured by orientation type",
+
+    ctx.add_figure(r, f"dipoles_{tag}", f"Dipole cloud ({tag}) — coloured by compartment",
                    lambda p: render3d.snapshot_points(
-                       pos, p, scalars=scal, ref_mesh=scalp, ref_opacity=0.15,
+                       pos, p, scalars=scal, ref_mesh=None, focus=True,
                        views=("left", "anterior", "superior"), vectors=dirs_for_arrows,
-                       arrow_scale=8.0, arrow_max=2500, point_size=2.5, cmap=cmap, clim=clim,
+                       arrow_scale=8.0, arrow_max=2500, point_size=1.5, cmap=cmap, clim=clim,
                        legend_items=legend_items, title=f"dipoles {tag}"))
 
 

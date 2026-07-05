@@ -92,9 +92,13 @@ def _bounds_of(focus):
 
 def _set_view(pl, view, focus_bounds=None):
     """Point the current subplot's camera at a named anatomical view and fit it to
-    either the whole scene or a focus structure's bounds (zoom-to-structure)."""
+    either the whole scene or a focus structure's bounds (zoom-to-structure).
+
+    pyvista's view_vector(v) places the camera on the +v side looking back at the
+    focal point, so we pass +d (the camera-offset direction) directly -- e.g.
+    anterior = camera on +y = a true face-on view."""
     d, up = _CAMERAS.get(view, _CAMERAS["anterior"])
-    pl.view_vector((-d[0], -d[1], -d[2]), viewup=up)
+    pl.view_vector((d[0], d[1], d[2]), viewup=up)
     pl.reset_camera(bounds=focus_bounds)  # bounds=None fits all actors
 
 
@@ -153,7 +157,7 @@ def snapshot_meshes(items, out, title=None, views=_DEFAULT_VIEWS, legend=False, 
 def snapshot_points(points, out, scalars=None, ref_mesh=None, title=None,
                     cmap="viridis", point_size=6.0, ref_color="wheat", ref_opacity=0.12,
                     views=_DEFAULT_VIEWS, vectors=None, arrow_scale=5.0, arrow_max=1500,
-                    legend_items=None, clim=None, ref_style="surface"):
+                    legend_items=None, clim=None, ref_style="surface", focus=None):
     """Named-view montage of a point cloud (dipoles/electrodes/sensitivity),
     optionally inside a translucent reference surface (e.g. scalp) and optionally
     with direction arrows (`vectors`, one per point; subsampled to `arrow_max`)."""
@@ -192,7 +196,9 @@ def snapshot_points(points, out, scalars=None, ref_mesh=None, title=None,
         if glyphs is not None:
             p.add_mesh(glyphs, color="black", show_scalar_bar=False)
 
-    _multiview(draw, out, views, title, legend_items)
+    # focus=True (or a mesh/bounds) zooms the cameras onto the cloud / structure
+    fb = _bounds_of(cloud if focus is True else focus)
+    _multiview(draw, out, views, title, legend_items, fb)
 
 
 def snapshot_fiducials(scalp_mesh, fiducials, out, title=None):
@@ -208,11 +214,12 @@ def snapshot_fiducials(scalp_mesh, fiducials, out, title=None):
     pl = pv.Plotter(off_screen=True, shape=(1, n), window_size=(330 * n, 380), border=False)
     for i, name in enumerate(names):
         pl.subplot(0, i)
-        # Phong + specular (OSMesa-safe; PBR/metallic can render black under
-        # software GL). A raking light from up/side casts shadows across gyral
-        # ridges/bumps so the true landmark position is recognisable.
-        pl.add_mesh(scalp_mesh, color="wheat", opacity=1.0, show_scalar_bar=False,
-                    smooth_shading=True, specular=0.5, specular_power=18, ambient=0.12)
+        # Matte-ish tan with modest specular; pyvista's default light kit already
+        # gives enough directional shading for gyral relief. (An extra raking light
+        # + near-white wheat blew the exposure out to almost pure white.)
+        pl.add_mesh(scalp_mesh, color="tan", opacity=1.0, show_scalar_bar=False,
+                    smooth_shading=True, specular=0.2, specular_power=12,
+                    ambient=0.15, diffuse=0.7)
         for k, p in pts.items():
             focused = k == name
             pl.add_mesh(pv.Sphere(radius=4.0 if focused else 2.0, center=p),
@@ -220,12 +227,7 @@ def snapshot_fiducials(scalp_mesh, fiducials, out, title=None):
         f = pts[name]
         d = f - center
         d = d / (np.linalg.norm(d) + 1e-9)
-        pl.camera_position = [tuple(f + d * 260), tuple(f), (0, 0, 1)]
-        try:
-            pl.add_light(pv.Light(position=tuple(f + d * 200 + np.array([120, 0, 120])),
-                                  focal_point=tuple(f), intensity=0.6))
-        except Exception:  # noqa: BLE001
-            pass
+        pl.camera_position = [tuple(f + d * 360), tuple(f), (0, 0, 1)]  # pull back (less zoom)
         pl.add_text(name, font_size=13)
     pl.screenshot(out)
     pl.close()
@@ -258,17 +260,24 @@ def snapshot_volume_clip(grid_or_path, out, scalars=None, title=None, cmap="tab2
     _ensure_display()
     grid = grid_or_path if isinstance(grid_or_path, pv.DataSet) else pv.read(str(grid_or_path))
     clipped = grid.clip(normal=normal)
-    pl = pv.Plotter(off_screen=True, window_size=(760, 640), border=False)
+    # Flat shading (lighting off) keeps the tissue colours bright; light-grey edges
+    # keep the tetrahedra visible without the black edge-mesh darkening the whole cut.
+    # Wide window: the (tall) sagittal section fits to height and centres, leaving a
+    # clear right margin for the legend instead of it landing on the head.
+    pl = pv.Plotter(off_screen=True, window_size=(1500, 700), border=False)
     pl.add_mesh(clipped, scalars=scalars, cmap=cmap, clim=clim, show_scalar_bar=legend_items is None,
-                show_edges=True, edge_color="black", line_width=0.2)
-    if legend_items:
-        try:
-            pl.add_legend(labels=legend_items, bcolor="white", border=True, size=(0.3, 0.4))
-        except Exception:  # noqa: BLE001
-            pass
+                show_edges=True, edge_color=(0.4, 0.4, 0.4), line_width=0.2, lighting=False)
     if title:
         pl.add_text(title, font_size=9)
     pl.camera_position = "yz" if normal == "x" else ("xz" if normal == "y" else "xy")
+    if legend_items:
+        try:
+            # Head faces +y (right of frame) in this sagittal view, so the occiput
+            # (left) side is clear -- put the legend there.
+            pl.add_legend(labels=legend_items, bcolor="white", border=True, size=(0.2, 0.5),
+                          loc="center left")
+        except Exception:  # noqa: BLE001
+            pass
     pl.screenshot(out)
     pl.close()
 

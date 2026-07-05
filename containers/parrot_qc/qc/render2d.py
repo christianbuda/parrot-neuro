@@ -22,8 +22,9 @@ from matplotlib.patches import Patch      # noqa: E402
 import numpy as np                        # noqa: E402
 import nibabel as nib                     # noqa: E402
 from nilearn import plotting              # noqa: E402
+from nilearn.image import crop_img, resample_to_img  # noqa: E402
 
-_DPI = 95
+_DPI = 160  # higher so the browser can zoom into the slices and still read detail
 
 
 # --- background cleanup ------------------------------------------------------
@@ -107,9 +108,12 @@ def add_patch_legend(disp, entries, ncol=None, fontsize=6):
     handles = [Patch(facecolor=c, edgecolor="none", label=l) for l, c in entries]
     ncol = ncol or min(len(entries), 6)
     try:
+        # White box + dark text so it reads over either the white canvas margin or
+        # the black masked-background slices.
         fig.legend(handles=handles, loc="lower center", ncol=ncol, fontsize=fontsize,
-                   frameon=False, labelcolor="white", handlelength=1.0,
-                   columnspacing=1.0, bbox_to_anchor=(0.5, 0.0))
+                   frameon=True, facecolor="white", framealpha=0.9, edgecolor="0.7",
+                   labelcolor="black", handlelength=1.0, columnspacing=1.0,
+                   bbox_to_anchor=(0.5, 0.0))
     except Exception:  # noqa: BLE001
         pass
 
@@ -137,13 +141,33 @@ def roi_overlay(bg, roi, out, title=None, alpha=0.55, cmap="tab20", legend=None,
     disp.close()
 
 
-def label_overlay(bg, roi, out, entries, title=None, alpha=0.6, base_cmap="tab20"):
+def _crop_to_roi(bg_img, roi_img, pad=12):
+    """Crop bg + roi to the roi's bounding box (+pad voxels) so a small structure
+    fills the frame. roi is resampled onto the bg grid first (they can differ)."""
+    roi_on_bg = resample_to_img(roi_img, bg_img, interpolation="nearest",
+                                force_resample=True)
+    rd = np.asanyarray(roi_on_bg.dataobj)
+    bd = np.asanyarray(bg_img.dataobj)
+    nz = np.argwhere(rd > 0)
+    if nz.size == 0:
+        return bg_img, roi_on_bg
+    lo = np.maximum(nz.min(0) - pad, 0)
+    hi = np.minimum(nz.max(0) + pad + 1, np.array(bd.shape[:3]))
+    sl = tuple(slice(int(lo[i]), int(hi[i])) for i in range(3))
+    aff = bg_img.affine.copy()
+    aff[:3, 3] = aff[:3, 3] + aff[:3, :3] @ lo
+    return nib.Nifti1Image(bd[sl], aff), nib.Nifti1Image(rd[sl], aff)
+
+
+def label_overlay(bg, roi, out, entries, title=None, alpha=0.6, base_cmap="tab20",
+                  crop=False, crop_pad=12):
     """Discrete integer-label overlay whose legend is guaranteed to match the fill.
 
     entries: list of (label_value, name). The ROI is remapped to consecutive ids
     and drawn with a ListedColormap so each class gets one distinct colour, and the
     legend is built from that same colour list. Labels absent from the volume are
-    dropped. Falls back to a plain roi_overlay if nothing matches."""
+    dropped. `crop` zooms both bg + overlay onto the labelled structure (for small
+    structures like the hippocampus). Falls back to a plain roi_overlay if empty."""
     roi_img = roi if hasattr(roi, "dataobj") else nib.load(str(roi))
     data = np.asanyarray(roi_img.dataobj)
     if data.ndim > 3:
@@ -160,8 +184,13 @@ def label_overlay(bg, roi, out, entries, title=None, alpha=0.6, base_cmap="tab20
         colors.append(c)
         legend.append((n, c))
     rel_img = nib.Nifti1Image(remap, roi_img.affine)
+    bg_img = _masked_bg(bg)
+    mode = "mosaic"
+    if crop:
+        bg_img, rel_img = _crop_to_roi(bg_img, rel_img, crop_pad)
+        mode = "ortho"   # 3 orthogonal cuts through the zoomed structure
     disp = plotting.plot_roi(
-        rel_img, bg_img=_masked_bg(bg), display_mode="mosaic", title=title,
+        rel_img, bg_img=bg_img, display_mode=mode, title=title,
         alpha=alpha, cmap=ListedColormap(colors), black_bg=False,
         vmin=1, vmax=len(present), colorbar=False,
     )
