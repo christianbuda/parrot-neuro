@@ -16,7 +16,7 @@
 #   sbatch hpc/leonardo/pilot.sbatch
 ###############################################################################
 
-#SBATCH --account=<YOUR_ACCOUNT>           # <<EDIT>> your SLURM account (find it with: saldo -b)
+#SBATCH --account=${ACCT}                  # set ACCT in config.local.sh or export before sbatch
 #SBATCH --partition=boost_usr_prod
 #SBATCH --qos=boost_qos_lprod              # 4-day wall: the recon CPU tail (ANTs) blows past 24h at 8 cores
 #SBATCH --job-name=parrot-pilot

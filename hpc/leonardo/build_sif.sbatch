@@ -10,7 +10,7 @@
 #
 #   sbatch hpc/leonardo/build_sif.sbatch /leonardo_work/<ACCT>/parrot_sif
 ###############################################################################
-#SBATCH --account=<YOUR_ACCOUNT>      # <<EDIT>> required even on the budget-free serial partition
+#SBATCH --account=${ACCT}             # required even on budget-free serial; set via config.local.sh
 #SBATCH --partition=lrd_all_serial
 #SBATCH --job-name=parrot-mksif
 #SBATCH --nodes=1
