@@ -88,6 +88,12 @@ usage() {
     echo "  --recon                    Surface recon backend: 'fastsurfer' (default, seg+surf) or 'freesurfer' (recon-all surfaces + FastSurfer --seg_only for CNN subsegs)."
     echo "  --runtime                  Container runtime: 'docker' (default, workstation) or 'apptainer' (rootless, for HPC like CINECA LEONARDO)."
     echo "  --sif-dir                  Directory holding/caching .sif images (apptainer only; default: <output_dir>/.sif). Pulled from Docker Hub on first use."
+    echo "  --stages LIST              Comma-separated stage names to RUN this invocation (default: 'all'). Stages not"
+    echo "                             listed are no-ops (they write no log, so a later run still executes them). Lets a"
+    echo "                             cohort be split into walltime-bounded, dependency-chained SLURM jobs. Known stages:"
+    echo "                             ingest,fastsurfer,hippunfold,freesurfer,mne,schaefer,freesurfersubcortical,simnibscharm,"
+    echo "                             fslfirst,synthstrip,cerebellum,bigbrain,surfaces,atlas,tissuelabels,qsiprep,qsirecon,"
+    echo "                             connectivity,dwitensor,dwi2t1,electrodes,dipoles,tetmesh,anisotropy,forwardsolvers,artifacts,qc."
     exit 1
 }
 
@@ -129,6 +135,7 @@ FIX_INPUTS=false
 RECON_BACKEND=fastsurfer
 RUNTIME=docker          # container runtime: "docker" (workstation) or "apptainer" (HPC, e.g. LEONARDO)
 SIF_DIR=""              # where .sif images live/are pulled (apptainer only); default set after parsing
+STAGES_ARG="all"        # comma-separated stage names to run this invocation ("all" = the whole pipeline)
 
 while [[ $# -gt 0 ]]; do
     key="$1"
@@ -184,6 +191,10 @@ while [[ $# -gt 0 ]]; do
             SIF_DIR="$2"
             shift 2
             ;;
+        --stages)
+            STAGES_ARG="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             ;;
@@ -228,6 +239,35 @@ if [ "$RUNTIME" = "apptainer" ]; then
     fi
     [ -z "$SIF_DIR" ] && SIF_DIR="$OUTPUT_DIR/.sif"
 fi
+
+# --- Stage selection (for splitting a subject across chained SLURM jobs) ------
+# The pipeline is a fixed linear sequence of stages, each idempotent via its own
+# "<name>_log.txt". "--stages" restricts which stages EXECUTE this invocation; a stage
+# not selected simply no-ops (writes no log), so a later invocation that DOES select it
+# still runs it. This composes with the log-guard idempotency: a chunk that omits stages
+# already done by an earlier chunk skips them anyway. Chunk boundaries live in the sbatch
+# scripts (e.g. an instant gpu:1 slice for fastsurfer/hippunfold, a many-core job for the
+# ANTs heavies), not here -- the orchestrator only needs the per-stage on/off gate.
+KNOWN_STAGES=(ingest fastsurfer hippunfold freesurfer mne schaefer freesurfersubcortical
+              simnibscharm fslfirst synthstrip cerebellum bigbrain surfaces atlas tissuelabels
+              qsiprep qsirecon connectivity dwitensor dwi2t1 electrodes dipoles tetmesh
+              anisotropy forwardsolvers artifacts qc)
+if [ "$STAGES_ARG" = "all" ]; then
+    STAGE_SET=("${KNOWN_STAGES[@]}")
+else
+    IFS=',' read -r -a STAGE_SET <<< "$STAGES_ARG"
+    for s in "${STAGE_SET[@]}"; do
+        if ! printf '%s\n' "${KNOWN_STAGES[@]}" | grep -qx -- "$s"; then
+            echo "ERROR: --stages contains unknown stage '$s'."
+            echo "       Known: ${KNOWN_STAGES[*]}"
+            exit 1
+        fi
+    done
+fi
+# want_stage <name> -> 0 if the stage is selected to run this invocation.
+want_stage() {
+    printf '%s\n' "${STAGE_SET[@]}" | grep -qx -- "$1"
+}
 
 # =============================================================================
 # 3. PRE-FLIGHT CHECKS
@@ -721,7 +761,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         echo "[ERROR] sub-${SUBJECT} flagged mp2rage but INV2 not found in anat/. Skipping subject." | tee -a "$LOG_FILE"
         continue
     fi
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME (validate + standardize inputs -> raw/)..."
         mkdir -p "$OUTPUT_DIR/raw/sub-${SUBJECT}"
         step_start=$(date +%s)
@@ -749,7 +789,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # rejects vox_size > 1.0, so a float32 voxel-size header artifact silently kills the
     # surfaces (it still exits 0). The LEMON staging cleans this; see the surface guard.
     NAME="fastsurfer"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         # Full seg+surf when FastSurfer provides the surfaces (SURF_DIR=fastsurfer);
         # --seg_only (just the CNN subsegs CerebNet/HypVINN) when FreeSurfer/HCP
         # provides the surfaces instead.
@@ -794,7 +834,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # HIPPUNFOLD
     # ---------------------------------------------------------
     NAME="hippunfold"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME"
 
@@ -853,7 +893,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # stays dropped.
     NAME="freesurfer"
     if [ "$SURF_DIR" = "freesurfer" ]; then
-        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
             log_step "Running $NAME recon-all (surface reconstruction)..."
             mkdir -p "$OUTPUT_DIR/$NAME"
 
@@ -904,7 +944,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # MNE BEM SURFACES
     # ---------------------------------------------------------
     NAME="mne"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
 
         step_start=$(date +%s)
@@ -933,7 +973,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # SCHAEFER ATLASES
     # ---------------------------------------------------------
     NAME="schaefer"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         
         step_start=$(date +%s)
@@ -956,7 +996,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # SUBCORTICAL FREESURFER
     # ---------------------------------------------------------
     NAME="freesurfersubcortical"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         
         step_start=$(date +%s)
@@ -975,7 +1015,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # SIMNIBS CHARM
     # ---------------------------------------------------------
     NAME="simnibscharm"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         # Re-run from clean: wipe any partial output so the final `mv m2m_subject ->
         # sub-<ID>` can't nest inside a leftover dir from a killed attempt.
@@ -1008,7 +1048,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # FSL FIRST
     # ---------------------------------------------------------
     NAME="fslfirst"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
@@ -1030,7 +1070,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # SYNTHSTRIP
     # ---------------------------------------------------------
     NAME="synthstrip"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
@@ -1055,7 +1095,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # CEREBELLUM
     # ---------------------------------------------------------
     NAME="cerebellum"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
@@ -1074,7 +1114,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # BIGBRAIN
     # ---------------------------------------------------------
     NAME="bigbrain"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
@@ -1092,7 +1132,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # SURFACES
     # ---------------------------------------------------------
     NAME="surfaces"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
@@ -1110,7 +1150,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # ATLASES
     # ---------------------------------------------------------
     NAME="atlas"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
@@ -1128,7 +1168,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # TISSUE LABELS
     # ---------------------------------------------------------
     NAME="tissuelabels"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/electrical"
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/acoustic"
@@ -1159,7 +1199,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # not consume our FreeSurfer dir -- FreeSurfer reuse belongs to the recon stage.
     NAME="qsiprep"
     if [ "$HAS_DWI" = true ] && [ -z "$DWI_FORMAT" ]; then
-        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
             log_step "Running $NAME (DWI preprocessing)..."
             mkdir -p "$OUTPUT_DIR/$NAME"
 
@@ -1246,7 +1286,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # --input-type qsiprep, or HCP-YA native tree via --input-type hcpya.
     NAME="qsirecon"
     if [ "$HAS_DWI" = true ]; then
-        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
             log_step "Running $NAME (tractography)..."
             step_start=$(date +%s)
 
@@ -1362,7 +1402,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
 
     if [ "$HAS_DWI" = true ]; then
         # Atlas preparation (subject atlas already in T1w space -> no registration).
-        if [ ! -f "$LOG_DIR/${NAME}-atlas_log.txt" ]; then
+        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}-atlas_log.txt" ]; then
             log_step "Running $NAME atlas preparation..."
             step_start=$(date +%s)
 
@@ -1381,7 +1421,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # matrices block below the DWI-tensor stages). No usable tractography here ->
     # fall back to the group-average template connectome.
     if [ "$HAVE_TRACKS" = false ]; then
-        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
             log_step "Running $NAME (template connectome fallback)..."
             step_start=$(date +%s)
 
@@ -1424,7 +1464,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         fi
     fi
     if [ "$dwitensor_ready" = true ]; then
-        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
             log_step "Running $NAME (DTI fit for anisotropic conductivity)..."
             step_start=$(date +%s)
 
@@ -1460,7 +1500,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     NAME="dwi2t1"
     if [ "$HAS_DWI" = true ] && [ "$DWI_FORMAT" != "hcp" ] && \
        compgen -G "$OUTPUT_DIR/qsiprep/sub-${SUBJECT}/dwi/"*space-ACPC_desc-preproc_dwi.nii.gz > /dev/null 2>&1; then
-        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
             log_step "Running $NAME (register DWI derivatives to T1 space)..."
             step_start=$(date +%s)
 
@@ -1492,7 +1532,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # connectome from the T1 tractogram + native T1 atlas.
     NAME="connectivity"
     if [ "$HAVE_TRACKS" = true ]; then
-        if [ ! -f "$LOG_DIR/${NAME}-matrices_log.txt" ]; then
+        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}-matrices_log.txt" ]; then
             log_step "Running $NAME matrices (tck2connectome)..."
             step_start=$(date +%s)
 
@@ -1535,7 +1575,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # PLACE ELECTRODES
     # ---------------------------------------------------------
     NAME="electrodes"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
@@ -1569,7 +1609,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         # Ensure 1 decimal point formatting
         spacing=$(printf "%.1f" "$s")
 
-        if [ ! -f "$LOG_DIR/${NAME}-${spacing}mm_log.txt" ]; then
+        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}-${spacing}mm_log.txt" ]; then
             # Re-run from clean: wipe any partial dipoles for THIS spacing (place_dipoles
             # writes per-surface dirs incrementally and won't redo completed surfaces).
             begin_step "$LOG_DIR/${NAME}-${spacing}mm_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/spacing${spacing}mm"
@@ -1591,7 +1631,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # MESH LABEL FIELD
     # ---------------------------------------------------------
     NAME="tetmesh"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
 
@@ -1647,7 +1687,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     NAME="anisotropy"
     CEREBRAL_DTI="$OUTPUT_DIR/dwitensor/sub-${SUBJECT}/sub-${SUBJECT}_space-T1_model-dti_tensor.nii.gz"
     if [ -f "$CEREBRAL_DTI" ]; then
-        if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
             log_step "Running $NAME (DTI -> WM conductivity tensors)..."
             step_start=$(date +%s)
 
@@ -1675,7 +1715,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # SOLVE FORWARD PROBLEM
     # ---------------------------------------------------------
     NAME="forwardsolvers"
-    if [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
         log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
         mkdir -p "$OUTPUT_DIR/leadfields/sub-${SUBJECT}"
@@ -1730,21 +1770,21 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         if [ "$VOLUME_TO_MESH" = "sim4life" ]; then ART_EYE_TISSUE="Eyes"; else ART_EYE_TISSUE="Eye (Aqueous Humor)"; fi
 
         # 1. subject<->MNI affine (mri image, antspyx). Full-head T1 in the surface/mesh frame.
-        if [ ! -f "$LOG_DIR/${NAME}-registration_log.txt" ]; then
+        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}-registration_log.txt" ]; then
             run_in_docker_MRI "$NAME-registration" "$LOG_DIR/${NAME}-registration_log.txt" \
                 "micromamba run -n neuro python /scripts/mni_registration.py --subject $SUBJECT --output_dir /derivatives --t1 /derivatives/raw/sub-${SUBJECT}/T1.nii.gz --template /derivatives/.templateflow/tpl-MNI152NLin2009cAsym/tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz --template-scalp /derivatives/.hartmut_cache/nyhead_scalp.stl --subject-scalp /derivatives/surfaces/sub-${SUBJECT}/charm_scalp.ply"
         fi
 
         # 2. artifact dipoles (forward_model image): eyes native + muscle warp. Writes
         #    artifactdipoles/sub-<S>/artifactsources.json (counts + neck-coverage flag).
-        if [ ! -f "$LOG_DIR/${NAME}-dipoles_log.txt" ]; then
+        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}-dipoles_log.txt" ]; then
             run_in_docker_FWD "$NAME-dipoles" "$LOG_DIR/${NAME}-dipoles_log.txt" "$IMG_FORWARD_MODEL" \
                 "cd /scripts && python place_artifact_dipoles.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
         fi
 
         # 3. artifact leadfields (solvers image). Eyes + muscle share ONE transfer matrix; muscle
         #    falls back to HArtMuT's canned leadfield when the warp under-hosted (no neck FOV).
-        if [ ! -f "$LOG_DIR/${NAME}-leadfields_log.txt" ]; then
+        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}-leadfields_log.txt" ]; then
             # Did enough muscle sources survive the warp to solve on the subject's own mesh?
             neck_ok=$(python3 -c "import json;print(json.load(open('$OUTPUT_DIR/artifactdipoles/sub-${SUBJECT}/artifactsources.json')).get('muscle',{}).get('neck_coverage',False))" 2>/dev/null || echo False)
 
