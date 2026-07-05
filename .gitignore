@@ -14,6 +14,9 @@ env/
 venv/
 .env
 
+# --- Pixi envs ---
+.pixi/
+
 # --- Distribution / Packaging ---
 dist/
 build/
