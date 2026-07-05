@@ -77,3 +77,7 @@ hippunfold_cache/
 # Only template_data/hartmut/{fetch_hartmut.py,README.md} are tracked; the cache is not.
 .hartmut_cache/
 template_data/hartmut/assets/
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+templateflow_cache/
