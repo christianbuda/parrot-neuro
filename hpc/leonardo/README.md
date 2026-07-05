@@ -10,8 +10,9 @@ holds the cluster glue.
 | `prepull_sifs.sh` | Pull the 8 images into `<work>/parrot_sif` as `.sif` (run on a login/data-mover node). Re-pulls only images that changed on the registry (`FORCE=1` to re-pull all). |
 | `build_sif_fallback.sh` + `build_sif.sbatch` | **Two-phase build** for when `prepull_sifs.sh` OOM-kills on the login node (multi-GB images). Phase A (login) *downloads* each image to a single archive via skopeo/crane — no extraction; Phase B (`lrd_all_serial` job) does the extract+squashfs into `.sif` with real memory. |
 | `build_sif_local.sh` | **Build the `.sif` on your workstation** (real RAM → never OOMs) and rsync them up. The deterministic alternative to the two-phase gamble; recommended for the cohort run. Needs local `apptainer` + `sudo` (see note below). |
-| `prewarm_hippunfold.sh` | **Pre-populate the HippUnfold cache** on your workstation and rsync it up. HippUnfold pulls atlases/templates from OSF at runtime, and **OSF is unreachable from LEONARDO compute nodes** — so the download must happen off-cluster. Version-matched (reads URLs from the image config). |
-| `check_leonardo.sh` | **Preflight** — run on a login node before `sbatch`; verifies runtime, `.sif` cache, **HippUnfold cache**, BIDS+license+subject, repo, work area, account. Exits non-zero on any failure. |
+| `prewarm_hippunfold.sh` | **Populate the HippUnfold cache in place.** HippUnfold pulls atlases/templates from OSF at runtime, and **OSF is unreachable from LEONARDO compute nodes** — but *login* nodes have egress, so run it there (`RUNTIME=apptainer SIF_DIR=…`) to write straight into `<output_dir>/.hippunfold_cache`. Version-matched (reads URLs from the image config). Runs under docker (workstation) or singularity (login node). |
+| `prewarm_templateflow.sh` | **Populate the TemplateFlow cache in place** at `<output_dir>/.templateflow`. QSIPrep/QSIRecon fetch templates from S3 at runtime, unreachable from compute nodes. BUILD mode fetches via the QSIPrep image (login node: `RUNTIME=apptainer SIF_DIR=…`); or `SRC=<a prior run's .templateflow>` to seed from an existing minimal cache. |
+| `check_leonardo.sh` | **Preflight** — run on a login node before `sbatch`; verifies runtime, `.sif` cache, **HippUnfold + TemplateFlow caches**, BIDS+license+subject, repo, work area, account. Exits non-zero on any failure. Pass **`--fix`** to prewarm any missing cache in place (runs the `prewarm_*.sh` via singularity). |
 | `pilot.sbatch` | One-subject end-to-end pilot on the Booster GPU partition, instrumented. |
 
 > **Staying connected.** `sbatch` jobs run on the scheduler regardless of your SSH session —
@@ -69,18 +70,21 @@ Whichever route you use, verify the result with `check_leonardo.sh` (it accepts 
    ```bash
    bash hpc/leonardo/prepull_sifs.sh /leonardo_work/<ACCT>/parrot_sif
    ```
-5. **Pre-warm the HippUnfold cache.** HippUnfold downloads its atlases/templates from **OSF**
-   (`files.ca-1.osf.io`) at runtime, and **OSF is unreachable from LEONARDO compute nodes**
-   (`Network is unreachable`; Zenodo works, OSF does not). So the download can never succeed
-   on-node — populate the cache on your workstation and rsync it into the run's
-   `HIPPUNFOLD_CACHE_DIR` (default `<output_dir>/.hippunfold_cache`):
+5. **Pre-warm the runtime-fetch caches (HippUnfold + TemplateFlow).** Both HippUnfold (OSF,
+   `files.ca-1.osf.io`) and QSIPrep/QSIRecon (TemplateFlow, S3) download assets at runtime, and
+   **both hosts are unreachable from LEONARDO compute nodes** (`Network is unreachable`). But
+   *login* nodes have egress, so populate the caches **in place** on a login node — no rsync:
    ```bash
-   # on your workstation (docker + internet):
-   bash hpc/leonardo/prewarm_hippunfold.sh ./hippunfold_cache
-   rsync -avP ./hippunfold_cache/ <USER>@login.leonardo.cineca.it:/leonardo_work/<ACCT>/parrot/bids/derivatives/.hippunfold_cache/
-   # (or one-shot: DEST=<USER>@login...:/.../.hippunfold_cache/ bash hpc/leonardo/prewarm_hippunfold.sh)
+   # on a LOGIN node (has egress + singularity + the .sif cache):
+   OUT=/leonardo_work/<ACCT>/parrot/bids/derivatives
+   SIF=/leonardo_work/<ACCT>/parrot/parrot_sif
+   RUNTIME=apptainer SIF_DIR=$SIF bash hpc/leonardo/prewarm_hippunfold.sh   "$OUT/.hippunfold_cache"
+   RUNTIME=apptainer SIF_DIR=$SIF bash hpc/leonardo/prewarm_templateflow.sh "$OUT/.templateflow"
    ```
-   The cache is shared across the whole cohort — do this once. `check_leonardo.sh` verifies it.
+   Or just let the preflight do it: **`bash hpc/leonardo/check_leonardo.sh --fix`** populates
+   whichever cache is missing. (No egress on the login node? Seed TemplateFlow from a prior local
+   run with `SRC=<…>/.templateflow`, or build on the workstation with `RUNTIME=docker` and copy up.)
+   The caches are shared across the whole cohort — do this once. `check_leonardo.sh` verifies both.
 
 ## Run the pilot
 

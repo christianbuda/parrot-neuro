@@ -1,43 +1,61 @@
 #!/bin/bash
 ###############################################################################
-# Pre-populate a HippUnfold model/template cache LOCALLY, to rsync up to the
-# cluster's persistent HIPPUNFOLD_CACHE_DIR (see the hippunfold step in
-# bin/run_reconstruction.sh, default <output_dir>/.hippunfold_cache).
+# Populate a HippUnfold model/template cache IN PLACE at the path the orchestrator
+# uses (HIPPUNFOLD_CACHE_DIR, default <output_dir>/.hippunfold_cache; see the
+# hippunfold step in bin/run_reconstruction.sh). No rsync: run it wherever the
+# cache should live (the LOGIN node writes straight onto the work filesystem).
 #
 # WHY: HippUnfold downloads its atlases/templates from OSF (files.ca-1.osf.io)
 # at runtime. LEONARDO's COMPUTE NODES cannot reach OSF ("Network is unreachable"
-# for 35.241.38.243) -- Zenodo works, OSF does not. So the download can never
-# succeed on the node; we fetch it here (OSF reachable) and ship the cache.
+# for 35.241.38.243); LOGIN nodes do have egress -- warm the cache there.
 #
-# Version-matched: the OSF/Zenodo URLs are read straight from the HippUnfold
-# image config (resource_urls), so this stays correct if the image is updated --
-# just make sure $HIPPUNFOLD_IMAGE is the SAME tag as the .sif on the cluster.
+# Version-matched: the OSF/Zenodo URLs are read straight from the HippUnfold image
+# config (resource_urls), so this stays correct if the image is updated -- just keep
+# $HIPPUNFOLD_IMAGE / the .sif tag the SAME as what runs on the cluster.
 #
-# Run on the WORKSTATION (needs docker + internet). Defaults match a T1w run
-# (atlas multihist7; templates upenn + CITI168; nnU-Net model T1w).
+# RUNTIME=apptainer uses the .sif in SIF_DIR (login node, no docker); RUNTIME=docker
+# uses the Hub/local image (workstation). Defaults match a T1w run (atlas multihist7;
+# templates upenn + CITI168; nnU-Net model T1w). Needs wget + unzip on PATH either way.
 #
-#   bash hpc/leonardo/prewarm_hippunfold.sh                 # -> ./hippunfold_cache
-#   bash hpc/leonardo/prewarm_hippunfold.sh /data/hu_cache  # custom dir
-#   MODELS="" bash hpc/leonardo/prewarm_hippunfold.sh       # skip the 2.3G model (Zenodo works on-node)
-#   DEST=user@login.leonardo.cineca.it:/leonardo_work/<ACCT>/parrot/bids/derivatives/.hippunfold_cache/ \
-#       bash hpc/leonardo/prewarm_hippunfold.sh             # build AND rsync up
+#   # on a LOGIN node (has egress + singularity + the .sif cache):
+#   RUNTIME=apptainer SIF_DIR=$WORKDIR/parrot/parrot_sif \
+#     bash hpc/leonardo/prewarm_hippunfold.sh $WORKDIR/parrot/bids/derivatives/.hippunfold_cache
+#   # on the workstation:
+#   bash hpc/leonardo/prewarm_hippunfold.sh ./hippunfold_cache
 ###############################################################################
 set -uo pipefail
 
-IMG="${HIPPUNFOLD_IMAGE:-khanlab/hippunfold:latest}"
-CACHE="${1:-$PWD/hippunfold_cache}"
+CACHE="${1:-$PWD/hippunfold_cache}"     # cache dir to populate (point at <output_dir>/.hippunfold_cache on the cluster)
+RUNTIME="${RUNTIME:-docker}"            # docker (workstation) | apptainer (login node, uses SIF_DIR)
+SIF_DIR="${SIF_DIR:-}"                  # .sif cache dir (apptainer only)
+IMG="${HIPPUNFOLD_IMAGE:-khanlab/hippunfold:latest}"   # docker image ref (docker runtime)
 ATLASES="${ATLASES:-multihist7}"        # space-separated
 TEMPLATES="${TEMPLATES:-upenn CITI168}" # upenn = nnU-Net T1w train space; CITI168 = default output template
 MODELS="${MODELS:-T1w}"                 # nnU-Net model(s); MODELS="" to skip (Zenodo is reachable on-node)
-DEST="${DEST:-}"                        # optional rsync target; empty = just print the command
 
-command -v docker >/dev/null || { echo "ERROR: docker not found (this runs on your workstation)."; exit 1; }
 command -v wget  >/dev/null || { echo "ERROR: wget not found."; exit 1; }
 command -v unzip >/dev/null || { echo "ERROR: unzip not found."; exit 1; }
 
+# Run a bash -c command inside the HippUnfold container under the selected runtime.
+run_in_hippunfold() {   # $1 = bash -c command string; stdout is the caller's
+  case "$RUNTIME" in
+    docker)
+      command -v docker >/dev/null || { echo "ERROR: RUNTIME=docker but docker not found." >&2; return 1; }
+      docker run --rm --entrypoint bash "$IMG" -c "$1" ;;
+    apptainer)
+      local app sif
+      app="$(command -v apptainer || command -v singularity || true)"
+      [ -n "$app" ] || { echo "ERROR: RUNTIME=apptainer but no apptainer/singularity on PATH." >&2; return 1; }
+      sif="$SIF_DIR/hippunfold_latest.sif"
+      [ -f "$sif" ] || { echo "ERROR: $sif not found (set SIF_DIR to your .sif cache)." >&2; return 1; }
+      "$app" exec "$sif" bash -c "$1" ;;
+    *) echo "ERROR: RUNTIME must be 'docker' or 'apptainer' (got '$RUNTIME')." >&2; return 1 ;;
+  esac
+}
+
 # Dump the version-matched URL map from the image: lines of "<kind>\t<name>\t<url>".
-echo "== reading resource_urls from $IMG =="
-MAP="$(docker run --rm --entrypoint bash "$IMG" -c '
+echo "== reading resource_urls from the HippUnfold image ($RUNTIME) =="
+MAP="$(run_in_hippunfold '
 D=$(python -c "import hippunfold,os;print(os.path.dirname(hippunfold.__file__))")
 python - "$D" <<PY
 import sys, yaml, os
@@ -49,7 +67,7 @@ for label, key in (("atlas","atlas"),("template","template"),("model","nnunet_mo
         u=v if str(v).startswith("http") else "https://"+str(v)
         print(f"{label}\t{k}\t{u}")
 PY')"
-[ -n "$MAP" ] || { echo "ERROR: could not read resource_urls from $IMG."; exit 1; }
+[ -n "$MAP" ] || { echo "ERROR: could not read resource_urls from the image."; exit 1; }
 
 url_for(){ awk -F'\t' -v k="$1" -v n="$2" '$1==k && $2==n {print $3}' <<<"$MAP"; }
 
@@ -91,17 +109,5 @@ done
 echo
 echo "cache at: $CACHE"
 du -sh "$CACHE" 2>/dev/null | awk '{print "  size: "$1}'
-if [ "${#missing[@]}" -gt 0 ]; then echo "MISSING (${#missing[@]}): ${missing[*]}"; fi
-
-# --- ship it to the cluster --------------------------------------------------
-# The destination is the cluster's HIPPUNFOLD_CACHE_DIR = <output_dir>/.hippunfold_cache
-# (or wherever you set HIPPUNFOLD_CACHE_HOST). Trailing slash on both sides = merge contents.
-if [ -n "$DEST" ]; then
-  echo "== rsync -> $DEST =="
-  rsync -avP "$CACHE"/ "$DEST"
-else
-  echo "To ship it up (dest = the cluster's <output_dir>/.hippunfold_cache):"
-  echo "  rsync -avP $CACHE/ <USER>@login.leonardo.cineca.it:/leonardo_work/<ACCT>/parrot/bids/derivatives/.hippunfold_cache/"
-fi
-
-[ "${#missing[@]}" -eq 0 ] || exit 1
+if [ "${#missing[@]}" -gt 0 ]; then echo "MISSING (${#missing[@]}): ${missing[*]}"; exit 1; fi
+echo "OK: atlas/template(/model) present."

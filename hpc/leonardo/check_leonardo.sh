@@ -14,9 +14,17 @@
 # four `# <<EDIT>>` values in pilot.sbatch:
 #   ACCT=<YOUR_ACCOUNT> SUBJECT=010002 bash hpc/leonardo/check_leonardo.sh
 #
+# Pass --fix to POPULATE a missing HippUnfold/TemplateFlow cache in place by running
+# the prewarm scripts (they run on the LOGIN node via singularity + the .sif cache).
+# Without --fix the preflight is read-only: it reports the gap and prints the command.
+#
 # Exits non-zero if any [FAIL] is printed.
 ###############################################################################
 set -uo pipefail   # NOT -e: we want every check to run and report, not abort early
+
+PREWARM=0
+for a in "$@"; do case "$a" in --fix) PREWARM=1 ;; esac; done
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # for locating the prewarm_*.sh siblings
 
 ACCT="${ACCT:-<YOUR_ACCOUNT>}"            # SLURM BILLING account (saldo -b); the -A / --account value
 # Storage area, INDEPENDENT of the billing account (you may bill one allocation but store on
@@ -30,6 +38,7 @@ SUBJECT="${SUBJECT:-010002}"
 SIF="${SIF:-$WORKDIR/parrot/parrot_sif}"
 OUTPUT_DIR="${OUTPUT_DIR:-$BIDS/derivatives}"       # matches pilot.sbatch's OUT
 HU_CACHE="${HU_CACHE:-$OUTPUT_DIR/.hippunfold_cache}" # matches the orchestrator's HIPPUNFOLD_CACHE_HOST default
+TF_CACHE="${TF_CACHE:-$OUTPUT_DIR/.templateflow}"     # matches the orchestrator's TEMPLATEFLOW_DIR
 
 # Keep this list in sync with prepull_sifs.sh / bin/images.sh.
 IMAGES=(
@@ -92,20 +101,49 @@ else
   ok "no dwi/ -> fast anat-only pilot (recon -> forward -> solvers -> QC)"
 fi
 
-echo "== HippUnfold cache: $HU_CACHE =="
-# OSF (files.ca-1.osf.io) is UNREACHABLE from LEONARDO compute nodes, so HippUnfold's
-# atlas/template downloads can't succeed on-node -- they must be prewarmed and rsync'd up
-# (prewarm_hippunfold.sh). Catch a missing/empty cache here, not at hour 3 of the run.
-if [ ! -d "$HU_CACHE" ]; then
-  warn "no HippUnfold cache at $HU_CACHE -- OSF is unreachable from compute nodes; prewarm + rsync it (prewarm_hippunfold.sh)"
-else
+# --- runtime-fetch caches (must be prewarmed; compute nodes have no egress) ---
+# HippUnfold (OSF) and TemplateFlow (S3) both download at runtime, and LEONARDO compute
+# nodes can't reach either. Catch an empty/incomplete cache HERE, not at hour 3. With
+# --fix, populate it in place via the prewarm_*.sh siblings (login node: singularity +
+# the .sif cache). Runtime for the fix = apptainer when present, else docker.
+FIX_RT="$([ -n "${APP:-}" ] && echo apptainer || echo docker)"
+
+check_hu() {   # returns 0 if the HippUnfold cache is complete, 1 otherwise
+  local miss=0 r
   for r in atlas/multihist7 template/upenn template/CITI168; do
     if [ -d "$HU_CACHE/$r" ] && [ -n "$(ls -A "$HU_CACHE/$r" 2>/dev/null)" ]; then ok "$r"
-    else bad "HippUnfold cache missing/empty: $r (prewarm_hippunfold.sh, then rsync up)"; fi
+    else printf '  [ -- ]  %s (missing)\n' "$r"; miss=1; fi
   done
   [ -n "$(ls -A "$HU_CACHE/model" 2>/dev/null)" ] && ok "model/ present" \
-    || warn "model/ empty -- Zenodo is reachable on-node so it will download once (fine, but ships better prewarmed)"
-fi
+    || warn "model/ empty (Zenodo reachable on-node -> self-heals; ships better prewarmed)"
+  return $miss
+}
+
+check_tf() {   # returns 0 if the TemplateFlow cache has the canary QSIPrep needs
+  local canary="tpl-MNI152NLin2009cAsym/tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz"
+  if [ -f "$TF_CACHE/$canary" ]; then ok "canary tpl-MNI152NLin2009cAsym_res-01_T1w"; return 0
+  else printf '  [ -- ]  TemplateFlow empty/incomplete (%s missing)\n' "$canary"; return 1; fi
+}
+
+run_cache_check() {   # $1=title $2=check-fn $3=prewarm-script $4=cache-dir $5=egress-hint
+  echo "== $1 =="
+  "$2" && return
+  if [ "$PREWARM" -eq 1 ]; then
+    warn "$1 incomplete -> running $3 (RUNTIME=$FIX_RT) ..."
+    if RUNTIME="$FIX_RT" SIF_DIR="$SIF" bash "$HERE/$3" "$4"; then
+      "$2" && ok "$1 populated" || bad "$1 still incomplete after prewarm"
+    else
+      bad "$3 failed (see output above)"
+    fi
+  else
+    bad "$1 not prewarmed -- $5. Fix: re-run with --fix on a login node, or 'bash $HERE/$3 $4'"
+  fi
+}
+
+run_cache_check "HippUnfold cache: $HU_CACHE" check_hu prewarm_hippunfold.sh "$HU_CACHE" \
+  "compute nodes can't reach OSF"
+run_cache_check "TemplateFlow cache: $TF_CACHE" check_tf prewarm_templateflow.sh "$TF_CACHE" \
+  "compute nodes can't reach templateflow S3"
 
 echo "== repo / orchestrator =="
 [ -x "$REPO/bin/run_reconstruction.sh" ] && ok "run_reconstruction.sh present + executable" \
@@ -130,5 +168,6 @@ if [ "$fail" -eq 0 ]; then
   echo "PREFLIGHT PASSED -- safe to: sbatch hpc/leonardo/pilot.sbatch"
 else
   echo "PREFLIGHT FAILED -- fix the [FAIL] items above before submitting."
+  echo "  (cache gaps: re-run with --fix on a login node to prewarm them in place.)"
   exit 1
 fi

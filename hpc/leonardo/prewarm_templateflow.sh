@@ -1,58 +1,78 @@
 #!/bin/bash
 ###############################################################################
-# Pre-populate a TemplateFlow cache LOCALLY, to rsync up to the cluster's
-# persistent cache (the orchestrator binds <output_dir>/.templateflow ->
-# /templateflow with TEMPLATEFLOW_HOME for QSIPrep/QSIRecon; see
-# bin/run_reconstruction.sh:1254-1255).
+# Populate a TemplateFlow cache IN PLACE at <output_dir>/.templateflow -- the
+# path the orchestrator binds to /templateflow (TEMPLATEFLOW_HOME) for QSIPrep/
+# QSIRecon (bin/run_reconstruction.sh:1254-1255). No rsync: run it wherever the
+# cache should live (the LOGIN node writes straight onto the work filesystem).
 #
 # WHY: QSIPrep/QSIRecon fetch standard templates from templateflow.s3.amazonaws.com
 # at runtime (e.g. tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz). LEONARDO's COMPUTE
-# NODES have no egress to S3 ("[Errno 101] Network is unreachable"), so the fetch
-# can never succeed on the node -- we ship a pre-warmed cache. (3rd such cache,
+# NODES have no S3 egress ("[Errno 101] Network is unreachable"), so the fetch dies
+# on the node. LOGIN nodes do have egress -- warm the cache there. (3rd such cache,
 # alongside HippUnfold/OSF and the MNI/artifact template.)
 #
 # TWO MODES:
-#  (default) COPY an existing local cache. A real local QSIPrep run leaves a
-#            minimal, exact cache at <its output_dir>/.templateflow -- TemplateFlow
-#            pulls only the files it touches, so this is precisely what the cluster
-#            needs (~17 MB). This is the robust path: ship what actually worked.
-#  (BUILD=1) FETCH a template superset via the QSIPrep image's bundled templateflow
-#            (for a machine with no prior local run). Larger (whole templates), but
-#            self-contained. Needs docker + internet.
+#  (default) BUILD -- fetch a template superset via the QSIPrep container's bundled
+#            templateflow. RUNTIME=apptainer uses the .sif in SIF_DIR (login node,
+#            no docker); RUNTIME=docker uses the Hub/local image (workstation).
+#  (SRC=...) COPY -- seed from an existing local cache (e.g. a prior workstation
+#            QSIPrep run's minimal ~17 MB set); no container/egress needed.
 #
-# Run on the WORKSTATION (needs internet; BUILD mode also needs docker).
-#
-#   # copy your existing cache and print the rsync command:
-#   bash hpc/leonardo/prewarm_templateflow.sh
-#   # copy a specific source cache:
-#   SRC=/path/to/derivatives/.templateflow bash hpc/leonardo/prewarm_templateflow.sh
-#   # copy AND ship up in one go:
-#   DEST=<USER>@data.leonardo.cineca.it:/leonardo_work/<ACCT>/parrot/bids/derivatives/.templateflow/ \
-#       bash hpc/leonardo/prewarm_templateflow.sh
-#   # no local cache -> build a fresh one from the image:
-#   BUILD=1 bash hpc/leonardo/prewarm_templateflow.sh
+#   # on a LOGIN node (has egress + singularity + the .sif cache):
+#   RUNTIME=apptainer SIF_DIR=$WORKDIR/parrot/parrot_sif \
+#     bash hpc/leonardo/prewarm_templateflow.sh $WORKDIR/parrot/bids/derivatives/.templateflow
+#   # on the workstation, seed from a prior local run:
+#   SRC=/srv/.../derivatives_e2e/.templateflow bash hpc/leonardo/prewarm_templateflow.sh ./tf_cache
 ###############################################################################
 set -uo pipefail
 
-CACHE="${1:-$PWD/templateflow_cache}"     # staging dir we assemble/ship
-SRC="${SRC:-}"                            # existing local .templateflow to copy (auto-detected if empty)
-BUILD="${BUILD:-}"                        # non-empty => fetch via the image instead of copying SRC
-IMG="${QSIPREP_IMAGE:-pennlinc/qsiprep:latest}"
-# Template superset for BUILD mode: QSIPrep outputs to MNI152NLin2009cAsym and skull-strips via
+CACHE="${1:-$PWD/templateflow_cache}"     # the cache dir to populate (point at <output_dir>/.templateflow on the cluster)
+SRC="${SRC:-}"                            # existing cache to COPY from; empty => BUILD via the container
+RUNTIME="${RUNTIME:-docker}"              # docker (workstation) | apptainer (login node, uses SIF_DIR)
+SIF_DIR="${SIF_DIR:-}"                    # .sif cache dir (apptainer only)
+IMG="${QSIPREP_IMAGE:-pennlinc/qsiprep:latest}"   # docker image ref (docker runtime)
+# Template superset for BUILD: QSIPrep outputs to MNI152NLin2009cAsym and skull-strips via
 # MNI152NLin6Asym/OASIS30ANTs; QSIRecon surface work uses fsLR/fsaverage. Override with TEMPLATES=.
 TEMPLATES="${TEMPLATES:-MNI152NLin2009cAsym MNI152NLin6Asym OASIS30ANTs fsLR fsaverage}"
-DEST="${DEST:-}"                          # optional rsync target; empty = just print the command
 
 # The one file the QSIPrep failure named -- used to sanity-check the cache is real.
 CANARY="tpl-MNI152NLin2009cAsym/tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz"
 
 mkdir -p "$CACHE"
 
-if [ -n "$BUILD" ]; then
-  # --- BUILD: fetch a template superset via the image's templateflow ----------
-  command -v docker >/dev/null || { echo "ERROR: BUILD mode needs docker (this runs on your workstation)."; exit 1; }
-  echo "== BUILD: fetching {$TEMPLATES} via $IMG =="
-  docker run --rm -e TEMPLATEFLOW_HOME=/tf -v "$CACHE:/tf" --entrypoint bash "$IMG" -c '
+# Run a bash -c command inside the QSIPrep container with the cache bound at /tf and
+# TEMPLATEFLOW_HOME=/tf, under whichever runtime is selected.
+run_in_qsiprep() {   # $1 = bash -c command string
+  case "$RUNTIME" in
+    docker)
+      command -v docker >/dev/null || { echo "ERROR: RUNTIME=docker but docker not found."; return 1; }
+      docker run --rm -e TEMPLATEFLOW_HOME=/tf -v "$CACHE:/tf" --entrypoint bash "$IMG" -c "$1" ;;
+    apptainer)
+      local app sif
+      app="$(command -v apptainer || command -v singularity || true)"
+      [ -n "$app" ] || { echo "ERROR: RUNTIME=apptainer but no apptainer/singularity on PATH."; return 1; }
+      sif="$SIF_DIR/qsiprep_latest.sif"
+      [ -f "$sif" ] || { echo "ERROR: $sif not found (set SIF_DIR to your .sif cache)."; return 1; }
+      "$app" exec --env TEMPLATEFLOW_HOME=/tf --bind "$CACHE:/tf" "$sif" bash -c "$1" ;;
+    *) echo "ERROR: RUNTIME must be 'docker' or 'apptainer' (got '$RUNTIME')."; return 1 ;;
+  esac
+}
+
+if [ -n "$SRC" ]; then
+  # --- COPY: seed from an existing local cache (no container / no egress) ------
+  if [ ! -d "$SRC" ] || [ -z "$(ls -A "$SRC" 2>/dev/null)" ]; then
+    echo "ERROR: SRC is not a populated cache: $SRC"; exit 1
+  fi
+  echo "== copy $SRC -> $CACHE =="
+  cp -R "$SRC"/. "$CACHE"/       # merge contents into CACHE (no -a: NFS rejects perm-preserve)
+else
+  # --- BUILD: fetch a template superset via the container's templateflow -------
+  echo "== BUILD ($RUNTIME): fetching {$TEMPLATES} into $CACHE =="
+  # Pixi image: python lives in the qsiprep env; a bare exec shell may not have it on
+  # PATH (activation normally happens in the entrypoint we bypass). Prepend the env bin
+  # (path taken from the QSIPrep traceback) so this works under docker exec / singularity exec.
+  run_in_qsiprep '
+    export PATH=/app/.pixi/envs/qsiprep/bin:$PATH
     python - '"$TEMPLATES"' <<PY
 import sys, templateflow.api as tf
 for t in sys.argv[1:]:
@@ -60,28 +80,6 @@ for t in sys.argv[1:]:
     tf.get(t)   # whole template (over-fetches vs a real run, but self-contained)
 print("done")
 PY' || { echo "ERROR: BUILD fetch failed."; exit 1; }
-else
-  # --- COPY: ship an existing local cache -------------------------------------
-  if [ -z "$SRC" ]; then
-    echo "== auto-detecting a populated local .templateflow =="
-    # Pick the largest non-empty candidate from known local derivative trees.
-    best=""; best_n=0
-    while IFS= read -r d; do
-      [ -d "$d" ] || continue
-      n=$(find "$d" -type f 2>/dev/null | wc -l)
-      [ "$n" -gt "$best_n" ] && { best="$d"; best_n="$n"; }
-    done < <(find /srv/nfs-data/sisko/christian -maxdepth 4 -type d -name .templateflow 2>/dev/null)
-    SRC="$best"
-    [ -n "$SRC" ] && echo "  found: $SRC  ($best_n files)"
-  fi
-  if [ -z "$SRC" ] || [ ! -d "$SRC" ] || [ -z "$(ls -A "$SRC" 2>/dev/null)" ]; then
-    echo "ERROR: no populated local .templateflow found."
-    echo "       Point SRC at one from a prior local QSIPrep run (e.g. <output_dir>/.templateflow),"
-    echo "       or re-run with BUILD=1 to fetch a fresh superset from the image."
-    exit 1
-  fi
-  echo "== copy $SRC -> $CACHE =="
-  rsync -a "$SRC"/ "$CACHE"/     # trailing slashes = merge contents (avoids nesting)
 fi
 
 # --- sanity check ------------------------------------------------------------
@@ -93,14 +91,5 @@ if [ -f "$CACHE/$CANARY" ]; then
   echo "  OK:    canary present ($CANARY)"
 else
   echo "  WARN:  canary MISSING ($CANARY) -- QSIPrep will still fail. Check SRC / BUILD templates."
-fi
-
-# --- ship it to the cluster --------------------------------------------------
-# Destination = the cluster's <output_dir>/.templateflow. Trailing slash both sides = merge.
-if [ -n "$DEST" ]; then
-  echo "== rsync -> $DEST =="
-  rsync -avP "$CACHE"/ "$DEST"
-else
-  echo "To ship it up (dest = the cluster's <output_dir>/.templateflow):"
-  echo "  rsync -avP $CACHE/ <USER>@data.leonardo.cineca.it:/leonardo_work/<ACCT>/parrot/bids/derivatives/.templateflow/"
+  exit 1
 fi
