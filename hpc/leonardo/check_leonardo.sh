@@ -48,6 +48,13 @@ OUTPUT_DIR="${OUTPUT_DIR:-$BIDS/derivatives}"       # matches pilot.sbatch's OUT
 HU_CACHE="${HU_CACHE:-$OUTPUT_DIR/.hippunfold_cache}" # matches the orchestrator's HIPPUNFOLD_CACHE_HOST default
 TF_CACHE="${TF_CACHE:-$OUTPUT_DIR/.templateflow}"     # matches the orchestrator's TEMPLATEFLOW_DIR
 
+# Echo the resolved paths: these MUST match what the job (pilot.sbatch / run_reconstruction.sh)
+# uses. A silent config/env divergence here is exactly how a preflight passes while the job then
+# fails on an "empty" cache -- so surface it up front, not buried in the checks.
+echo "== resolved paths (must match the job's) =="
+printf '  %-11s %s\n' WORKDIR "$WORKDIR" BIDS "$BIDS" OUTPUT_DIR "$OUTPUT_DIR" \
+       TF_CACHE "$TF_CACHE" HU_CACHE "$HU_CACHE" SIF "$SIF" SUBJECT "$SUBJECT"
+
 # Keep this list in sync with prepull_sifs.sh / bin/images.sh.
 IMAGES=(
   christianbuda/parrot_mri_reconstruction:latest
@@ -127,10 +134,21 @@ check_hu() {   # returns 0 if the HippUnfold cache is complete, 1 otherwise
   return $miss
 }
 
-check_tf() {   # returns 0 if the TemplateFlow cache has the canary QSIPrep needs
-  local canary="tpl-MNI152NLin2009cAsym/tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz"
-  if [ -f "$TF_CACHE/$canary" ]; then ok "canary tpl-MNI152NLin2009cAsym_res-01_T1w"; return 0
-  else printf '  [ -- ]  TemplateFlow empty/incomplete (%s missing)\n' "$canary"; return 1; fi
+check_tf() {   # 0 if the TemplateFlow cache looks like a real prewarm QSIPrep can use offline
+  local base="$TF_CACHE/tpl-MNI152NLin2009cAsym" miss=0 n
+  local canary="$base/tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz"
+  if [ -f "$canary" ]; then ok "canary tpl-MNI152NLin2009cAsym_res-01_T1w"
+  else printf '  [ -- ]  canary missing (%s)\n' "${canary#"$TF_CACHE"/}"; miss=1; fi
+  # A lone canary is NOT enough: the pipeline's artifact-setup curls exactly that one file,
+  # so it can be present while the real prewarm never ran. QSIPrep pulls MANY 2009cAsym files
+  # (res-02, brain masks, tissue probsegs) -> require a full-looking template, not 1 file.
+  n=$(find "$base" -type f 2>/dev/null | wc -l)
+  if [ "$n" -ge 6 ]; then ok "tpl-MNI152NLin2009cAsym populated ($n files)"
+  else printf '  [ -- ]  tpl-MNI152NLin2009cAsym sparse (%s file(s); a full tf.get gives many -> prewarm not run?)\n' "$n"; miss=1; fi
+  # Skull-strip space QSIPrep also resolves; the prewarm fetches it, a curl does not.
+  if [ -n "$(ls -A "$TF_CACHE/tpl-MNI152NLin6Asym" 2>/dev/null)" ]; then ok "tpl-MNI152NLin6Asym present"
+  else printf '  [ -- ]  tpl-MNI152NLin6Asym missing (skull-strip space)\n'; miss=1; fi
+  return $miss
 }
 
 run_cache_check() {   # $1=title $2=check-fn $3=prewarm-script $4=cache-dir $5=egress-hint

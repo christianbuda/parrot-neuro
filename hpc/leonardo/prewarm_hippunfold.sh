@@ -13,13 +13,16 @@
 # config (resource_urls), so this stays correct if the image is updated -- just keep
 # $HIPPUNFOLD_IMAGE / the .sif tag the SAME as what runs on the cluster.
 #
-# RUNTIME=apptainer uses the .sif in SIF_DIR (login node, no docker); RUNTIME=docker
-# uses the Hub/local image (workstation). Defaults match a T1w run (atlas multihist7;
-# templates upenn + CITI168; nnU-Net model T1w). Needs wget + unzip on PATH either way.
+# The runtime is AUTO-DETECTED: docker on the workstation, else apptainer/singularity
+# (using the .sif in SIF_DIR) on a login node. Force one with RUNTIME=docker|apptainer.
+# Defaults match a T1w run (atlas multihist7; templates upenn + CITI168; nnU-Net model
+# T1w). Needs wget + unzip on PATH either way.
 #
-#   # on a LOGIN node (has egress + singularity + the .sif cache):
-#   RUNTIME=apptainer SIF_DIR=$WORKDIR/parrot/parrot_sif \
-#     bash hpc/leonardo/prewarm_hippunfold.sh $WORKDIR/parrot/bids/derivatives/.hippunfold_cache
+# Paths default from hpc/leonardo/config.local.sh (CACHE <- $OUTPUT_DIR/.hippunfold_cache,
+# SIF_DIR <- $SIF), so on a correctly-configured LOGIN node just run it with no args:
+#
+#   # on a LOGIN node (auto-detects apptainer; paths from config.local.sh):
+#   bash hpc/leonardo/prewarm_hippunfold.sh
 #   # on the workstation:
 #   bash hpc/leonardo/prewarm_hippunfold.sh ./hippunfold_cache
 ###############################################################################
@@ -32,7 +35,7 @@ for _c in "${PARROT_CONFIG:-}" "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev
 done
 
 CACHE="${1:-${OUTPUT_DIR:+$OUTPUT_DIR/.hippunfold_cache}}"; CACHE="${CACHE:-$PWD/hippunfold_cache}"  # populate <output_dir>/.hippunfold_cache by default when configured
-RUNTIME="${RUNTIME:-docker}"            # docker (workstation) | apptainer (login node, uses SIF_DIR)
+RUNTIME="${RUNTIME:-auto}"              # auto-detect | docker (workstation) | apptainer (login node, uses SIF_DIR)
 SIF_DIR="${SIF_DIR:-${SIF:-}}"          # .sif cache dir (apptainer only); falls back to $SIF from config
 IMG="${HIPPUNFOLD_IMAGE:-khanlab/hippunfold:latest}"   # docker image ref (docker runtime)
 ATLASES="${ATLASES:-multihist7}"        # space-separated
@@ -41,6 +44,20 @@ MODELS="${MODELS:-T1w}"                 # nnU-Net model(s); MODELS="" to skip (Z
 
 command -v wget  >/dev/null || { echo "ERROR: wget not found."; exit 1; }
 command -v unzip >/dev/null || { echo "ERROR: unzip not found."; exit 1; }
+
+# Resolve RUNTIME=auto to a concrete runtime: prefer docker (workstation, image is
+# source of truth), else apptainer/singularity (login node). RUNTIME=docker|apptainer
+# is honored unchanged.
+if [ "$RUNTIME" = auto ]; then
+  if command -v docker >/dev/null 2>&1; then
+    RUNTIME=docker
+  elif command -v apptainer >/dev/null 2>&1 || command -v singularity >/dev/null 2>&1; then
+    RUNTIME=apptainer
+  else
+    echo "ERROR: no container runtime found (need docker, or apptainer/singularity)."; exit 1
+  fi
+  echo "== runtime: auto-detected '$RUNTIME' =="
+fi
 
 # Run a bash -c command inside the HippUnfold container under the selected runtime.
 run_in_hippunfold() {   # $1 = bash -c command string; stdout is the caller's

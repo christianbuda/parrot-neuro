@@ -13,14 +13,17 @@
 #
 # TWO MODES:
 #  (default) BUILD -- fetch a template superset via the QSIPrep container's bundled
-#            templateflow. RUNTIME=apptainer uses the .sif in SIF_DIR (login node,
-#            no docker); RUNTIME=docker uses the Hub/local image (workstation).
+#            templateflow. The runtime is AUTO-DETECTED: docker on the workstation,
+#            else apptainer/singularity (using the .sif in SIF_DIR) on a login node.
+#            Force one with RUNTIME=docker|apptainer.
 #  (SRC=...) COPY -- seed from an existing local cache (e.g. a prior workstation
 #            QSIPrep run's minimal ~17 MB set); no container/egress needed.
 #
-#   # on a LOGIN node (has egress + singularity + the .sif cache):
-#   RUNTIME=apptainer SIF_DIR=$WORKDIR/parrot/parrot_sif \
-#     bash hpc/leonardo/prewarm_templateflow.sh $WORKDIR/parrot/bids/derivatives/.templateflow
+# Paths default from hpc/leonardo/config.local.sh (CACHE <- $OUTPUT_DIR/.templateflow,
+# SIF_DIR <- $SIF), so on a correctly-configured LOGIN node just run it with no args:
+#
+#   # on a LOGIN node (auto-detects apptainer; paths from config.local.sh):
+#   bash hpc/leonardo/prewarm_templateflow.sh
 #   # on the workstation, seed from a prior local run:
 #   SRC=/srv/.../derivatives_e2e/.templateflow bash hpc/leonardo/prewarm_templateflow.sh ./tf_cache
 ###############################################################################
@@ -34,7 +37,7 @@ done
 
 CACHE="${1:-${OUTPUT_DIR:+$OUTPUT_DIR/.templateflow}}"; CACHE="${CACHE:-$PWD/templateflow_cache}"  # populate <output_dir>/.templateflow by default when configured
 SRC="${SRC:-}"                            # existing cache to COPY from; empty => BUILD via the container
-RUNTIME="${RUNTIME:-docker}"              # docker (workstation) | apptainer (login node, uses SIF_DIR)
+RUNTIME="${RUNTIME:-auto}"                # auto-detect | docker (workstation) | apptainer (login node, uses SIF_DIR)
 SIF_DIR="${SIF_DIR:-${SIF:-}}"            # .sif cache dir (apptainer only); falls back to $SIF from config
 IMG="${QSIPREP_IMAGE:-pennlinc/qsiprep:latest}"   # docker image ref (docker runtime)
 # Template superset for BUILD: QSIPrep outputs to MNI152NLin2009cAsym and skull-strips via
@@ -45,6 +48,20 @@ TEMPLATES="${TEMPLATES:-MNI152NLin2009cAsym MNI152NLin6Asym OASIS30ANTs fsLR fsa
 CANARY="tpl-MNI152NLin2009cAsym/tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz"
 
 mkdir -p "$CACHE"
+
+# Resolve RUNTIME=auto to a concrete runtime for BUILD (COPY/SRC needs no container):
+# prefer docker (workstation, image is source of truth), else apptainer/singularity
+# (login node). An explicit RUNTIME=docker|apptainer is honored unchanged.
+if [ -z "$SRC" ] && [ "$RUNTIME" = auto ]; then
+  if command -v docker >/dev/null 2>&1; then
+    RUNTIME=docker
+  elif command -v apptainer >/dev/null 2>&1 || command -v singularity >/dev/null 2>&1; then
+    RUNTIME=apptainer
+  else
+    echo "ERROR: no container runtime found for BUILD (need docker, or apptainer/singularity)."; exit 1
+  fi
+  echo "== runtime: auto-detected '$RUNTIME' =="
+fi
 
 # Run a bash -c command inside the QSIPrep container with the cache bound at /tf and
 # TEMPLATEFLOW_HOME=/tf, under whichever runtime is selected.
