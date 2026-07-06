@@ -81,37 +81,50 @@ def stage_subject(sub: str) -> None:
     )
     print("  T1w (raw UNI) + INV1/INV2 copied")
 
-    # --- T2w -------------------------------------------------------------------
-    copy_with_json(
-        src / "anat" / f"{prefix}_T2w.nii.gz",
-        out / "anat" / f"{sub}_T2w.nii.gz",
-    )
-    print("  T2w copied")
+    # --- T2w (OPTIONAL) --------------------------------------------------------
+    # A few LEMON subjects have no T2 (e.g. sub-010012, sub-010052). T2 is optional
+    # for Parrot (auto-discovered; used for pial refinement / charm), so skip it when
+    # absent -- charm/pial then run T1-only.
+    t2_src = src / "anat" / f"{prefix}_T2w.nii.gz"
+    if t2_src.exists():
+        copy_with_json(t2_src, out / "anat" / f"{sub}_T2w.nii.gz")
+        print("  T2w copied")
+    else:
+        print("  T2w ABSENT -> skipped (charm/pial run T1-only)")
 
-    # --- DWI (nii + sidecars) --------------------------------------------------
-    (out / "dwi").mkdir(parents=True, exist_ok=True)
-    copy_with_json(
-        src / "dwi" / f"{prefix}_dwi.nii.gz",
-        out / "dwi" / f"{sub}_dwi.nii.gz",
-    )
-    for ext in (".bval", ".bvec"):
-        shutil.copyfile(src / "dwi" / f"{prefix}_dwi{ext}", out / "dwi" / f"{sub}_dwi{ext}")
-    print("  DWI + bval/bvec copied")
+    # --- DWI + fieldmaps (OPTIONAL) --------------------------------------------
+    # DWI drives the connectivity/anisotropy branch; when absent those stages fall
+    # back to the group template (QSIPrep/QSIRecon just skip). The SEfmapDWI AP/PA
+    # pair is optional even when DWI is present (e.g. sub-010083 has DWI but no
+    # fieldmap) -- without it QSIPrep runs without PEPOLAR SDC.
+    dwi_src = src / "dwi" / f"{prefix}_dwi.nii.gz"
+    if dwi_src.exists():
+        (out / "dwi").mkdir(parents=True, exist_ok=True)
+        copy_with_json(dwi_src, out / "dwi" / f"{sub}_dwi.nii.gz")
+        for ext in (".bval", ".bvec"):
+            shutil.copyfile(src / "dwi" / f"{prefix}_dwi{ext}", out / "dwi" / f"{sub}_dwi{ext}")
+        print("  DWI + bval/bvec copied")
 
-    # --- DWI fieldmaps: fix IntendedFor to the flattened DWI -------------------
-    intended = f"dwi/{sub}_dwi.nii.gz"  # BIDS: path relative to the subject folder
+        intended = f"dwi/{sub}_dwi.nii.gz"  # BIDS: path relative to the subject folder
 
-    def fix_intended(meta: dict) -> dict:
-        meta["IntendedFor"] = intended
-        return meta
+        def fix_intended(meta: dict) -> dict:
+            meta["IntendedFor"] = intended
+            return meta
 
-    for pe in ("AP", "PA"):
-        copy_with_json(
-            src / "fmap" / f"{prefix}_acq-SEfmapDWI_dir-{pe}_epi.nii.gz",
-            out / "fmap" / f"{sub}_acq-SEfmapDWI_dir-{pe}_epi.nii.gz",
-            json_edit=fix_intended,
-        )
-    print(f"  fmap AP/PA copied (IntendedFor -> {intended})")
+        ap = src / "fmap" / f"{prefix}_acq-SEfmapDWI_dir-AP_epi.nii.gz"
+        pa = src / "fmap" / f"{prefix}_acq-SEfmapDWI_dir-PA_epi.nii.gz"
+        if ap.exists() and pa.exists():
+            for pe in ("AP", "PA"):
+                copy_with_json(
+                    src / "fmap" / f"{prefix}_acq-SEfmapDWI_dir-{pe}_epi.nii.gz",
+                    out / "fmap" / f"{sub}_acq-SEfmapDWI_dir-{pe}_epi.nii.gz",
+                    json_edit=fix_intended,
+                )
+            print(f"  fmap AP/PA copied (IntendedFor -> {intended})")
+        else:
+            print("  DWI fieldmaps ABSENT -> QSIPrep runs without PEPOLAR SDC")
+    else:
+        print("  DWI ABSENT -> skipped (template connectivity fallback)")
 
 
 def main() -> None:
