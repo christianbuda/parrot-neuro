@@ -566,6 +566,9 @@ if [ ! -f "$ART_SETUP_LOG" ]; then
     if [ ! -f "$HARTMUT_CACHE/MANIFEST.json" ]; then
         mkdir -p "$HARTMUT_CACHE"
         CE_HOME=1; CE_EXEC=python3
+        # The per-subject $PARROT_HOME_HOST isn't set yet (we're pre-loop); give the rootless
+        # fetch its own writable scratch HOME so container_exec's -v/--home mount is well-formed.
+        PARROT_HOME_HOST="$WORK_DIR/home_prewarm"; mkdir -p "$PARROT_HOME_HOST"
         CE_BINDS=( "$OUTPUT_DIR:/derivatives" "$PARROT_SCRIPT_DIR/template_data/hartmut:/hartmut_src:ro" )
         container_exec "$IMG_FORWARD_MODEL" /hartmut_src/fetch_hartmut.py --dest /derivatives/.hartmut_cache \
             > "${ART_SETUP_LOG}.partial" 2>&1 || art_ok=0

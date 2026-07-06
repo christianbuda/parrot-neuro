@@ -51,6 +51,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy python scripts and binaries
 COPY --from=builder /app/build/mesher /usr/local/bin/mesher
-COPY place_electrodes.py place_dipoles.py nifti_to_inr.py mesh_postprocessing.py ./
+COPY place_electrodes.py place_dipoles.py nifti_to_inr.py mesh_postprocessing.py \
+     place_artifact_dipoles.py hartmut_warp.py ./
 
 CMD ["/bin/bash"]

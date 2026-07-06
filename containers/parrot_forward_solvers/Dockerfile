@@ -61,7 +61,8 @@ ENV PYTHONPATH="/duneci/modules/build-release/duneuro-py/src:${PYTHONPATH}"
 
 RUN mkdir /scripts
 COPY make_leadfield_openmeeg.py make_leadfield_duneuro.py \
-     dti_to_conductivity_tensors.py mesh_io.py /scripts/
+     dti_to_conductivity_tensors.py mesh_io.py \
+     make_leadfield_artifacts.py make_leadfield_hartmut_muscle.py /scripts/
 
 WORKDIR /pipeline
 
