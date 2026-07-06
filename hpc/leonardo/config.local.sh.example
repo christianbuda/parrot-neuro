@@ -23,3 +23,17 @@ SUBJECT="${SUBJECT:-010002}"                          # default subject for the 
 BIDS="${BIDS:-$WORKDIR/parrot/bids}"                  # staged BIDS dataset on the cluster
 OUTPUT_DIR="${OUTPUT_DIR:-$BIDS/derivatives}"         # derivatives (also where the prewarmed caches live)
 SIF="${SIF:-$WORKDIR/parrot/parrot_sif}"              # .sif cache; prewarm_*.sh read this too (as SIF_DIR)
+
+# --- cohort array (submit_cohort.sh) -- only override if the defaults are wrong -----
+# The A1/A2/B/C/D chunk map + walltimes live IN submit_cohort.sh; these are just the
+# knobs most likely to need site-specific tweaking.
+# PARTICIPANTS="$BIDS/participants.tsv"               # array is generated from this
+# SUBJ_FILE="$WORKDIR/parrot/cohort_subjects.txt"     # generated: array index -> subject label
+# Partition / QoS names. dcgp (CPU, 112c, 512-node concurrency) is UNTESTED for this
+# account -- if `sinfo` shows different names, set them here.
+# BOOST_PART="boost_usr_prod" ; BOOST_QOS="normal"
+# DCGP_PART="dcgp_usr_prod"   ; DCGP_QOS="normal"
+# ARRAY_THROTTLE="%40"                                # cap concurrent array elements ("" = no cap)
+# MAX_SUBMIT="1000"                                   # QOS submit cap (pending+running tasks/user);
+#                                                     #   guards `run` from tripping it. Phase the DAG
+#                                                     #   (run --chunks ...) when 5*N_subjects exceeds it.
