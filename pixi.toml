@@ -1,0 +1,49 @@
+[workspace]
+authors = ["Christian Buda <chrichri975@gmail.com>"]
+channels = ["conda-forge"]
+name = "parrot-neuro"
+# linux-64 is your workstation + LEONARDO. osx-arm64 (Apple Silicon) is added on
+# request but UNTESTED (no device) — it gets CPU-only JAX (no CUDA on macOS).
+# (linux-aarch64 was tried but dropped: conda-forge lacks a marimo build there.)
+platforms = ["linux-64", "osx-arm64"]
+version = "0.1.0"
+
+# This environment is for LOCAL DEVELOPMENT / PROTOTYPING only (the marimo
+# notebooks under development/, the future src/parrot_neuro API). It does NOT
+# replace the four Docker containers that run the actual Parrot pipeline —
+# those stay as-is with their own CGAL/DUNEuro/FastSurfer images.
+
+[tasks]
+# `pixi run <name>` — reproducible, discoverable entry points.
+nb = "marimo edit development/tvb-optim_EEG/eeg.py"
+
+[dependencies]
+# Pinned interpreter: without this, pixi resolves the newest Python (3.14),
+# which has no wheels yet for jax/mne. 3.12 matches the Docker containers.
+python = "3.12.*"
+
+# Scientific base from conda-forge: these build cleanly here and pixi uses them
+# to satisfy the PyPI packages below (so jax doesn't pull a second numpy).
+numpy = "*"
+scipy = "*"
+matplotlib = "*"
+mne = "*"
+marimo = ">=0.23.13,<0.24"
+
+[pypi-dependencies]
+# Cross-platform pure-Python / wheel deps. tvboptim is built on JAX, so it
+# rides on whatever jax build each platform resolves (below).
+optax = "*"
+equinox = "*"
+tvboptim = "*"      # your TVB-optim library (PyPI, currently 0.3.1)
+
+# --- JAX: GPU on linux-64, CPU everywhere else -------------------------------
+# The `cuda12` extra pulls the CUDA 12 *runtime* libraries as pip packages;
+# they run against your system driver (12.8 is fine — a newer driver always
+# supports an equal-or-older CUDA 12.x runtime). There is no "cuda12.8" extra:
+# the extra is keyed to the CUDA *major* version only.
+[target.linux-64.pypi-dependencies]
+jax = { version = "*", extras = ["cuda12"] }
+
+[target.osx-arm64.pypi-dependencies]
+jax = "*"           # CPU build (no CUDA on macOS)
