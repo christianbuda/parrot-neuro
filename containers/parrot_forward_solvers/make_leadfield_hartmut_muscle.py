@@ -7,7 +7,7 @@ precomputed NYhead muscle leadfield and interpolate its 231-channel electrode di
 subject's montage.
 
 Interpolation is done in the **template (MNI) frame**: the subject electrodes are mapped into MNI
-space via the subject->MNI affine (registration/sub-<S>/subject_to_mni_affine.npy), and each
+space via the subject->MNI affine (artifacts/registration/sub-<S>/subject_to_mni_affine.npy), and each
 subject electrode's leadfield row is an inverse-distance-weighted blend of its k nearest HArtMuT
 electrodes. This is montage-agnostic (no reliance on electrode naming) and position-aware.
 
@@ -79,7 +79,7 @@ def main():
     subj_lab, subj_pos = read_subject_electrodes(
         os.path.join(args.output_dir, f"electrodes/sub-{args.subject}/landmarks_10-5-full.csv"))
     A_s2m = np.load(os.path.join(args.output_dir,
-                                 f"registration/sub-{args.subject}/subject_to_mni_affine.npy"))
+                                 f"artifacts/registration/sub-{args.subject}/subject_to_mni_affine.npy"))
     subj_in_mni = apply_affine(A_s2m, subj_pos)  # map subject electrodes into HArtMuT's frame
 
     # Inverse-distance-weighted blend of the k nearest HArtMuT electrodes for each subject channel.

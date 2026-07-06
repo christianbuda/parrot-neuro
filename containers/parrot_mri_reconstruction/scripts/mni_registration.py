@@ -20,7 +20,7 @@ Design notes
   applied to the NYhead scalp, best overlaps the subject's real `charm_scalp.ply` — which also
   doubles as an on-the-spot sanity check (a bad registration shows up as large overlap error).
 
-Outputs (registration/sub-<S>/):
+Outputs (artifacts/registration/sub-<S>/):
   mni_to_subject_affine.npy   (4,4) MNI-world -> subject-T1-world (mm, RAS homogeneous)
   subject_to_mni_affine.npy   (4,4) inverse
   ants_affine.mat             raw ANTs affine transform (for the record / fallback interp)
@@ -80,7 +80,7 @@ def main():
                     help="subject charm_scalp.ply (subject frame), the overlap target")
     args = ap.parse_args()
 
-    out_dir = add_output_dir(args.output_dir, f"registration/sub-{args.subject}")
+    out_dir = add_output_dir(args.output_dir, f"artifacts/registration/sub-{args.subject}")
     os.makedirs(out_dir, exist_ok=True)
 
     fixed = ants.image_read(args.t1)          # subject frame

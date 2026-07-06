@@ -188,17 +188,18 @@ Here is detailed what each reconstructed folder contains. For convenience, only 
 │   └── sub-subject/
 │       ├── conductivity_tensors.npy: (M,3,3) per-WM-tetrahedron anisotropic conductivity tensors (shape-preserving orthotropic; geometric mean = isotropic WM sigma). M = number of WM tetrahedra.
 │       └── wm_element_indices.npy: (M,) indices of those WM tetrahedra in the CGAL mesh, mapping each tensor to its element (feeds the duneuro hybrid-label config).
-├── registration/: Subject<->MNI (MNI152NLin2009cAsym) affine for EEG-artifact source warping. Present only when the artifacts stage ran.
-│   └── sub-subject/
-│       ├── mni_to_subject_affine.npy: (4,4) RAS-world affine mapping MNI template coords into the subject T1/mesh frame (brings HArtMuT template geometry into subject space for the ray-cast warp).
-│       ├── subject_to_mni_affine.npy: (4,4) inverse (subject->MNI; maps the subject montage into template space for the fallback electrode interpolation).
-│       ├── ants_affine.mat: raw ANTs (antspyx) affine transform.
-│       └── registration_qc.json: selected transform direction + subject->NYhead scalp overlap (mm) self-check.
-├── artifactdipoles/: Extra-brain EEG artifact source dipoles (physiological noise); a small fixed set, spacing-independent. Present only when the artifacts stage ran.
-│   └── sub-subject/
-│       ├── eyes/: eye dipoles sampled natively inside surfaces/charm_eyes_balls.ply (dipole_positions/volume/preferential_direction/labels/orient_type.npy; preferential_direction stores the per-eye corneo-retinal axis for the future EOG generator, metadata only).
-│       ├── muscle/: face/neck muscle dipoles = HArtMuT NYhead template positions warped into the subject (affine + ray-cast layer-normalized projection); same dipole-contract files.
-│       └── artifactsources.json: {eyes:{n_dipoles}, muscle:{n_kept,n_dropped,n_total,kept_fraction,neck_coverage}}. neck_coverage=false (too few muscle sources survived the warp, e.g. no neck FOV) triggers the canned-leadfield muscle fallback.
+├── artifacts/: EEG-artifact (extra-brain physiological noise) stage outputs. Present only when the artifacts stage ran. (The artifact leadfields live under leadfields/, alongside the brain leadfields, since they are stackable siblings.)
+│   ├── registration/: Subject<->MNI (MNI152NLin2009cAsym) affine for artifact source warping.
+│   │   └── sub-subject/
+│   │       ├── mni_to_subject_affine.npy: (4,4) RAS-world affine mapping MNI template coords into the subject T1/mesh frame (brings HArtMuT template geometry into subject space for the ray-cast warp).
+│   │       ├── subject_to_mni_affine.npy: (4,4) inverse (subject->MNI; maps the subject montage into template space for the fallback electrode interpolation).
+│   │       ├── ants_affine.mat: raw ANTs (antspyx) affine transform.
+│   │       └── registration_qc.json: selected transform direction + subject->NYhead scalp overlap (mm) self-check.
+│   └── dipoles/: Extra-brain artifact source dipoles; a small fixed set, spacing-independent.
+│       └── sub-subject/
+│           ├── eyes/: eye dipoles sampled natively inside surfaces/charm_eyes_balls.ply (dipole_positions/volume/preferential_direction/labels/orient_type.npy; preferential_direction stores the per-eye corneo-retinal axis for the future EOG generator, metadata only).
+│           ├── muscle/: face/neck muscle dipoles = HArtMuT NYhead template positions warped into the subject (affine + ray-cast layer-normalized projection); same dipole-contract files.
+│           └── artifactsources.json: {eyes:{n_dipoles}, muscle:{n_kept,n_dropped,n_total,kept_fraction,neck_coverage}}. neck_coverage=false (too few muscle sources survived the warp, e.g. no neck FOV) triggers the canned-leadfield muscle fallback.
 ├── leadfields/: Processed leadfield matrices (n_electrodes x n_sources), rows = the subject 10-5 montage.
 │   └── sub-subject/
 │       ├── processed_duneuroCGAL-*mm-leadfield.npy, processed_duneurosimnibs-*, processed_openmeeg-* (+ processed_duneuroCGAL_anisotropic-* when WM anisotropy ran): brain leadfields, one per solver/mesh/spacing.

@@ -3,7 +3,7 @@
 The `artifacts` stage adds extra-brain physiological noise sources -- eyes (sampled natively in the
 subject's Eye_balls compartment) and muscle (HArtMuT template positions warped into the subject) --
 and solves geometry-only artifact leadfields stackable with the brain leadfield. This validates:
-  * the subject<->MNI affine (registration/) and its scalp-overlap self-check,
+  * the subject<->MNI affine (artifacts/registration/) and its scalp-overlap self-check,
   * the artifact dipole sets + artifactsources.json (counts, neck coverage),
   * the eye leadfield and the muscle leadfield (subject-mesh solve OR the canned HArtMuT fallback),
 and renders the source positions on the head plus sample EOG/EMG cap topographies.
@@ -88,12 +88,12 @@ def _electrode_positions(ctx, n_rows):
 
 def run(ctx) -> StageResult:
     r = StageResult(NAME, TITLE)
-    adip = ctx.stage_dir("artifactdipoles")
+    adip = ctx.stage_dir("artifacts/dipoles")
     if not adip.exists():
         return r.skip("artifact stage not produced")
 
     # --- subject<->MNI registration --------------------------------------------------------------
-    reg = ctx.stage_dir("registration")
+    reg = ctx.stage_dir("artifacts/registration")
     if (reg / "mni_to_subject_affine.npy").exists():
         qc_json = reg / "registration_qc.json"
         if qc_json.exists():

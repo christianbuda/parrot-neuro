@@ -1779,7 +1779,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         fi
 
         # 2. artifact dipoles (forward_model image): eyes native + muscle warp. Writes
-        #    artifactdipoles/sub-<S>/artifactsources.json (counts + neck-coverage flag).
+        #    artifacts/dipoles/sub-<S>/artifactsources.json (counts + neck-coverage flag).
         if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}-dipoles_log.txt" ]; then
             run_in_docker_FWD "$NAME-dipoles" "$LOG_DIR/${NAME}-dipoles_log.txt" "$IMG_FORWARD_MODEL" \
                 "cd /scripts && python place_artifact_dipoles.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
@@ -1789,22 +1789,22 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         #    falls back to HArtMuT's canned leadfield when the warp under-hosted (no neck FOV).
         if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}-leadfields_log.txt" ]; then
             # Did enough muscle sources survive the warp to solve on the subject's own mesh?
-            neck_ok=$(python3 -c "import json;print(json.load(open('$OUTPUT_DIR/artifactdipoles/sub-${SUBJECT}/artifactsources.json')).get('muscle',{}).get('neck_coverage',False))" 2>/dev/null || echo False)
+            neck_ok=$(python3 -c "import json;print(json.load(open('$OUTPUT_DIR/artifacts/dipoles/sub-${SUBJECT}/artifactsources.json')).get('muscle',{}).get('neck_coverage',False))" 2>/dev/null || echo False)
 
             # Group spec written to a file to avoid shell-quoting tissue names (spaces/parens).
-            SOLVE_GROUPS="$OUTPUT_DIR/artifactdipoles/sub-${SUBJECT}/solve_groups.json"
+            SOLVE_GROUPS="$OUTPUT_DIR/artifacts/dipoles/sub-${SUBJECT}/solve_groups.json"
             SUBJECT="$SUBJECT" ART_EYE_TISSUE="$ART_EYE_TISSUE" NECK_OK="$neck_ok" python3 - "$SOLVE_GROUPS" <<'PY'
 import json, os, sys
 subj = os.environ['SUBJECT']; eye = os.environ['ART_EYE_TISSUE']; neck = os.environ['NECK_OK'] == 'True'
-groups = [{"name": "eyes", "dipoles_dir": f"artifactdipoles/sub-{subj}/eyes",
+groups = [{"name": "eyes", "dipoles_dir": f"artifacts/dipoles/sub-{subj}/eyes",
            "valid_tissues": [eye], "out_tag": "_artifact-eyes-CGAL"}]
 if neck:  # muscle solved on the subject mesh only when the warp hosted enough sources
-    groups.append({"name": "muscle", "dipoles_dir": f"artifactdipoles/sub-{subj}/muscle",
+    groups.append({"name": "muscle", "dipoles_dir": f"artifacts/dipoles/sub-{subj}/muscle",
                    "valid_tissues": ["Muscle", "Skin"], "out_tag": "_artifact-muscle-CGAL"})
 json.dump(groups, open(sys.argv[1], "w"), indent=2)
 PY
             run_in_docker_SOLVER "$NAME-leadfields" "$LOG_DIR/${NAME}-leadfields_log.txt" "$IMG_FORWARD_SOLVERS" \
-                "python3 /scripts/make_leadfield_artifacts.py --subject $SUBJECT --output_dir /derivatives --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --groups_json_file /derivatives/artifactdipoles/sub-${SUBJECT}/solve_groups.json"
+                "python3 /scripts/make_leadfield_artifacts.py --subject $SUBJECT --output_dir /derivatives --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --groups_json_file /derivatives/artifacts/dipoles/sub-${SUBJECT}/solve_groups.json"
 
             # Muscle fallback: interpolate HArtMuT's canned muscle leadfield onto the subject montage.
             if [ "$neck_ok" != "True" ]; then

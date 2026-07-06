@@ -2,7 +2,7 @@
 """Place extra-brain EEG *artifact* source dipoles (eyes + face/neck muscle).
 
 Produces subject-space dipole sets for physiological EEG noise sources, in the same
-dipole-contract layout the DUNEuro solver consumes, but under `artifactdipoles/sub-<S>/<group>/`
+dipole-contract layout the DUNEuro solver consumes, but under `artifacts/dipoles/sub-<S>/<group>/`
 rather than the brain `dipoles/…/spacing…mm/` tree. Two groups:
 
 * **eyes** — sampled *natively* inside the subject's own eyeball compartment
@@ -11,7 +11,7 @@ rather than the brain `dipoles/…/spacing…mm/` tree. Two groups:
   for the future EOG generator (the free-orientation solver ignores it).
 
 * **muscle** — HArtMuT's template muscle source positions warped into the subject via
-  affine-bring-into-frame (`registration/sub-<S>/mni_to_subject_affine.npy`) followed by the
+  affine-bring-into-frame (`artifacts/registration/sub-<S>/mni_to_subject_affine.npy`) followed by the
   ray-cast layer-normalized projection (`hartmut_warp.ray_cast_warp`). Sources whose ray misses
   the subject skull/scalp shell (e.g. no neck FOV) are dropped and counted.
 
@@ -123,14 +123,14 @@ def place_eyes(output_dir, subject, spacing, generator, head_center):
     if not all_pos:
         raise RuntimeError("No eye dipoles could be sampled.")
     positions = np.vstack(all_pos)
-    save_group(os.path.join(output_dir, f"artifactdipoles/sub-{subject}/eyes"),
+    save_group(os.path.join(output_dir, f"artifacts/dipoles/sub-{subject}/eyes"),
                positions, np.vstack(all_dir), np.concatenate(all_lab))
     return len(positions)
 
 
 # ------------------------------------------------------------------ muscle (warp) --------------
 def place_muscle(output_dir, subject, hartmut_dir, generator, head_center):
-    A = np.load(os.path.join(output_dir, f"registration/sub-{subject}/mni_to_subject_affine.npy"))
+    A = np.load(os.path.join(output_dir, f"artifacts/registration/sub-{subject}/mni_to_subject_affine.npy"))
 
     src_pos = np.load(os.path.join(hartmut_dir, "muscle_sources.npy"))
     src_lab = np.load(os.path.join(hartmut_dir, "muscle_labels.npy"), allow_pickle=True)
@@ -154,7 +154,7 @@ def place_muscle(output_dir, subject, hartmut_dir, generator, head_center):
     radial = warped - head_center
     radial /= (np.linalg.norm(radial, axis=1, keepdims=True) + 1e-12)
 
-    save_group(os.path.join(output_dir, f"artifactdipoles/sub-{subject}/muscle"),
+    save_group(os.path.join(output_dir, f"artifacts/dipoles/sub-{subject}/muscle"),
                warped, radial, kept_lab)
     return int(keep.sum()), int((~keep).sum())
 
@@ -198,7 +198,7 @@ def main():
               f"neck_coverage={summary['muscle']['neck_coverage']}.")
 
     # Machine-readable record the orchestrator reads to pick the muscle path (solve vs fallback).
-    out_json = os.path.join(args.output_dir, f"artifactdipoles/sub-{args.subject}/artifactsources.json")
+    out_json = os.path.join(args.output_dir, f"artifacts/dipoles/sub-{args.subject}/artifactsources.json")
     os.makedirs(os.path.dirname(out_json), exist_ok=True)
     with open(out_json, "w") as f:
         json.dump(summary, f, indent=2)
