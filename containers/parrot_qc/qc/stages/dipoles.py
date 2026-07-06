@@ -8,8 +8,7 @@ NAME = "dipoles"
 TITLE = "Dipoles — source sampling"
 DESCRIPTION = ("Sampled source dipoles, coloured by anatomical compartment (cerebrum / "
                "cerebellum / hippocampus / subcortical). Sources should fill the grey matter "
-               "and subcortical/cerebellar volumes uniformly at the target spacing; arrows show "
-               "the volumetric sources' preferential directions.")
+               "and subcortical/cerebellar volumes uniformly at the target spacing.")
 
 # per-source subdir name -> compartment (for colouring the aggregated cloud)
 _SOURCE_COMPARTMENT = {
@@ -76,9 +75,9 @@ def _check_spacing(ctx, r, sdir, tag):
 
     # 3D scatter coloured by anatomical compartment (cerebrum / cerebellum /
     # hippocampus / subcortical), recovered by matching each aggregated dipole back
-    # to the per-source file it was concatenated from. Direction arrows show the
-    # volumetric sources' preferential orientation (surface normals are omitted --
-    # obvious and cloud-burying).
+    # to the per-source file it was concatenated from. Direction arrows are omitted:
+    # only the volumetric (subcortical) sources are oriented, and a dense black arrow
+    # field there buried the (red) subcortical points into a solid black blob.
     comp = _compartment_labels(sdir, pos)
     _COLORS = {"cerebrum": "#1f77b4", "cerebellum": "#ff7f0e", "hippocampus": "#2ca02c",
                "subcortical": "#d62728", "other": "#7f7f7f"}
@@ -90,19 +89,12 @@ def _check_spacing(ctx, r, sdir, tag):
     clim = (-0.5, len(present) - 0.5)
     legend_items = [[c, _COLORS[c]] for c in present]
 
-    ot = np.load(ot_f, allow_pickle=True).astype(str) if (ot_f := sdir / "orient_type.npy").exists() else None
-    dirs_for_arrows = None
-    if dirs_f.exists():
-        dirs_for_arrows = np.load(dirs_f).astype(float).copy()
-        if ot is not None and len(ot) == len(dirs_for_arrows):
-            dirs_for_arrows[ot == "N"] = 0.0
-
     ctx.add_figure(r, f"dipoles_{tag}", f"Dipole cloud ({tag}) — coloured by compartment",
                    lambda p: render3d.snapshot_points(
                        pos, p, scalars=scal, ref_mesh=None, focus=True,
-                       views=("left", "anterior", "superior"), vectors=dirs_for_arrows,
-                       arrow_scale=8.0, arrow_max=2500, point_size=1.5, cmap=cmap, clim=clim,
-                       legend_items=legend_items, title=f"dipoles {tag}"))
+                       views=("left", "anterior", "superior"), point_size=2.5,
+                       cmap=cmap, clim=clim, legend_items=legend_items,
+                       title=f"dipoles {tag}"))
 
 
 def run(ctx) -> StageResult:

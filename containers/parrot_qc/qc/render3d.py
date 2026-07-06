@@ -31,6 +31,12 @@ vtk.vtkObject.GlobalWarningDisplayOff()
 
 _XVFB = False
 _PANEL = (400, 440)  # per-view panel size; window scales with the number of views
+_SCALE = 1.8         # global upscale of every offscreen render so the report zooms cleanly
+
+
+def _win(w, h):
+    """Scale a base window size by the global render scale (sharper snapshots)."""
+    return (int(round(w * _SCALE)), int(round(h * _SCALE)))
 
 # Named cameras: (offset direction of the camera from the scene centre, view-up).
 # The camera looks back toward the centre along -offset. RAS world frame.
@@ -111,16 +117,16 @@ def _multiview(draw, out, views, title=None, legend_items=None, focus_bounds=Non
     _ensure_display()
     views = list(views)
     n = max(1, len(views))
-    pl = pv.Plotter(off_screen=True, shape=(1, n), window_size=(panel[0] * n, panel[1]),
+    pl = pv.Plotter(off_screen=True, shape=(1, n), window_size=_win(panel[0] * n, panel[1]),
                     border=False)
     for i, view in enumerate(views):
         pl.subplot(0, i)
         draw(pl)
         _set_view(pl, view, focus_bounds)
         if title and i == 0:
-            pl.add_text(title, font_size=9)
+            pl.add_text(title, font_size=15)
         if view_labels:
-            pl.add_text(view, font_size=8, position="lower_left")
+            pl.add_text(view, font_size=13, position="lower_left")
         if legend_items and i == n - 1:
             try:
                 pl.add_legend(labels=legend_items, bcolor="white", border=True,
@@ -155,12 +161,14 @@ def snapshot_meshes(items, out, title=None, views=_DEFAULT_VIEWS, legend=False, 
 
 
 def snapshot_points(points, out, scalars=None, ref_mesh=None, title=None,
-                    cmap="viridis", point_size=6.0, ref_color="wheat", ref_opacity=0.12,
+                    cmap="viridis", point_size=6.0, ref_color="wheat", ref_opacity=1.0,
                     views=_DEFAULT_VIEWS, vectors=None, arrow_scale=5.0, arrow_max=1500,
-                    legend_items=None, clim=None, ref_style="surface", focus=None):
+                    legend_items=None, clim=None, ref_style="surface", focus=None,
+                    scalar_bar=False, scalar_bar_title=None):
     """Named-view montage of a point cloud (dipoles/electrodes/sensitivity),
-    optionally inside a translucent reference surface (e.g. scalp) and optionally
-    with direction arrows (`vectors`, one per point; subsampled to `arrow_max`)."""
+    optionally inside a reference surface (e.g. scalp; opaque by default) and
+    optionally with direction arrows (`vectors`, one per point; subsampled to
+    `arrow_max`). `scalar_bar=True` adds a colour bar on the last panel."""
     pts = np.asarray(points, dtype=float)
     cloud = pv.PolyData(pts)
     if scalars is not None:
@@ -184,14 +192,26 @@ def snapshot_points(points, out, scalars=None, ref_mesh=None, title=None,
             except Exception:  # noqa: BLE001
                 glyphs = None
 
+    nv = max(1, len(list(views)))
+    _sb_args = dict(title=scalar_bar_title or "", vertical=True,
+                    position_x=0.82, position_y=0.15, width=0.12, height=0.7,
+                    title_font_size=16, label_font_size=13, n_labels=5)
+    _state = {"i": 0}
+
     def draw(p):
+        i = _state["i"]
+        _state["i"] += 1
         if ref_mesh is not None:
             p.add_mesh(ref_mesh, color=ref_color, opacity=ref_opacity,
                        show_scalar_bar=False, style=ref_style)
+        # colour bar (if requested) only on the last panel, so the montage isn't
+        # cluttered with n identical bars.
+        show_sb = scalar_bar and scalars is not None and i == nv - 1
+        kw = dict(scalar_bar_args=_sb_args) if show_sb else {}
         p.add_mesh(
             cloud, scalars="s" if scalars is not None else None,
             cmap=cmap, point_size=point_size, render_points_as_spheres=True,
-            show_scalar_bar=False, clim=clim,
+            show_scalar_bar=show_sb, clim=clim, **kw,
         )
         if glyphs is not None:
             p.add_mesh(glyphs, color="black", show_scalar_bar=False)
@@ -211,7 +231,7 @@ def snapshot_fiducials(scalp_mesh, fiducials, out, title=None):
     pts = {k: np.asarray(v, dtype=float) for k, v in fiducials.items()}
     center = np.asarray(scalp_mesh.center, dtype=float)
     n = max(1, len(names))
-    pl = pv.Plotter(off_screen=True, shape=(1, n), window_size=(330 * n, 380), border=False)
+    pl = pv.Plotter(off_screen=True, shape=(1, n), window_size=_win(330 * n, 380), border=False)
     for i, name in enumerate(names):
         pl.subplot(0, i)
         # Matte-ish tan with modest specular; pyvista's default light kit already
@@ -228,7 +248,7 @@ def snapshot_fiducials(scalp_mesh, fiducials, out, title=None):
         d = f - center
         d = d / (np.linalg.norm(d) + 1e-9)
         pl.camera_position = [tuple(f + d * 360), tuple(f), (0, 0, 1)]  # pull back (less zoom)
-        pl.add_text(name, font_size=13)
+        pl.add_text(name, font_size=20)
     pl.screenshot(out)
     pl.close()
 
@@ -239,7 +259,7 @@ def snapshot_clip(grid_or_path, out, scalars=None, title=None, cmap="tab20",
     _ensure_display()
     grid = grid_or_path if isinstance(grid_or_path, pv.DataSet) else pv.read(str(grid_or_path))
     sliced = grid.slice_orthogonal()
-    pl = pv.Plotter(off_screen=True, window_size=(700, 600), border=False)
+    pl = pv.Plotter(off_screen=True, window_size=_win(700, 600), border=False)
     pl.add_mesh(sliced, scalars=scalars, cmap=cmap, show_scalar_bar=legend_items is None)
     if legend_items:
         try:
@@ -247,7 +267,7 @@ def snapshot_clip(grid_or_path, out, scalars=None, title=None, cmap="tab20",
         except Exception:  # noqa: BLE001
             pass
     if title:
-        pl.add_text(title, font_size=9)
+        pl.add_text(title, font_size=15)
     pl.view_isometric()
     pl.screenshot(out)
     pl.close()
@@ -264,11 +284,11 @@ def snapshot_volume_clip(grid_or_path, out, scalars=None, title=None, cmap="tab2
     # keep the tetrahedra visible without the black edge-mesh darkening the whole cut.
     # Wide window: the (tall) sagittal section fits to height and centres, leaving a
     # clear right margin for the legend instead of it landing on the head.
-    pl = pv.Plotter(off_screen=True, window_size=(1500, 700), border=False)
+    pl = pv.Plotter(off_screen=True, window_size=_win(1500, 700), border=False)
     pl.add_mesh(clipped, scalars=scalars, cmap=cmap, clim=clim, show_scalar_bar=legend_items is None,
                 show_edges=True, edge_color=(0.4, 0.4, 0.4), line_width=0.2, lighting=False)
     if title:
-        pl.add_text(title, font_size=9)
+        pl.add_text(title, font_size=15)
     pl.camera_position = "yz" if normal == "x" else ("xz" if normal == "y" else "xy")
     if legend_items:
         try:

@@ -47,5 +47,6 @@ def run(ctx) -> StageResult:
         ctx.add_figure(r, "atlas_aggregated_on_t1",
                        "Aggregated parcellation on T1 (connectivity nodes)",
                        lambda p: render2d.roi_overlay(ctx.t1_path(), agg, p,
-                                                      "aggregated atlas", cmap="gist_ncar"))
+                                                      "aggregated atlas", cmap="gist_ncar",
+                                                      alpha=1.0))
     return r

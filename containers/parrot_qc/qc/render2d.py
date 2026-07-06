@@ -24,7 +24,7 @@ import nibabel as nib                     # noqa: E402
 from nilearn import plotting              # noqa: E402
 from nilearn.image import crop_img, resample_to_img  # noqa: E402
 
-_DPI = 160  # higher so the browser can zoom into the slices and still read detail
+_DPI = 300  # high so the browser can zoom into the slices and still read fine detail
 
 
 # --- background cleanup ------------------------------------------------------

@@ -173,15 +173,25 @@ def run(ctx) -> StageResult:
     if clouds:
         pts = np.vstack([c[0] for c in clouds])
         grp = np.concatenate([c[1] for c in clouds])
+        # These sources sit inside/behind the scalp (eyes in the orbits, muscle on the
+        # face/neck), so this is the one overlay that keeps a translucent scalp -- an
+        # opaque one would hide the sources entirely.
         ctx.add_figure(r, "artifact_dipoles_3d",
                        "Artifact source positions (blue = eyes, yellow = muscle)",
                        lambda p: render3d.snapshot_points(pts, p, scalars=grp, ref_mesh=scalp,
+                                                          ref_opacity=0.2,
                                                           views=("anterior", "left", "superior"),
                                                           title="artifact sources", point_size=5,
                                                           cmap="cividis"))
 
     # 2. EOG topography: signed potential from the corneo-retinal axis, summed over both eyes ->
     #    the recognisable dipolar frontal EOG pattern (diverging colour scale).
+    # NB: this map is PER-PEAK NORMALISED, the EMG map below is log-absolute -- the two are NOT
+    # amplitude-comparable. These are leadfield GEOMETRY (source->cap coupling), not artifact size:
+    # the realised artifact is leadfield x source moment, and the moments come from the (future)
+    # amplitude generator. Per source, eyes and muscles couple to the cap comparably; EOG only looks
+    # "small" here because it is focal (2 coherent ocular clusters) and normalised. Don't read
+    # relative artifact magnitude off these figures.
     if eye_L is not None:
         elec = _electrode_positions(ctx, eye_L.shape[0])
         axes = _load(adip / "eyes" / "dipole_preferential_direction.npy")
@@ -193,14 +203,17 @@ def run(ctx) -> StageResult:
                            lambda p: render3d.snapshot_points(elec, p, scalars=pot, ref_mesh=scalp,
                                                              views=("anterior", "left", "superior"),
                                                              title="EOG", point_size=12,
-                                                             cmap="coolwarm"))
+                                                             cmap="coolwarm", clim=(-1, 1),
+                                                             scalar_bar=True,
+                                                             scalar_bar_title="signed potential (norm.)"))
         elif elec is not None:  # no stored axes -> fall back to the group footprint
             fp = _total_footprint(eye_L)
             ctx.add_figure(r, "eog_topography", "Eye sensitivity footprint (all eye sources)",
                            lambda p: render3d.snapshot_points(elec, p, scalars=fp, ref_mesh=scalp,
                                                              views=("anterior", "left", "superior"),
                                                              title="EOG", point_size=12,
-                                                             cmap="inferno"))
+                                                             cmap="inferno", scalar_bar=True,
+                                                             scalar_bar_title="sensitivity (a.u.)"))
 
     # 3. EMG footprint: per-electrode total sensitivity over ALL muscle sources -> the bilateral
     #    temporal/facial/neck ring. Log scale, because the superficial neck muscles have far larger
@@ -215,5 +228,6 @@ def run(ctx) -> StageResult:
                            lambda p: render3d.snapshot_points(elec, p, scalars=fp, ref_mesh=scalp,
                                                              views=("anterior", "left", "superior"),
                                                              title="EMG", point_size=12,
-                                                             cmap="inferno"))
+                                                             cmap="inferno", scalar_bar=True,
+                                                             scalar_bar_title="log10 sensitivity"))
     return r

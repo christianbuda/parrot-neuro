@@ -110,7 +110,7 @@ def run(ctx) -> StageResult:
             scalp = _scalp_mesh(ctx)
             ctx.add_figure(r, "electrodes_3d", "Electrodes on scalp (selected = red)",
                            lambda p: render3d.snapshot_points(
-                               pts, p, scalars=scal, ref_mesh=scalp, ref_opacity=0.35,
+                               pts, p, scalars=scal, ref_mesh=scalp,
                                views=("left", "anterior", "superior"), title="electrodes",
                                point_size=6, cmap=palette if selected else "coolwarm",
                                clim=(-0.5, 1.5) if selected else None,

@@ -88,11 +88,28 @@ def run(ctx) -> StageResult:
                                                     f"|leadfield| ({tag})", "|gain|", logy=True))
         if positions is not None:
             sens = _per_dipole_sensitivity(L, len(positions))
-            log_sens = np.log10(sens + sens[sens > 0].min() * 1e-3) if np.any(sens > 0) else sens
+            pos_sens = sens[sens > 0]
+            # A handful of sources (typically <0.1%) can have an all-zero leadfield
+            # column -- they sit at/just outside the FEM conductor and get no forward
+            # solution. Flag them numerically here; below we clamp the colour scale to
+            # the real (nonzero) distribution so those zeros don't hijack the range.
+            n_zero = int((sens == 0).sum())
+            r.add(PASS if n_zero == 0 else WARN, f"dead sources {tag}",
+                  f"{n_zero}/{len(sens)} sources with all-zero leadfield columns"
+                  + (" (sources at/outside the FEM mesh boundary)" if n_zero else ""))
+            if pos_sens.size:
+                log_sens = np.log10(sens + pos_sens.min() * 1e-3)
+                lp = np.log10(pos_sens)
+                # Robust colour range: the zero/near-zero tail otherwise squashes the
+                # whole deep-vs-superficial gradient into the top of the colormap.
+                clim = (float(np.percentile(lp, 1)), float(np.percentile(lp, 99)))
+            else:
+                log_sens, clim = sens, None
             ctx.add_figure(r, "lf_sensitivity_3d",
                            "Per-dipole sensitivity (cap's total gain, log scale)",
                            lambda p: render3d.snapshot_points(
                                positions, p, scalars=log_sens, ref_mesh=None, focus=True,
-                               views=("left", "anterior", "superior"),
-                               title=f"sensitivity {tag}", point_size=2, cmap="inferno"))
+                               views=("left", "anterior", "superior"), clim=clim,
+                               title=f"sensitivity {tag}", point_size=3, cmap="inferno",
+                               scalar_bar=True, scalar_bar_title="log10 |gain|"))
     return r
