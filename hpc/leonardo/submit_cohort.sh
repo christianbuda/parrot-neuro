@@ -133,7 +133,7 @@ build_subjects() {
 submit_chunk() {
     local chunk="$1"; shift
     set_chunk "$chunk"
-    export PARROT_STAGES="$STAGES" PARROT_GPUS="$GPUS" PARROT_SUBJECTS_FILE="$SUBJ_FILE"
+    export PARROT_STAGES="$STAGES" PARROT_GPUS="$GPUS" PARROT_SUBJECTS_FILE="${SUBJ_FILE_ACTIVE:-$SUBJ_FILE}"
     local cmd=( sbatch
         --account="$ACCT" --job-name="parrot-$chunk"
         --partition="$PART" --qos="$QOS"
@@ -188,8 +188,37 @@ case "$CMD" in
             case "$ch" in a1|a2|b|c|d) SELECTED[$ch]=1 ;; *) echo "ERROR: unknown chunk '$ch' in --chunks (want a1|a2|b|c|d)" >&2; exit 1 ;; esac
         done
 
+        # Footgun guard: cohort.sbatch resolves its subject from the subjects file at RUNTIME,
+        # so a targeted retry (subject subset) submitted WHILE the original full-cohort arrays are
+        # still draining used to silently re-map their still-pending tasks (or abort them) when it
+        # overwrote the shared cohort_subjects.txt. The per-run snapshot below removes the
+        # corruption, but re-running a subject a live array may still process is its own hazard
+        # (double work / racing outputs), so refuse a subset submission while parrot-* tasks are
+        # live unless explicitly forced.
+        if [ "${#subjects[@]}" -gt 0 ] && command -v squeue >/dev/null 2>&1; then
+            live=$(squeue --me -h -o '%j' 2>/dev/null | grep -c '^parrot-' || true)
+            if [ "${live:-0}" -gt 0 ] && [ "${PARROT_FORCE:-0}" != 1 ]; then
+                {
+                  echo "ERROR: $live parrot-* cohort task(s) still queued/running; refusing a targeted"
+                  echo "       retry (subjects: ${subjects[*]}) until the cohort drains -- re-running a"
+                  echo "       subject a live array may still process risks double work / racing outputs."
+                  echo "       Wait for 'squeue --me' to clear, or set PARROT_FORCE=1 to override."
+                } >&2
+                exit 1
+            fi
+        fi
+
         N=$(build_subjects "${subjects[@]+"${subjects[@]}"}")
         ARR="0-$((N - 1))${ARRAY_THROTTLE}"
+
+        # Snapshot the subject list to an IMMUTABLE per-run file and point every chunk of THIS run
+        # at it (via SUBJ_FILE_ACTIVE, exported by submit_chunk). This makes each submission immune
+        # to a later `run` overwriting the shared cohort_subjects.txt: still-pending tasks keep
+        # reading their own snapshot. aftercorr indexing stays consistent because all chunks of this
+        # run share the one snapshot.
+        SUBJ_FILE_ACTIVE="${SUBJ_FILE%.txt}.$(date +%Y%m%d-%H%M%S)-$$.txt"
+        cp "$SUBJ_FILE" "$SUBJ_FILE_ACTIVE"
+        echo "[run] subject snapshot: $SUBJ_FILE_ACTIVE  (immune to later cohort_subjects.txt churn)"
 
         # Submit-cap guard: co-resident tasks = (#selected chunks) * N. Refuse rather
         # than trip QOSMaxSubmitJobPerUserLimit mid-chain (headless partial submit).
