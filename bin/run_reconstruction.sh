@@ -454,7 +454,29 @@ container_exec() {
         a+=( "$sif" )
         [ -n "${CE_EXEC:-}" ] && a+=( "$CE_EXEC" )
         a+=( "${cmd[@]}" )
-        "${a[@]}"; rc=$?
+        # Apptainer on shared HPC intermittently fails at CONTAINER CREATION -- before the
+        # stage command runs at all -- when the host identity/home FS blips: SSSD can't
+        # resolve our uid ("unknown userid"), or the batch CWD lstat is denied ("could not
+        # obtain current directory path"). The stage never started, so these are safe to
+        # retry. We retry ONLY those Apptainer-emitted startup FATALs -- never a genuine
+        # stage failure, whose error text is the stage's own (not Apptainer's 'FATAL:' banner).
+        local attempt=1 max_attempts=3 backoff cap
+        cap=$(mktemp "${TMPDIR:-/tmp}/parrot_ce.XXXXXX")
+        while : ; do
+            # Stream stdout->fd1 and stderr->fd2 live (so `tail -f` on the log still works),
+            # while tee'ing stderr into $cap for the transient probe. The pipe synchronises
+            # tee, so $cap is complete (no race) once the pipeline returns; PIPESTATUS[0] is
+            # apptainer's own rc (tee's rc would otherwise mask it).
+            { "${a[@]}" 2>&1 1>&3 | tee "$cap" >&2; } 3>&1
+            rc=${PIPESTATUS[0]}
+            { [ "$rc" -eq 0 ] || [ "$attempt" -ge "$max_attempts" ]; } && break
+            grep -qiE 'FATAL:.*(container creation failed|could not obtain current directory path|couldn.t determine user account information)|unknown userid[[:space:]]+[0-9]|could not lookup the current user' "$cap" || break
+            backoff=$(( attempt * 15 ))
+            echo "[container_exec] transient Apptainer startup failure (attempt ${attempt}/${max_attempts}); retrying in ${backoff}s..." >&2
+            sleep "$backoff"
+            attempt=$(( attempt + 1 ))
+        done
+        rm -f "$cap"
     else
         local -a a=( docker run --rm --user "$(id -u):$(id -g)" )
         # External BIDS apps keep their own world-writable HOME on docker (as before); the

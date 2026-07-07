@@ -75,6 +75,14 @@ command -v apptainer >/dev/null || command -v singularity >/dev/null || {
 
 mkdir -p "$SIF" "$OUTPUT_DIR"
 
+# Anchor the process CWD on the robust work FS. Apptainer lstat()s the current directory at
+# container creation; SLURM starts batch scripts in the submit dir (the quota'd $HOME on
+# LEONARDO's LDAP/SSSD-backed home FS), which intermittently denies that lstat during
+# identity/home-FS blips -> "FATAL: could not obtain current directory path". Anchoring on
+# $WORKDIR (/leonardo_work) keeps container startup off the home FS entirely -- the `--home`
+# override already does this for the container HOME; this covers the host-side CWD too.
+cd "$WORKDIR" || { echo "ERROR: cannot cd to WORKDIR=$WORKDIR"; exit 1; }
+
 echo "=== Parrot cohort chunk: job ${SLURM_JOB_ID:-?} (array ${SLURM_ARRAY_JOB_ID:--}_${SLURM_ARRAY_TASK_ID:--}) on $(hostname), $(date) ==="
 echo "subject=$SUBJECT  stages=$PARROT_STAGES  gpus=$PARROT_GPUS  cpus=$CPUS"
 nvidia-smi -L 2>/dev/null || echo "(no GPU visible -- expected for the CPU/dcgp chunks)"
