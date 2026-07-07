@@ -1083,7 +1083,8 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         # (the in-container mount), not $OUTPUT_DIR (host path), which doesn't exist
         # inside the container and made the writes fail with "cannot open output file".
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "micromamba run -n neuro python /scripts/bias_correct.py $T1_DOCKER /derivatives/$NAME/sub-${SUBJECT}/T1.nii.gz && \
-	                                                    /scripts/run_first_all_sequential -i /derivatives/$NAME/sub-${SUBJECT}/T1.nii.gz -o /derivatives/$NAME/sub-${SUBJECT}/FSL -v"
+	                                                    OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 /scripts/run_first_all_sequential -i /derivatives/$NAME/sub-${SUBJECT}/T1.nii.gz -o /derivatives/$NAME/sub-${SUBJECT}/FSL -v && \
+                                                    { miss=; for s in L_Accu L_Amyg L_Caud L_Hipp L_Pall L_Puta L_Thal R_Accu R_Amyg R_Caud R_Hipp R_Pall R_Puta R_Thal BrStem; do test -f /derivatives/$NAME/sub-${SUBJECT}/FSL-\${s}_first.vtk || { echo \"[fslfirst] MISSING FSL-\${s}_first.vtk -- FSL FIRST crashed on this structure\"; miss=1; }; done; [ -z \"\${miss}\" ] || echo \"[fslfirst] FAILED: FSL FIRST did not produce all 15 subcortical meshes (see MISSING lines above)\"; [ -z \"\${miss}\" ]; }"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
