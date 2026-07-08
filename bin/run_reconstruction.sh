@@ -539,9 +539,32 @@ run_in_docker_SOLVER() {
     local log_file=$2
     local image=$3
     local cmd=$4
+    local optional=${5:-}   # pass "optional" to make a failure NON-FATAL (warn + continue)
 
     local pre="s=\$(mktemp -d $WORK_DIR_DOCKER/solver.XXXXXX) && cd \"\$s\" && \
 cp /pipeline/geometry.geom /pipeline/conductivities.cond /pipeline/neuronal_strength_dict.json \"\$s\"/ && "
+
+    # NON-FATAL variant: the OpenMEEG/BEM leadfield relies on watershed BEM
+    # surfaces that can be non-nestable on some heads. A failure there must never
+    # abort the cohort -- the FEM (DUNEuro) leadfields are the primary deliverable
+    # and are computed from independent geometry. So warn, preserve the log under
+    # a FAILED_ prefix, and let the run continue (the DUNEuro calls below own the
+    # shared stage-completion marker).
+    if [ "$optional" = "optional" ]; then
+        CE_GPU=1; CE_HOME=1; CE_EXEC=/bin/bash
+        CE_BINDS=( "$BIDS_DIR:/bids:ro" "$OUTPUT_DIR:/derivatives" )
+        container_exec "$image" -c "${pre}${cmd}" > "${log_file}.partial" 2>&1
+        local rc=$?
+        if [ "$rc" -ne 0 ]; then
+            local failed="$(dirname "$log_file")/FAILED_$(date '+%Y%m%d-%H%M%S')_$(basename "$log_file")"
+            mv "${log_file}.partial" "$failed" 2>/dev/null || true
+            echo "WARNING: $step_name (OpenMEEG/BEM) failed for sub-${SUBJECT} (NON-FATAL); FEM leadfields and the rest of the cohort are unaffected. Log: $failed" | tee -a "${LOG_FILE:-/dev/stderr}"
+            return 0
+        fi
+        mv -f "${log_file}.partial" "$log_file"
+        return 0
+    fi
+
     run_in_docker_FWD "$step_name" "$log_file" "$image" "${pre}${cmd}"
 }
 
@@ -1750,7 +1773,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
 
         spacing=$(printf "%.1f" "$SPACING_OPENMEEG")
         echo "Solving forward problem with OpenMEEG at $spacing mm dipole spacing"
-        run_in_docker_SOLVER "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_openmeeg.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing"
+        run_in_docker_SOLVER "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_openmeeg.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing" optional
 
         spacing=$(printf "%.1f" "$SPACING_DUNEURO_SIMNIBS")
         echo "Solving forward problem with DUNEuro using SimNIBS charm mesh, at $spacing mm dipole spacing"

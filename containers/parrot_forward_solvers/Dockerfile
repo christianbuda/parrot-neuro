@@ -25,7 +25,8 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
     pymeshlab \
     meshio \
     nibabel \
-    rtree
+    rtree \
+    embreex
 
 # --- 3. Setup DUNEuro Workspace ---
 WORKDIR /duneci/modules
