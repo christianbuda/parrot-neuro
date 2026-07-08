@@ -111,6 +111,12 @@ RUN micromamba create -y -n neuro -c conda-forge \
     && rm -rf /opt/conda/pkgs/*
 ENV PATH="/opt/conda/envs/neuro/bin:$PATH"
 
+# embreex gives trimesh an embree-accelerated ray backend, making the AUTHORITATIVE
+# trimesh.proximity.signed_distance ~4-14x faster (the inside/outside ray-cast is its
+# bottleneck). Used by gather_surfaces' BEM nesting repair. Modern trimesh prefers
+# embreex over the conda-forge pyembree above (which it silently ignores).
+RUN pip install --no-cache-dir embreex
+
 # copy essential files
 RUN wget -qO /tmp/cerebellum.tar.gz "https://github.com/christianbuda/parrot-neuro/releases/download/cerebellum_template/cerebellum_template.tar.gz" \
     && tar -xzf /tmp/cerebellum.tar.gz -C /home \

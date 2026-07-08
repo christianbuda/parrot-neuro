@@ -267,40 +267,109 @@ def to_trimesh(mesh):
     
     return mesh
 
-def fix_intersection(fixed_mesh, moving_mesh, min_dist, step_size, dist_check = None):
-    # inflates moving mesh to make it so that it's at at least min_dist distance OUTSIDE fixed_mesh
-    # smoothing is applied at the end, so the min_dist requirement is not satisfied strictly
-    
-    if dist_check is None:
-        dist_check = min_dist*0.8
-    
-    test_points = np.copy(moving_mesh.vertices)
-    dists = trimesh.proximity.signed_distance(fixed_mesh, test_points)
-    
-    bad_points = dists>-min_dist
-    
-    if not np.any(bad_points):
-        return moving_mesh
-    
-    while np.any(bad_points):
-        outward_dir = compute_vertex_normals(fixed_mesh.vertices, fixed_mesh.faces)[bad_points]
-        test_points[bad_points] += outward_dir*step_size
-        
-        dists = trimesh.proximity.signed_distance(fixed_mesh, test_points)
-        bad_points = dists>-min_dist
+def fix_intersection(fixed_mesh, moving_mesh, min_dist, step_size,
+                     max_iter=300, smooth_rounds=3, relax=0.8, step_gain=1.0):
+    # Inflate moving_mesh so it sits at least `min_dist` mm OUTSIDE fixed_mesh,
+    # then smooth away the inflation bumps. The outward direction for each
+    # violating vertex comes from fixed_mesh's closest triangle (the signed-
+    # distance gradient), so the repair is robust however badly moving_mesh is
+    # deformed -- no vertex correspondence is assumed.
+    #
+    # WHY THIS IS WRITTEN THE WAY IT IS: the previous version smoothed once and,
+    # if smoothing pulled any vertex back within the band, RECURSED with an
+    # ever-larger min_dist (min_dist/0.8). But phase-1 inflation only moves the
+    # violating vertices, which creates sharp isolated spikes, and Taubin
+    # smoothing preferentially attenuates exactly those spikes -- so inflation
+    # and smoothing are antagonistic. Growing min_dist built taller spikes that
+    # smoothing pulled back harder; with no depth cap the recursion could
+    # diverge on subjects where the required clearance is geometrically capped
+    # (a corresponding outer vertex in a concavity simply cannot get min_dist
+    # away from every part of fixed_mesh). That was the "stuck forever" bug.
+    #
+    # Fix: CONSTRAIN smoothing so it can never pull a vertex back inside the
+    # (relaxed) clearance band -- this removes the antagonism by construction --
+    # and hard-bound both loops as a backstop so a pathological head degrades to
+    # a best-effort surface + WARNING instead of hanging. These surfaces only
+    # need to be non-intersecting for BEM solver stability, so best-effort is an
+    # acceptable failure mode.
 
-    output_mesh = trimesh.Trimesh(vertices=test_points, faces=moving_mesh.faces, process = False, validate = False)
-    output_mesh = trimesh.smoothing.filter_taubin(output_mesh, iterations=3)
-    
-    # check again for violations
-    dists = trimesh.proximity.signed_distance(fixed_mesh, output_mesh.vertices)
-    bad_points = dists>-dist_check  # we relax the constraint slightly
-    
-    if np.any(bad_points):
-        print('Smoothing created new intersections, attempting repair')
-        return fix_intersection(fixed_mesh, output_mesh, min_dist/0.8, step_size, dist_check=dist_check)
-    
-    return output_mesh
+    def signed_clearance(points):
+        # AUTHORITATIVE signed clearance: -signed_distance, +outside / -inside.
+        # trimesh's signed_distance uses a pseudonormal sign test that stays correct
+        # near edges/folds. A naive dot(point - closest, face_normal) does NOT -- on
+        # a deformed shell it reads a deeply-inside vertex that happens to be closest
+        # to a nearby fold as "outside", so the scan never flags it and Phase 1
+        # never repairs it, silently leaving an intersection. So the SIGN must come
+        # from signed_distance; closest_point is used only for the push direction.
+        return -trimesh.proximity.signed_distance(fixed_mesh, points)
+
+    def outward_dir(points):
+        # Outward push direction: normal of the closest fixed_mesh triangle (the
+        # signed-distance gradient), from one cheap closest_point query. Stepping
+        # along this -- not a correspondent vertex normal -- is what makes Phase 1
+        # converge in a few iterations even in a deep dent.
+        _, _, tri = trimesh.proximity.closest_point(fixed_mesh, points)
+        return fixed_mesh.face_normals[tri]
+
+    test_points = np.copy(moving_mesh.vertices)
+    faces = np.array(moving_mesh.faces)
+
+    # One full authoritative scan to find EVERY violating vertex (including the
+    # deeply-inside ones on a deformed shell). Violations are localized, so Phase 1
+    # then works only on the shrinking bad subset.
+    bad_idx = np.flatnonzero(signed_clearance(test_points) < min_dist)
+    if bad_idx.size == 0:
+        return moving_mesh  # already clear -- leave the surface untouched
+
+    # Phase 1: ADAPTIVE outward stepping. The signed clearance says exactly how far
+    # short each vertex is, so we push it out by ~that deficit along the closest-
+    # triangle normal in one shot instead of creeping a fixed 0.1 mm -- a ~14 mm,
+    # 2500-vertex collapse clears in a handful of iterations (minutes -> seconds).
+    # `step_size` is a small progress floor; `max_iter` is a hard backstop.
+    it = 0
+    while bad_idx.size and it < max_iter:
+        deficit = min_dist - signed_clearance(test_points[bad_idx])
+        still = deficit > 0
+        bad_idx = bad_idx[still]                     # cleared vertices drop out
+        if bad_idx.size == 0:
+            break
+        step_len = np.maximum(deficit[still] * step_gain, step_size)
+        test_points[bad_idx] += outward_dir(test_points[bad_idx]) * step_len[:, None]
+        it += 1
+    if bad_idx.size:
+        print(f"[fix_intersection] WARNING: {bad_idx.size} vertices could not clear "
+              f"{min_dist} mm after {max_iter} adaptive steps; keeping best effort.")
+
+    # Snapshot the post-Phase-1 positions. Every vertex here is authoritatively
+    # >= min_dist outside (except best-effort ones, which are still the best we got),
+    # so this is a known-safe fallback the smoothing below can revert to.
+    cleared = np.copy(test_points)
+
+    # Phase 2: smooth to relax the inflation spikes, but revert any smoothed vertex
+    # that falls back inside the relaxed band (relax*min_dist) to its cleared
+    # position, so smoothing can never re-create an intersection -- no recursion,
+    # terminates in `smooth_rounds`. The revert-check is a FULL-mesh authoritative
+    # scan: a vertex that Phase 1 left untouched can still be dragged inward by
+    # smoothing when it neighbours a large inflated bulge, so checking only the
+    # moved subset silently leaks intersections.
+    for _ in range(smooth_rounds):
+        mesh = trimesh.Trimesh(vertices=test_points, faces=faces, process=False, validate=False)
+        smoothed = np.array(trimesh.smoothing.filter_taubin(mesh, iterations=3).vertices)
+        reverted = signed_clearance(smoothed) < relax * min_dist
+        smoothed[reverted] = cleared[reverted]
+        test_points = smoothed
+
+    # Final guarantee: any vertex STILL inside the relaxed band (e.g. one a fold
+    # trap keeps the smooth/revert cycle from settling) is snapped back to its
+    # known-safe Phase-1 position and left there. So the returned surface is
+    # non-intersecting wherever Phase 1 succeeded -- by construction, not just in
+    # expectation. Anything that remains inside was never clearable (best-effort,
+    # already flagged) and is handled by the downstream repair + non-fatal solver.
+    resid = signed_clearance(test_points) < relax * min_dist
+    if np.any(resid):
+        test_points[resid] = cleared[resid]
+
+    return trimesh.Trimesh(vertices=test_points, faces=faces, process=False, validate=False)
 
 def add_output_dir(*paths):
     if len(paths)==1:
