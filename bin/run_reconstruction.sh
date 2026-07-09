@@ -1440,9 +1440,20 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
                     # QSIRecon writes to <out>/derivatives/qsirecon-Parrot/; relocate the
                     # results into derivatives/qsirecon/ (the rest -- logs, nested
                     # derivatives -- stays in the ephemeral work dir and is swept on exit).
-                    rm -rf "$OUTPUT_DIR/$NAME"
-                    mv "$WORK_DIR/qsirecon_out/derivatives/qsirecon-Parrot" "$OUTPUT_DIR/$NAME"
+                    # Relocate ONLY this subject's subtree: derivatives/qsirecon/ is shared
+                    # across subjects (and across concurrent cohort chunks), so wiping the
+                    # whole dir here would destroy every other subject's tractogram -- and,
+                    # under concurrency, yank a sibling's qsirecon out from under its own
+                    # dwi2t1/connectome stage mid-run. Replace just sub-${SUBJECT}; the
+                    # shared dataset_description.json / logs are identical-or-per-subject.
+                    SRC="$WORK_DIR/qsirecon_out/derivatives/qsirecon-Parrot"
+                    mkdir -p "$OUTPUT_DIR/$NAME/logs"
+                    rm -rf "$OUTPUT_DIR/$NAME/sub-${SUBJECT}" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}.html"
+                    cp -f  "$SRC/dataset_description.json" "$OUTPUT_DIR/$NAME/" 2>/dev/null || true
+                    cp -rf "$SRC/logs/." "$OUTPUT_DIR/$NAME/logs/" 2>/dev/null || true
+                    mv "$SRC/sub-${SUBJECT}" "$OUTPUT_DIR/$NAME/"
                     check_step $? "$NAME relocation" "$LOG_DIR/${NAME}_log.txt"
+                    [ -e "$SRC/sub-${SUBJECT}.html" ] && mv "$SRC/sub-${SUBJECT}.html" "$OUTPUT_DIR/$NAME/"
                 fi
             fi
 
