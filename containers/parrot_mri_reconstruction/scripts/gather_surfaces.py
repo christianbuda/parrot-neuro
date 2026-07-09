@@ -414,51 +414,25 @@ if __name__ == "__main__":
     orig_T1 = nib.load(add_output_dir(f'raw/sub-{subject}/T1.nii.gz'))
 
 
-    # FSL first surfaces
-    brstem = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-BrStem_first.vtk')))
-    surf_to_ply(brstem, add_output_dir(f'surfaces/sub-{subject}/first_BrStem.ply'))
-
-    Laccu = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Accu_first.vtk')))
-    surf_to_ply(Laccu, add_output_dir(f'surfaces/sub-{subject}/first_L_Accu.ply'))
-
-    Lamyg = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Amyg_first.vtk')))
-    surf_to_ply(Lamyg, add_output_dir(f'surfaces/sub-{subject}/first_L_Amyg.ply'))
-
-    Lcaud = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Caud_first.vtk')))
-    surf_to_ply(Lcaud, add_output_dir(f'surfaces/sub-{subject}/first_L_Caud.ply'))
-
-    Lhipp = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Hipp_first.vtk')))
-    surf_to_ply(Lhipp, add_output_dir(f'surfaces/sub-{subject}/first_L_Hipp.ply'))
-
-    Lpall = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Pall_first.vtk')))
-    surf_to_ply(Lpall, add_output_dir(f'surfaces/sub-{subject}/first_L_Pall.ply'))
-
-    Lputa = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Puta_first.vtk')))
-    surf_to_ply(Lputa, add_output_dir(f'surfaces/sub-{subject}/first_L_Puta.ply'))
-
-    Lthal = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-L_Thal_first.vtk')))
-    surf_to_ply(Lthal, add_output_dir(f'surfaces/sub-{subject}/first_L_Thal.ply'))
-
-    Raccu = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Accu_first.vtk')))
-    surf_to_ply(Raccu, add_output_dir(f'surfaces/sub-{subject}/first_R_Accu.ply'))
-
-    Ramyg = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Amyg_first.vtk')))
-    surf_to_ply(Ramyg, add_output_dir(f'surfaces/sub-{subject}/first_R_Amyg.ply'))
-
-    Rcaud = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Caud_first.vtk')))
-    surf_to_ply(Rcaud, add_output_dir(f'surfaces/sub-{subject}/first_R_Caud.ply'))
-
-    Rhipp = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Hipp_first.vtk')))
-    surf_to_ply(Rhipp, add_output_dir(f'surfaces/sub-{subject}/first_R_Hipp.ply'))
-
-    Rpall = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Pall_first.vtk')))
-    surf_to_ply(Rpall, add_output_dir(f'surfaces/sub-{subject}/first_R_Pall.ply'))
-
-    Rputa = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Puta_first.vtk')))
-    surf_to_ply(Rputa, add_output_dir(f'surfaces/sub-{subject}/first_R_Puta.ply'))
-
-    Rthal = fix_FIRST_mesh(read_vtk(add_output_dir(f'fslfirst/sub-{subject}/FSL-R_Thal_first.vtk')))
-    surf_to_ply(Rthal, add_output_dir(f'surfaces/sub-{subject}/first_R_Thal.ply'))
+    # FSL FIRST subcortical surfaces.
+    # These are QC-only: the sole consumer is the QC 3D "deep structures" overlay,
+    # which globs whatever first_*.ply exist. The actual subcortical source space
+    # (dipoles) and the atlas come from the FastSurfer/FreeSurfer streams, not FIRST.
+    # FSL FIRST crashes on a scattered subset of structures for some subjects (contrast-
+    # driven; see run_first_all_sequential), so a missing mesh must NOT abort the
+    # surfaces stage -- skip it with a warning and carry on with whatever FIRST produced.
+    first_structures = ['BrStem', 'L_Accu', 'L_Amyg', 'L_Caud', 'L_Hipp', 'L_Pall',
+                        'L_Puta', 'L_Thal', 'R_Accu', 'R_Amyg', 'R_Caud', 'R_Hipp',
+                        'R_Pall', 'R_Puta', 'R_Thal']
+    for s in first_structures:
+        vtk_path = add_output_dir(f'fslfirst/sub-{subject}/FSL-{s}_first.vtk')
+        if not os.path.isfile(vtk_path):
+            print(f'WARNING: FSL FIRST mesh missing for {s} (sub-{subject}); skipping '
+                  f'first_{s}.ply -- subcortical QC overlay only, source space unaffected',
+                  flush=True)
+            continue
+        surf_to_ply(fix_FIRST_mesh(read_vtk(vtk_path)),
+                    add_output_dir(f'surfaces/sub-{subject}/first_{s}.ply'))
 
 
     # freesurfer surfaces

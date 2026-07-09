@@ -505,13 +505,27 @@ run_in_docker_MRI() {
     local step_name=$1
     local log_file=$2
     local cmd=$3
+    local optional=${4:-}   # pass "optional" to make a failure NON-FATAL (warn + mark done + continue)
 
     CE_GPU=1; CE_HOME=1; CE_EXEC=/bin/bash; CE_PWD=/parrot_home
     CE_ENVS=( "FS_LICENSE=/bids/license.txt" )
     CE_BINDS=( "$BIDS_DIR:/bids:ro" "$OUTPUT_DIR:/derivatives" )
     container_exec "$IMG_MRI_RECONSTRUCTION" -c "source /scripts/source_env.sh && $cmd" > "${log_file}.partial" 2>&1
+    local rc=$?
 
-    check_step $? "$step_name" "$log_file"
+    # NON-FATAL variant: some stages must never abort the cohort even on failure.
+    # Preserve the failed log under a FAILED_ prefix for debugging, but still commit
+    # the completion marker so the run proceeds and reruns skip this step. Downstream
+    # stages are responsible for degrading gracefully when the outputs are partial.
+    if [ "$optional" = "optional" ] && [ "$rc" -ne 0 ]; then
+        local failed="$(dirname "$log_file")/FAILED_$(date '+%Y%m%d-%H%M%S')_$(basename "$log_file")"
+        cp -f "${log_file}.partial" "$failed" 2>/dev/null || true
+        mv -f "${log_file}.partial" "$log_file" 2>/dev/null || true
+        echo "WARNING: $step_name failed for sub-${SUBJECT} (NON-FATAL); continuing. Downstream stages degrade gracefully on the partial outputs. Log: $failed" | tee -a "${LOG_FILE:-/dev/stderr}"
+        return 0
+    fi
+
+    check_step "$rc" "$step_name" "$log_file"
 }
 
 run_in_docker_FWD() {
@@ -1105,9 +1119,16 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         # bias field correct image and then run FSL first. Paths are /derivatives/...
         # (the in-container mount), not $OUTPUT_DIR (host path), which doesn't exist
         # inside the container and made the writes fail with "cannot open output file".
+        # NON-FATAL: FSL FIRST crashes on a scattered, contrast-driven subset of structures
+        # for some subjects. FIRST is QC-only (the subcortical source space and atlas come
+        # from the FastSurfer/FreeSurfer streams, not FIRST), so a crash must not abort the
+        # run. The gate below still records WHICH structures failed (for the log + QC), then
+        # the "optional" flag turns the nonzero exit into a WARNING and marks the stage done;
+        # gather_surfaces.py skips the missing meshes.
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "micromamba run -n neuro python /scripts/bias_correct.py $T1_DOCKER /derivatives/$NAME/sub-${SUBJECT}/T1.nii.gz && \
 	                                                    OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 /scripts/run_first_all_sequential -i /derivatives/$NAME/sub-${SUBJECT}/T1.nii.gz -o /derivatives/$NAME/sub-${SUBJECT}/FSL -v && \
-                                                    { miss=; for s in L_Accu L_Amyg L_Caud L_Hipp L_Pall L_Puta L_Thal R_Accu R_Amyg R_Caud R_Hipp R_Pall R_Puta R_Thal BrStem; do test -f /derivatives/$NAME/sub-${SUBJECT}/FSL-\${s}_first.vtk || { echo \"[fslfirst] MISSING FSL-\${s}_first.vtk -- FSL FIRST crashed on this structure\"; miss=1; }; done; [ -z \"\${miss}\" ] || echo \"[fslfirst] FAILED: FSL FIRST did not produce all 15 subcortical meshes (see MISSING lines above)\"; [ -z \"\${miss}\" ]; }"
+                                                    { miss=; for s in L_Accu L_Amyg L_Caud L_Hipp L_Pall L_Puta L_Thal R_Accu R_Amyg R_Caud R_Hipp R_Pall R_Puta R_Thal BrStem; do test -f /derivatives/$NAME/sub-${SUBJECT}/FSL-\${s}_first.vtk || { echo \"[fslfirst] MISSING FSL-\${s}_first.vtk -- FSL FIRST crashed on this structure\"; miss=1; }; done; [ -z \"\${miss}\" ] || echo \"[fslfirst] FAILED: FSL FIRST did not produce all 15 subcortical meshes (see MISSING lines above)\"; [ -z \"\${miss}\" ]; }" \
+            "optional"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
