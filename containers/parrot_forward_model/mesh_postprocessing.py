@@ -141,8 +141,35 @@ if __name__ == "__main__":
     points = points[:,:3]
 
     # filter out background tetrahedra that complete the convex hull
-    tetrahedra = tetrahedra[tetrahedron_labels!=0]
-    tetrahedron_labels = tetrahedron_labels[tetrahedron_labels!=0]
+    keep_tet = tetrahedron_labels != 0
+    tetrahedra = tetrahedra[keep_tet]
+    tetrahedron_labels = tetrahedron_labels[keep_tet]
+
+    # Compact the vertex array after dropping the label-0 hull tets. Any vertex
+    # that belonged ONLY to a removed background tet is now an orphan: still in
+    # the Vertices block but referenced by no tetrahedron. DUNEuro reads only
+    # nodes + tetrahedra, so each orphan becomes a zero-connectivity DOF -> an
+    # empty, zero-diagonal stiffness row -> ISTL "index N not in compressed
+    # array" mid transfer-matrix solve. Keep only vertices referenced by a
+    # surviving tet and remap the tet (and surface-triangle) indices to match.
+    used = np.unique(tetrahedra)                       # sorted old vertex ids still in use
+    remap = -np.ones(len(points), dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    n_orphan = len(points) - len(used)
+
+    points = points[used]
+    points_labels = points_labels[used]
+    tetrahedra = remap[tetrahedra]
+
+    # Surface triangles reference vertices too; a triangle touching a dropped
+    # vertex belonged to the removed hull -> drop it, then remap the survivors.
+    tri_keep = np.all(remap[triangles] >= 0, axis=1)
+    n_tri_dropped = int((~tri_keep).sum())
+    triangles = remap[triangles[tri_keep]]
+    triangle_labels = triangle_labels[tri_keep]
+
+    print(f'Compacted mesh: removed {n_orphan} orphan vertices and '
+          f'{n_tri_dropped} dangling background triangles.', flush=True)
 
     print('Writing MEDIT mesh...', flush=True)
     write_medit(output+'.mesh', points, points_labels, triangles, triangle_labels, tetrahedra, tetrahedron_labels)
