@@ -1,4 +1,9 @@
-# Use the stable DUNE 2.10 core image
+# Use the stable DUNE 2.10 core image.
+# NOTE: this is a moving tag, not pinned by @sha256 digest. The exact digest
+# behind the validated 1.3.2 image is no longer recoverable (the 2.10 tag has
+# since been reassigned upstream), so a rebuild rebases onto whatever 2.10 points
+# to now and must be re-validated. To make future rebuilds reproducible, pin
+# `...dune:2.10@sha256:<digest>` after the next validated build.
 FROM registry.dune-project.org/docker/ci/dune:2.10
 
 # 1. Force HOME back to /duneci so the pre-configured dune.opts works perfectly
@@ -51,9 +56,15 @@ RUN git clone https://gitlab.dune-project.org/duneuro/duneuro.git && \
 RUN ./dune-common/bin/dunecontrol --opts=/duneci/dune.opts --builddir=$(pwd)/build-release all
 
 # --- 6. Install OpenMEEG CLI Binaries ---
-# pip only installed the Python API. We use GitHub's API to fetch the latest C++ binaries.
+# pip only installed the Python API; fetch the prebuilt C++ binaries.
+# NOTE: "2.4.9999" is a rolling upstream build (no versioned/SHA-addressable
+# release), so we can't pin a commit. Instead verify the tarball's sha256 against
+# the exact bytes baked into the validated 1.3.2 image: a rebuild reproduces the
+# same binaries, and if upstream re-rolls the tarball the build fails loudly here
+# instead of silently shipping a different OpenMEEG.
 RUN apt-get update && apt-get install -y curl jq && \
     curl -L https://files.inria.fr/OpenMEEG/download/OpenMEEG-2.4.9999-Linux.tar.gz -o openmeeg_bin.tar.gz && \
+    echo "d4a482ba4b38e591aad052da358961bf92e87b9fdce5c3907e74cf9ffd5ad051  openmeeg_bin.tar.gz" | sha256sum -c - && \
     mkdir -p /opt/openmeeg && \
     tar -xzf openmeeg_bin.tar.gz -C /opt/openmeeg --strip-components=1 && \
     cp -a /opt/openmeeg/bin/* /usr/local/bin/ && \
