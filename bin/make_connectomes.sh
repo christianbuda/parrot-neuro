@@ -73,6 +73,31 @@ for N in 100 200 300 400 500 600 700 800 900 1000; do
         -assignment_radial_search 2 \
         -symmetric -zero_diagonal -scale_length -stat_edge mean \
         -quiet -force
+
+    # tck2connectome sizes the matrix by the highest node label that actually has
+    # voxels, so any *trailing* connectivity node that segmented to zero voxels is
+    # silently dropped and the matrix comes up short -- and the highest indices are
+    # small thalamic nuclei, which can genuinely be empty. (Interior empties are
+    # fine: they stay as all-zero rows.) Pad each matrix back up to the full MxM so
+    # every subject's connectome is identically sized and node-aligned with the
+    # group template. M = connectivity nodes excluding node 0 (Unknown); awk's NR
+    # counts the final label line even with no trailing newline. Only rewritten
+    # when short, to leave MRtrix's exact output untouched otherwise.
+    M=$(awk 'END{print NR-1}' "$CONN/labels_${N}.txt")
+    for MAT in "weights_${N}" "weights_invnodevol_${N}" "distances_${N}"; do
+        python3 - "$CONN/${MAT}.txt" "$M" <<'PY'
+import sys
+import numpy as np
+path, M = sys.argv[1], int(sys.argv[2])
+m = np.atleast_2d(np.loadtxt(path))
+k = m.shape[0]
+if k < M:
+    padded = np.zeros((M, M), dtype=m.dtype)
+    padded[:k, :k] = m
+    np.savetxt(path, padded, fmt='%g')
+    print(f"  padded {path}: {k}x{k} -> {M}x{M} (trailing zero-voxel nodes)")
+PY
+    done
 done
 
 echo "All connectomes generated for sub-${SUB}."

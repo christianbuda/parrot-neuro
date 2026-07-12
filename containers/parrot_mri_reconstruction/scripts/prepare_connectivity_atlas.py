@@ -125,21 +125,7 @@ def build_connectivity_atlas(atlas, labels, aggregate_regions):
     """
     present = set(np.unique(atlas).tolist())
 
-    # Guard 1 (from the notebook): any label declared in the labels file but
-    # absent from the volume must be one we intend to aggregate/drop -- otherwise
-    # the atlas and the aggregation dict have drifted apart.
-    missing_labels = {labels[v] for v in set(labels.keys()) - present}
-    all_aggregated = set()
-    for vals in aggregate_regions.values():
-        all_aggregated.update(vals)
-    not_handled = missing_labels - all_aggregated
-    if not_handled:
-        raise RuntimeError(
-            "Atlas labels missing from the volume are not slated for aggregation; "
-            f"aggregate them before building connectivity: {sorted(not_handled)}"
-        )
-
-    # Guard 2 (new): every name referenced by the aggregation dict (targets and
+    # Guard 1: every name referenced by the aggregation dict (targets and
     # sources) must exist in the labels file, or the name->id lookup below would
     # KeyError cryptically. Fail loudly with the offending names instead.
     referenced = set(aggregate_regions.keys())
@@ -160,28 +146,45 @@ def build_connectivity_atlas(atlas, labels, aggregate_regions):
         source_ids = [inverted_labels[s] for s in sources]
         aggregate_values[inverted_labels[target]] = source_ids
 
-    atlas = atlas.copy()
+    # The connectivity node universe is FIXED by the *label declaration*, not by
+    # which labels happen to have voxels in THIS subject. A node is every declared
+    # label that is not merged away into a target (a "source"). Deriving the
+    # universe this way -- instead of from np.unique(atlas) -- keeps node indices
+    # identical across subjects and matching the group template even when a small
+    # structure (e.g. a thalamic nucleus or an amygdala subnucleus) segments to
+    # zero voxels: it simply becomes an all-zero connectome row rather than
+    # silently vanishing and shifting every later node index. See the guard below
+    # for the two failure modes this rules out.
+    merged_sources = set()
+    for src_ids in aggregate_values.values():
+        merged_sources.update(src_ids)
+    node_ids = np.array(sorted(set(labels.keys()) - merged_sources))
 
-    # Merge each source id into its target id in the volume. Sorted for
-    # deterministic order (no source is itself another target, so no chaining).
-    for key in sorted(aggregate_values.keys()):
-        atlas[np.isin(atlas, aggregate_values[key])] = key
+    # Guard 2 (replaces the old "declared-but-missing must be aggregated" guard):
+    # a zero-voxel node is now legal, but a volume label that the declaration does
+    # not know about is real drift -- it would have no reduced slot. Merged source
+    # ids are fine (they map to their target); anything else present-but-undeclared
+    # is an error.
+    stray = present - set(labels.keys())
+    if stray:
+        raise RuntimeError(
+            f"Volume contains labels absent from the labels file (atlas/labels drift): {sorted(stray)}"
+        )
 
-    # Renumber the remaining labels to contiguous 0..M (np.unique is sorted, so
+    # Renumber the fixed node universe to contiguous 0..M (node_ids is sorted, so
     # Unknown==0 maps to reduced 0).
-    old_labels = np.unique(atlas)
-    new_labels = np.arange(len(old_labels))
-
     full_to_reduced = -np.ones(max(labels.keys()) + 1, dtype=int)
-    full_to_reduced[old_labels] = new_labels
-    # Also map the (now-absent) merged source ids to their target's reduced id,
-    # so full_to_reduced is valid for every original label, not just survivors.
+    full_to_reduced[node_ids] = np.arange(len(node_ids))
+    # Map each merged source id to its target's reduced id, so full_to_reduced is
+    # valid for every original label and source voxels collapse onto their target.
     for key in sorted(aggregate_values.keys()):
         full_to_reduced[aggregate_values[key]] = full_to_reduced[key]
 
+    # full_to_reduced already folds sources into their target's reduced id, so a
+    # direct lookup handles the merge -- no separate volume-relabel pass needed.
     reduced_atlas = full_to_reduced[atlas].astype(np.int32)
-    reduced_to_full = old_labels
-    labels_list = [labels[int(x)] for x in old_labels]
+    reduced_to_full = node_ids
+    labels_list = [labels[int(x)] for x in node_ids]
 
     return reduced_atlas, reduced_to_full, full_to_reduced, labels_list
 
