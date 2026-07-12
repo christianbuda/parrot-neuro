@@ -64,6 +64,14 @@ ConvertTransformFile 3 "$ACPC2ANAT" "$RAS" --hm --RAS
 echo "== [1] DWI -> T1 (ANTs resample) + gradient rotation + dwi2tensor =="
 antsApplyTransforms -d 3 -e 3 -i "$ACPC_DWI" -r "$RAW_T1" -t "$ACPC2ANAT" -o "$DWI_T1" -n Linear
 antsApplyTransforms -d 3 -i "$ACPC_MASK" -r "$RAW_T1" -t "$ACPC2ANAT" -o "$MASK_T1" -n NearestNeighbor
+# Erode the (ANTs-resampled) brain mask by one voxel for the TENSOR FIT ONLY.
+# Linear resampling undershoots to <=0 on the mask rim, and dwi2tensor's
+# log-domain fit turns that into whole-voxel NaN tensors (327 rim voxels on
+# sub-010024) that later poison the anisotropy stage's batched eigh. The written
+# brain-mask artifact stays the full mask; only the fit + metrics below use the
+# eroded one, so no degenerate rim voxel is ever estimated in the first place.
+MASK_FIT="$SCRATCH/sub-${SUB}_space-T1_desc-fit_mask.mif"
+maskfilter "$MASK_T1" erode -npass 1 "$MASK_FIT" -quiet -force
 mrconvert "$ACPC_DWI" -fslgrad "$BVEC" "$BVAL" -export_grad_mrtrix "$SCRATCH/grad_acpc.b" "$SCRATCH/dwi_acpc.mif" -quiet -force
 python3 - "$RAS" "$SCRATCH/grad_acpc.b" "$SCRATCH/grad_T1.b" <<'PY'
 import sys, numpy as np
@@ -75,8 +83,23 @@ g[:, :3] = g[:, :3] @ R                            # rotate world gradients by R
 np.savetxt(gout, g)
 PY
 mrconvert "$DWI_T1" -grad "$SCRATCH/grad_T1.b" "$SCRATCH/dwi_T1.mif" -quiet -force
-dwi2tensor "$SCRATCH/dwi_T1.mif" "${PRE_T1}_tensor.nii.gz" -mask "$MASK_T1" -quiet -force
-tensor2metric "${PRE_T1}_tensor.nii.gz" -mask "$MASK_T1" \
+dwi2tensor "$SCRATCH/dwi_T1.mif" "${PRE_T1}_tensor.nii.gz" -mask "$MASK_FIT" -quiet -force
+# Belt-and-suspenders: guarantee a finite canonical tensor artifact even if the
+# fit still emits a non-finite voxel (log-domain singularities the erosion above
+# doesn't catch). Whole-voxel zero -> the anisotropy stage's iso fallback; also
+# keeps tensor2metric's FA/eigval/eigvec maps clean.
+python3 - "${PRE_T1}_tensor.nii.gz" <<'PY'
+import sys, numpy as np, nibabel as nib
+f = sys.argv[1]
+img = nib.load(f)
+d = np.asarray(img.dataobj, dtype=np.float32)         # writable copy, native tensor dtype
+bad = ~np.isfinite(d).all(axis=-1)                    # any non-finite component -> whole voxel
+if bad.any():
+    d[bad] = 0.0
+    nib.Nifti1Image(d, img.affine, img.header).to_filename(f)
+    print(f"[sanitize] zeroed {int(bad.sum())} non-finite tensor voxels")
+PY
+tensor2metric "${PRE_T1}_tensor.nii.gz" -mask "$MASK_FIT" \
     -num 1,2,3 \
     -vector "${PRE_T1}_param-eigvecs.nii.gz" \
     -value "${PRE_T1}_param-eigvals.nii.gz" \

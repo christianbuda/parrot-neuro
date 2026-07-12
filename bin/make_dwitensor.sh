@@ -62,6 +62,21 @@ dwi2tensor "$DWI" "${PRE}_tensor.nii.gz" \
     -mask "$MASK" \
     -quiet -force
 
+# Guarantee a finite canonical tensor artifact: dwi2tensor can emit whole-voxel
+# NaN in ill-conditioned voxels, which poisons the downstream anisotropy stage's
+# batched eigh. Zero any non-finite voxel (-> iso fallback) before deriving maps.
+python3 - "${PRE}_tensor.nii.gz" <<'PY'
+import sys, numpy as np, nibabel as nib
+f = sys.argv[1]
+img = nib.load(f)
+d = np.asarray(img.dataobj, dtype=np.float32)         # writable copy, native tensor dtype
+bad = ~np.isfinite(d).all(axis=-1)                    # any non-finite component -> whole voxel
+if bad.any():
+    d[bad] = 0.0
+    nib.Nifti1Image(d, img.affine, img.header).to_filename(f)
+    print(f"[sanitize] zeroed {int(bad.sum())} non-finite tensor voxels")
+PY
+
 # Derive the full eigen-frame + FA the conductivity model consumes. -num is
 # shared by -vector and -value, so 1,2,3 yields all three eigenvectors (9 vols:
 # v1|v2|v3) and all three eigenvalues -- the orthotropic axes + magnitudes.
