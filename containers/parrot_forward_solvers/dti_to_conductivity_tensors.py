@@ -182,6 +182,17 @@ def main():
         D6[use_cereb], valid[use_cereb] = sample_volume(
             nib.load(args.cerebellar_dti), centroids_mm[use_cereb], 6)
 
+    # Non-finite tensor voxels (NaN/Inf from dwi2tensor or warped-template
+    # borders) would poison the *batched* eigh below -- a single bad matrix
+    # throws "Eigenvalues did not converge" for the whole stack. Fold them into
+    # the isotropic fallback (via valid) and zero them so eigh converges; a zero
+    # tensor decomposes cleanly and is already caught by the eigvals<=0 gate.
+    finite = np.isfinite(D6).all(axis=1)
+    if not finite.all():
+        print(f"[WARN] {int((~finite).sum())} WM tets had non-finite DTI -> isotropic")
+        valid &= finite
+        D6[~finite] = 0.0
+
     # --- diffusion -> conductivity -------------------------------------------
     D = mrtrix6_to_mat(D6)
     eigvals, eigvecs = np.linalg.eigh(D)          # ascending; eigvecs[m,:,i] <-> eigvals[m,i]
