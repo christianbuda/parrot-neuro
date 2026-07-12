@@ -1726,9 +1726,21 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         DEF_SURF=$(awk '/^DEF_SURF[[:space:]]/ {print $2; exit}' "$CONFIG_FILE")
         DEF_VOL=$(awk  '/^DEF_VOL[[:space:]]/  {print $2; exit}' "$CONFIG_FILE")
         RATIO=$(awk    '/^RATIO[[:space:]]/    {print $2; exit}' "$CONFIG_FILE")
-        SMOOTH=$(awk   '/^SMOOTH[[:space:]]/   {print $2; exit}' "$CONFIG_FILE")
+        # Config templates name this field SIGMA; the mesher's positional arg is
+        # <SMOOTH>. Accept either -- a naming drift here previously blanked it, and
+        # an empty value collapses the mesher's positional args (OPT_TIME landed in
+        # the SMOOTH slot, the first tissue arg in OPT_TIME) -> wrong mesh.
+        SMOOTH=$(awk   '/^(SIGMA|SMOOTH)[[:space:]]/ {print $2; exit}' "$CONFIG_FILE")
         OPT_TIME=$(awk '/^OPT_TIME[[:space:]]/ {print $2; exit}' "$CONFIG_FILE")
         TISSUE_ARGS=($(awk '/^[[:space:]]*[0-9]/ {print $1":"$2":"$3}' "$CONFIG_FILE"))
+
+        # Fail loud if any scalar failed to parse: an empty value silently shifts
+        # the mesher's positional arguments and corrupts the mesh (see SMOOTH above).
+        for _p in ANGLE DIST DEF_SURF DEF_VOL RATIO SMOOTH OPT_TIME; do
+            if [ -z "${!_p}" ]; then
+                echo "Error: mesher parameter $_p not found in $CONFIG_FILE"; exit 1
+            fi
+        done
 
         step_start=$(date +%s)
 
