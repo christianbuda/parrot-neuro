@@ -1,10 +1,9 @@
-# Use the stable DUNE 2.10 core image.
-# NOTE: this is a moving tag, not pinned by @sha256 digest. The exact digest
-# behind the validated 1.3.2 image is no longer recoverable (the 2.10 tag has
-# since been reassigned upstream), so a rebuild rebases onto whatever 2.10 points
-# to now and must be re-validated. To make future rebuilds reproducible, pin
-# `...dune:2.10@sha256:<digest>` after the next validated build.
-FROM registry.dune-project.org/docker/ci/dune:2.10
+# Use the stable DUNE 2.10 core image, pinned by digest for reproducibility.
+# The 2.10 tag is a moving target upstream, so a bare tag lets rebuilds silently
+# rebase onto a new base. This digest is the one validated for this image: a full
+# DUNEuro compile plus a duneuropy import (MEEGDriver3d) and OpenMEEG CLI smoke
+# test all pass on it. Re-pin (after re-validating) if you deliberately bump the base.
+FROM registry.dune-project.org/docker/ci/dune:2.10@sha256:8cca8a8e2a1dd2c776074ea15f533f2b835ec11c031e2e6f5972b9f626e46f35
 
 # 1. Force HOME back to /duneci so the pre-configured dune.opts works perfectly
 ENV HOME=/duneci
