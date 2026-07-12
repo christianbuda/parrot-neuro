@@ -80,11 +80,30 @@ running=0; pending=0; total=0
 
 while IFS='|' read -r jobid jobname state exitcode; do
     [ -n "$jobid" ] || continue
-    [[ "$jobid" == *"["* ]] && continue          # skip un-expanded pending array ranges
     # --min-jobid: drop tasks from earlier submissions (cancelled smoke/headless runs).
     if [ -n "$MINJOB" ]; then
         master=${jobid%_*}
         case "$master" in ''|*[!0-9]*) : ;; *) [ "$master" -lt "$MINJOB" ] && continue ;; esac
+    fi
+    # Un-expanded pending array range, e.g. 49277376_[20-226] or _[20-226%40]:
+    # sacct emits ONE row for all not-yet-scheduled tasks. Don't error-analyse it
+    # (it's not a task that ran), but DO count its members toward the pending tally
+    # -- otherwise "0 pending" wrongly implies the run has (nearly) drained.
+    if [[ "$jobid" == *"["* ]]; then
+        range=${jobid#*[}; range=${range%]}; range=${range%%%*}   # strip [ ] and %throttle
+        n=0
+        IFS=',' read -ra _parts <<< "$range"
+        for p in "${_parts[@]}"; do
+            case "$p" in
+                *-*) lo=${p%-*}; hi=${p#*-}; n=$(( n + hi - lo + 1 )) ;;
+                *)   n=$(( n + 1 )) ;;
+            esac
+        done
+        state=${state%% *}
+        TALLY[$state]=$(( ${TALLY[$state]:-0} + n ))
+        total=$(( total + n ))
+        [ "$state" = PENDING ] && pending=$(( pending + n ))
+        continue
     fi
     state=${state%% *}                            # "CANCELLED by 12345" -> CANCELLED
     TALLY[$state]=$(( ${TALLY[$state]:-0} + 1 ))
