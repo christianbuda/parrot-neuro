@@ -31,8 +31,12 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
 # --- 3. Setup DUNEuro Workspace ---
 WORKDIR /duneci/modules
 
-# Pull the stable 2.10 release of dune-pdelab
-RUN git clone --branch releases/2.10 https://gitlab.dune-project.org/pdelab/dune-pdelab.git 
+# Pin dune-pdelab to the tested commit on releases/2.10 for reproducibility
+# (a plain branch clone tracks the moving branch tip; a full clone + checkout of
+# the exact SHA reproduces the validated image regardless of later branch moves).
+# dune-pdelab: 17a2c0509b5e0912e1bec6783eeb15d8a342bb5b
+RUN git clone https://gitlab.dune-project.org/pdelab/dune-pdelab.git && \
+    cd dune-pdelab && git checkout 17a2c0509b5e0912e1bec6783eeb15d8a342bb5b
 
 # Pin duneuro and duneuro-py to specific tested commits for reproducibility.
 # duneuro:    8f344b4da9c128ddf3e47af5ec136d05a3aeb162
