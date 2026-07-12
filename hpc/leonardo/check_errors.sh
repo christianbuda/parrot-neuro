@@ -114,6 +114,40 @@ while IFS='|' read -r jobid jobname state exitcode; do
 done < <(sacct -X -n -P --starttime "$SINCE" --name="$NAMES" \
              --format=JobID,JobName,State,ExitCode 2>/dev/null || true)
 
+# --- live queue (squeue) -----------------------------------------------------
+# sacct's --starttime view OMITS never-started PENDING tasks: they have no start
+# time, so the queued tail (and dependency-held chunks) is invisible to sacct.
+# squeue is the authority for in-flight work -- `-r` expands array ranges to one
+# line per element, so counting is exact and needs no bracket parsing. sacct stays
+# the source of truth for ERRORED/terminal states (it catches OOM/TIMEOUT/NODE_FAIL
+# a live-queue snapshot never sees); squeue only drives the "not final" guard.
+q_running=0; q_pending=0; have_squeue=0
+if command -v squeue >/dev/null 2>&1; then
+    have_squeue=1
+    while IFS='|' read -r st jid; do
+        [ -n "$st" ] || continue
+        if [ -n "$MINJOB" ]; then
+            m=${jid%_*}
+            case "$m" in ''|*[!0-9]*) : ;; *) [ "$m" -lt "$MINJOB" ] && continue ;; esac
+        fi
+        case "$st" in
+            RUNNING) q_running=$((q_running+1)) ;;
+            PENDING) q_pending=$((q_pending+1)) ;;
+        esac
+    done < <(squeue --me -h -r -t PENDING,RUNNING --name="$NAMES" -o '%T|%i' 2>/dev/null || true)
+fi
+in_flight=$((q_running + q_pending))
+
+# Fold the live PENDING count into the tally as its own state line -- sacct can't
+# see queued tasks, so without this the tally would show only what has started.
+# squeue is authoritative for PENDING, so override (don't add) any sacct value,
+# then recompute total so the header matches the sum of the displayed lines.
+if [ "$have_squeue" -eq 1 ] && [ "$q_pending" -gt 0 ]; then
+    TALLY[PENDING]=$q_pending
+    total=0
+    for st in "${!TALLY[@]}"; do total=$(( total + ${TALLY[$st]} )); done
+fi
+
 echo "=== Parrot cohort error check (chunks: $CHUNKS  since: $SINCE) ==="
 if [ "$total" -eq 0 ]; then
     echo "No parrot-{$CHUNKS} tasks found in the window. Widen with --since (e.g. --since now-3days),"
@@ -126,8 +160,14 @@ echo "State tally ($total tasks):"
 for st in $(printf '%s\n' "${!TALLY[@]}" | sort); do
     printf '  %6d  %s\n' "${TALLY[$st]}" "$st"
 done
-[ $((running+pending)) -gt 0 ] && \
-    echo "  (note: $running running + $pending pending -- not final; re-run when they drain)"
+if [ "$have_squeue" -eq 1 ]; then
+    [ "$in_flight" -gt 0 ] && \
+        echo "  (note: $q_running running + $q_pending pending in queue [squeue] -- not final; re-run when they drain)"
+elif [ $((running+pending)) -gt 0 ]; then
+    # squeue unavailable (e.g. run off-cluster): fall back to sacct's in-flight
+    # view, which cannot see never-started PENDING tasks and so may undercount.
+    echo "  (note: $running running + $pending pending [sacct; may undercount queued] -- not final; re-run when they drain)"
+fi
 
 # --- errors ------------------------------------------------------------------
 if [ "${#errors[@]}" -eq 0 ]; then
