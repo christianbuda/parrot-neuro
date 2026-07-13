@@ -553,33 +553,43 @@ run_in_docker_SOLVER() {
     local log_file=$2
     local image=$3
     local cmd=$4
-    local optional=${5:-}   # pass "optional" to make a failure NON-FATAL (warn + continue)
+    local mode=${5:-}   # ""=fatal (abort on failure) | "optional"=warn+continue (rc 0)
+                        # | "collect"=preserve FAILED_ log + return the failure rc so the
+                        #   caller can aggregate (used by the per-solver forwardsolvers block,
+                        #   so one solver's failure doesn't stop the others from being attempted)
 
     local pre="s=\$(mktemp -d $WORK_DIR_DOCKER/solver.XXXXXX) && cd \"\$s\" && \
 cp /pipeline/geometry.geom /pipeline/conductivities.cond /pipeline/neuronal_strength_dict.json \"\$s\"/ && "
 
-    # NON-FATAL variant: the OpenMEEG/BEM leadfield relies on watershed BEM
-    # surfaces that can be non-nestable on some heads. A failure there must never
-    # abort the cohort -- the FEM (DUNEuro) leadfields are the primary deliverable
-    # and are computed from independent geometry. So warn, preserve the log under
-    # a FAILED_ prefix, and let the run continue (the DUNEuro calls below own the
-    # shared stage-completion marker).
-    if [ "$optional" = "optional" ]; then
-        CE_GPU=1; CE_HOME=1; CE_EXEC=/bin/bash
-        CE_BINDS=( "$BIDS_DIR:/bids:ro" "$OUTPUT_DIR:/derivatives" )
-        container_exec "$image" -c "${pre}${cmd}" > "${log_file}.partial" 2>&1
-        local rc=$?
-        if [ "$rc" -ne 0 ]; then
-            local failed="$(dirname "$log_file")/FAILED_$(date '+%Y%m%d-%H%M%S')_$(basename "$log_file")"
-            mv "${log_file}.partial" "$failed" 2>/dev/null || true
-            echo "WARNING: $step_name (OpenMEEG/BEM) failed for sub-${SUBJECT} (NON-FATAL); FEM leadfields and the rest of the cohort are unaffected. Log: $failed" | tee -a "${LOG_FILE:-/dev/stderr}"
-            return 0
-        fi
-        mv -f "${log_file}.partial" "$log_file"
-        return 0
+    # FATAL (default): delegate to the shared runner, which exits on failure.
+    if [ -z "$mode" ]; then
+        run_in_docker_FWD "$step_name" "$log_file" "$image" "${pre}${cmd}"
+        return
     fi
 
-    run_in_docker_FWD "$step_name" "$log_file" "$image" "${pre}${cmd}"
+    # NON-FATAL variants (optional / collect): run, and on failure preserve the log
+    # under a FAILED_ prefix (never as the success marker). "optional" swallows the
+    # failure (rc 0) -- e.g. the OpenMEEG/BEM leadfield, which relies on watershed BEM
+    # surfaces that can be non-nestable on some heads and must never abort the cohort.
+    # "collect" returns the failure rc so the caller can decide (aggregate + exit later),
+    # while still attempting the remaining solvers. Each call owns its OWN log file, so on
+    # success it commits that per-solver marker (a rerun skips only the ones that finished).
+    CE_GPU=1; CE_HOME=1; CE_EXEC=/bin/bash
+    CE_BINDS=( "$BIDS_DIR:/bids:ro" "$OUTPUT_DIR:/derivatives" )
+    container_exec "$image" -c "${pre}${cmd}" > "${log_file}.partial" 2>&1
+    local rc=$?
+    if [ "$rc" -ne 0 ]; then
+        local failed="$(dirname "$log_file")/FAILED_$(date '+%Y%m%d-%H%M%S')_$(basename "$log_file")"
+        mv "${log_file}.partial" "$failed" 2>/dev/null || true
+        if [ "$mode" = "optional" ]; then
+            echo "WARNING: $step_name failed for sub-${SUBJECT} (NON-FATAL); the FEM leadfields and the rest of the cohort are unaffected. Log: $failed" | tee -a "${LOG_FILE:-/dev/stderr}"
+            return 0
+        fi
+        echo "[ERROR] $step_name failed for sub-${SUBJECT} (Exit Code: $rc). Log: $failed" | tee -a "${LOG_FILE:-/dev/stderr}"
+        return "$rc"
+    fi
+    mv -f "${log_file}.partial" "$log_file"   # SUCCESS: commit this solver's own marker
+    return 0
 }
 
 # Run the final QC stage in the parrot_qc image. The QC code is baked into the
@@ -1807,40 +1817,61 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # ---------------------------------------------------------
     # SOLVE FORWARD PROBLEM
     # ---------------------------------------------------------
+    # Each solver writes its OWN log (forwardsolvers-<solver>_log.txt) and is
+    # independently log-guarded, so (a) a failure names exactly which solve broke and
+    # (b) a rerun redoes only the failed solver, not all of them (each DUNEuro solve is
+    # ~15+ min). The DUNEuro solves run in "collect" mode: a failure is preserved as a
+    # FAILED_ log and recorded, but the remaining solvers are still attempted -- so a
+    # broken SimNIBS solve can't mask a working CGAL one. If any REQUIRED (DUNEuro) solve
+    # failed we exit non-zero at the end, so the task still surfaces as SLURM FAILED for
+    # triage. OpenMEEG/BEM stays optional (watershed BEM is non-nestable on some heads).
     NAME="forwardsolvers"
-    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+    if want_stage "$NAME"; then
         log_step "Running $NAME reconstruction..."
         mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
         mkdir -p "$OUTPUT_DIR/leadfields/sub-${SUBJECT}"
 
         step_start=$(date +%s)
+        solver_fail=0   # set if any required (DUNEuro) solve fails; -> non-zero stage exit
 
-        spacing=$(printf "%.1f" "$SPACING_OPENMEEG")
-        echo "Solving forward problem with OpenMEEG at $spacing mm dipole spacing"
-        run_in_docker_SOLVER "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_openmeeg.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing" optional
+        if [ ! -f "$LOG_DIR/${NAME}-openmeeg_log.txt" ]; then
+            spacing=$(printf "%.1f" "$SPACING_OPENMEEG")
+            echo "Solving forward problem with OpenMEEG at $spacing mm dipole spacing"
+            run_in_docker_SOLVER "$NAME-openmeeg" "$LOG_DIR/${NAME}-openmeeg_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_openmeeg.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing" optional
+        fi
 
-        spacing=$(printf "%.1f" "$SPACING_DUNEURO_SIMNIBS")
-        echo "Solving forward problem with DUNEuro using SimNIBS charm mesh, at $spacing mm dipole spacing"
-        run_in_docker_SOLVER "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/simnibscharm/sub-${SUBJECT}/subject.msh --tissue_names /derivatives/simnibscharm/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/simnibscharm/sub-${SUBJECT}/conductivities.txt --label simnibs --valid_tissues \"Gray-Matter\""
+        if [ ! -f "$LOG_DIR/${NAME}-simnibs_log.txt" ]; then
+            spacing=$(printf "%.1f" "$SPACING_DUNEURO_SIMNIBS")
+            echo "Solving forward problem with DUNEuro using SimNIBS charm mesh, at $spacing mm dipole spacing"
+            run_in_docker_SOLVER "$NAME-simnibs" "$LOG_DIR/${NAME}-simnibs_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/simnibscharm/sub-${SUBJECT}/subject.msh --tissue_names /derivatives/simnibscharm/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/simnibscharm/sub-${SUBJECT}/conductivities.txt --label simnibs --valid_tissues \"Gray-Matter\"" collect || solver_fail=1
+        fi
 
-        spacing=$(printf "%.1f" "$SPACING_DUNEURO_CGAL")
-        echo "Solving forward problem with DUNEuro using CGAL mesh, at $spacing mm dipole spacing"
-        run_in_docker_SOLVER "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --label CGAL --valid_tissues $CGAL_VALID_TISSUES"
+        if [ ! -f "$LOG_DIR/${NAME}-cgal_log.txt" ]; then
+            spacing=$(printf "%.1f" "$SPACING_DUNEURO_CGAL")
+            echo "Solving forward problem with DUNEuro using CGAL mesh, at $spacing mm dipole spacing"
+            run_in_docker_SOLVER "$NAME-cgal" "$LOG_DIR/${NAME}-cgal_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --label CGAL --valid_tissues $CGAL_VALID_TISSUES" collect || solver_fail=1
+        fi
 
         # Anisotropic CGAL leadfield (extra, alongside the isotropic one above) --
         # only when the anisotropy stage produced WM conductivity tensors. White
         # Matter must stay OUT of CGAL_VALID_TISSUES here, or the Venant source
         # model's monopole patch collapses for WM dipoles.
-        if [ -f "$OUTPUT_DIR/anisotropy/sub-${SUBJECT}/conductivity_tensors.npy" ]; then
+        if [ -f "$OUTPUT_DIR/anisotropy/sub-${SUBJECT}/conductivity_tensors.npy" ] && [ ! -f "$LOG_DIR/${NAME}-anisotropic_log.txt" ]; then
+            spacing=$(printf "%.1f" "$SPACING_DUNEURO_CGAL")
             echo "Solving forward problem with DUNEuro using CGAL mesh (ANISOTROPIC WM), at $spacing mm dipole spacing"
-            run_in_docker_SOLVER "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --label CGAL_anisotropic --valid_tissues $CGAL_VALID_TISSUES --dti_tensors_path /derivatives/anisotropy/sub-${SUBJECT}/conductivity_tensors.npy"
+            run_in_docker_SOLVER "$NAME-anisotropic" "$LOG_DIR/${NAME}-anisotropic_log.txt" "$DOCKER_IMAGE" "python3 /scripts/make_leadfield_duneuro.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --label CGAL_anisotropic --valid_tissues $CGAL_VALID_TISSUES --dti_tensors_path /derivatives/anisotropy/sub-${SUBJECT}/conductivity_tensors.npy" collect || solver_fail=1
         fi
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+
+        if [ "$solver_fail" -ne 0 ]; then
+            echo "[ERROR] One or more DUNEuro solves failed for sub-${SUBJECT} (see FAILED_${NAME}-*_log.txt). Aborting." | tee -a "$LOG_FILE"
+            exit 1
+        fi
     else
-        echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
-    fi    
+        echo "$NAME stage not selected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+    fi
 
 
     # ---------------------------------------------------------------------
