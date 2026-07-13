@@ -32,19 +32,26 @@ def get_dipole_tissues(dipoles, nodes, elements, labels):
     # 3. Build a fast KD-Tree using the centroids
     tree = cKDTree(centroids)
 
+    n_elements = len(centroids)
     dipole_element_indices = -np.ones(len(dipoles), dtype = int)
 
     iter = 0
     max_iter = 50
     ntop = 20
+    # A dipole inside a tetrahedron sits among that tet's handful of nearest centroids, so
+    # cap the candidate count: querying k > n_elements makes cKDTree return an out-of-bounds
+    # sentinel index (-> IndexError), and huge-k queries are pathologically slow. Anything
+    # still unmatched at the cap is (marginally) outside every tet -> snapped after the loop.
+    ntop_max = min(n_elements, 512)
     tol = -1e-6
     remaining_dipoles = np.arange(len(dipoles), dtype = int) # indices of the dipoles to check
     while len(remaining_dipoles)>0:
         if iter > max_iter:
             break
 
-        # Find the indices of the ntop closest tetrahedra to each dipole
-        _, candidate_idx = tree.query(dipoles[remaining_dipoles], k=ntop)
+        # Find the indices of the ntop closest tetrahedra to each dipole (never > n_elements)
+        k = min(ntop, ntop_max)
+        _, candidate_idx = tree.query(dipoles[remaining_dipoles], k=k)
 
         ### Test the candidates using Barycentric Coordinates:
         
@@ -75,16 +82,36 @@ def get_dipole_tissues(dipoles, nodes, elements, labels):
         dipole_element_indices[current_idx] = candidate_idx[found_idx==1][which_inside[found_idx==1]]
 
         # get the indices of the dipoles that need to be checked better
+        n_before = len(remaining_dipoles)
         remaining_dipoles = remaining_dipoles[found_idx!=1]
-        
+
         # adjust tolerances and neighbours as needed
         if np.any(found_idx>1):
             tol/=3
         if np.any(found_idx==0):
             ntop = int(ntop*1.5)
+        # at the candidate cap with no progress -> the rest lie outside the mesh (snapped below)
+        if k>=ntop_max and len(remaining_dipoles)==n_before:
+            break
         iter += 1
 
-    assert np.all(dipole_element_indices>=0), 'Could not find a tetrahedron for each dipole, it is possible that a dipole may lie outside the mesh, check please!'
+    # Boundary dipoles are sampled on a surface that can sit a fraction of a mm outside the
+    # tetrahedral volume, so they fall inside no tet. Snap them to the nearest tetrahedron
+    # (as adjust_dipoles does for wrong-tissue dipoles) instead of failing the whole leadfield
+    # -- but a dipole grossly outside signals a real placement/mesh problem, so guard by distance.
+    if len(remaining_dipoles)>0:
+        dist, nearest = tree.query(dipoles[remaining_dipoles], k=1)
+        max_off = 0.01  # 10 mm (metres): far beyond any surface/volume boundary mismatch
+        if np.any(dist>max_off):
+            n_bad = int((dist>max_off).sum())
+            raise ValueError(f'{n_bad} dipole(s) lie more than {max_off*1000:.0f} mm outside the '
+                             f'mesh (max {dist.max()*1000:.2f} mm): likely a dipole-placement or '
+                             f'mesh problem, check please!')
+        dipole_element_indices[remaining_dipoles] = nearest
+        print(f'Snapped {len(remaining_dipoles)} boundary dipole(s) to the nearest tetrahedron '
+              f'(max offset {dist.max()*1000:.3f} mm).', flush=True)
+
+    assert np.all(dipole_element_indices>=0), 'Internal error: dipole left unresolved after snap.'
 
     dipole_labels = labels[dipole_element_indices]
 
