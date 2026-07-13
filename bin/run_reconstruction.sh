@@ -1884,7 +1884,9 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # Three independently log-guarded sub-steps (like the per-spacing dipoles block) so a failure
     # in one doesn't force redoing the others on rerun -- the leadfield solve alone is ~15 min.
     NAME="artifacts"
-    if [ ! -f "$HARTMUT_CACHE/MANIFEST.json" ] || [ ! -f "$MNI_TEMPLATE" ]; then
+    if ! want_stage "$NAME"; then
+        echo "$NAME stage not selected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+    elif [ ! -f "$HARTMUT_CACHE/MANIFEST.json" ] || [ ! -f "$MNI_TEMPLATE" ]; then
         echo "EEG-artifact template assets missing; skipping $NAME for sub-${SUBJECT} (prewarm to enable)." | tee -a "$LOG_FILE"
     else
         log_step "Running EEG-artifact source modeling ($NAME) for sub-${SUBJECT}..."
@@ -1894,21 +1896,21 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         if [ "$VOLUME_TO_MESH" = "sim4life" ]; then ART_EYE_TISSUE="Eyes"; else ART_EYE_TISSUE="Eye (Aqueous Humor)"; fi
 
         # 1. subject<->MNI affine (mri image, antspyx). Full-head T1 in the surface/mesh frame.
-        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}-registration_log.txt" ]; then
+        if [ ! -f "$LOG_DIR/${NAME}-registration_log.txt" ]; then
             run_in_docker_MRI "$NAME-registration" "$LOG_DIR/${NAME}-registration_log.txt" \
                 "micromamba run -n neuro python /scripts/mni_registration.py --subject $SUBJECT --output_dir /derivatives --t1 /derivatives/raw/sub-${SUBJECT}/T1.nii.gz --template /derivatives/.templateflow/tpl-MNI152NLin2009cAsym/tpl-MNI152NLin2009cAsym_res-01_T1w.nii.gz --template-scalp /derivatives/.hartmut_cache/nyhead_scalp.stl --subject-scalp /derivatives/surfaces/sub-${SUBJECT}/charm_scalp.ply"
         fi
 
         # 2. artifact dipoles (forward_model image): eyes native + muscle warp. Writes
         #    artifacts/dipoles/sub-<S>/artifactsources.json (counts + neck-coverage flag).
-        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}-dipoles_log.txt" ]; then
+        if [ ! -f "$LOG_DIR/${NAME}-dipoles_log.txt" ]; then
             run_in_docker_FWD "$NAME-dipoles" "$LOG_DIR/${NAME}-dipoles_log.txt" "$IMG_FORWARD_MODEL" \
                 "cd /scripts && python place_artifact_dipoles.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
         fi
 
         # 3. artifact leadfields (solvers image). Eyes + muscle share ONE transfer matrix; muscle
         #    falls back to HArtMuT's canned leadfield when the warp under-hosted (no neck FOV).
-        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}-leadfields_log.txt" ]; then
+        if [ ! -f "$LOG_DIR/${NAME}-leadfields_log.txt" ]; then
             # Did enough muscle sources survive the warp to solve on the subject's own mesh?
             neck_ok=$(python3 -c "import json;print(json.load(open('$OUTPUT_DIR/artifacts/dipoles/sub-${SUBJECT}/artifactsources.json')).get('muscle',{}).get('neck_coverage',False))" 2>/dev/null || echo False)
 
@@ -1942,30 +1944,44 @@ PY
 
     # ---------------------------------------------------------------------
     # FINAL QC: validate every stage's outputs + render an HTML report.
-    # ALWAYS runs (no idempotency guard) so the report reflects the latest
-    # outputs, and is NON-FATAL -- it is informational and must never block the
-    # pipeline. It is quick (~2-3 min/subject) relative to the heavy stages.
+    # Runs when selected (the default '--stages all' includes it), with NO
+    # idempotency guard -- so a full run always refreshes the report from the
+    # latest outputs. Gated by --stages (unlike the old always-run behavior) so
+    # a stage-subset invocation (e.g. an HPC chunk running only electrodes,
+    # dipoles, tetmesh) does NOT fire qc: its pyvista/OSMesa render of the fresh
+    # tetmesh can exceed a tight chunk memory budget and OOM the SLURM task, and
+    # the report would be meaningless anyway with the leadfields not yet built.
+    # NON-FATAL -- informational, must never block the pipeline. Quick
+    # (~2-3 min/subject) relative to the heavy stages.
     # ---------------------------------------------------------------------
     NAME="qc"
-    log_step "Running final $NAME for subject $SUBJECT..."
-    step_start=$(date +%s)
-    run_in_docker_QC "$NAME" "$LOG_DIR/${NAME}_log.txt" \
-        "python /qc/run_qc.py --subject $SUBJECT --output_dir /derivatives --threads $N_THREADS"
-    step_end=$(date +%s)
-    echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+    if want_stage "$NAME"; then
+        log_step "Running final $NAME for subject $SUBJECT..."
+        step_start=$(date +%s)
+        run_in_docker_QC "$NAME" "$LOG_DIR/${NAME}_log.txt" \
+            "python /qc/run_qc.py --subject $SUBJECT --output_dir /derivatives --threads $N_THREADS"
+        step_end=$(date +%s)
+        echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+    else
+        echo "$NAME stage not selected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+    fi
 
     # All stages done for this subject. Outputs are already user-owned (rootless), so there
     # is nothing to re-own; just clear CURRENT_SUBJECT for symmetry with the cleanup trap.
     CURRENT_SUBJECT=""
 done
 
-# Group-level QC: aggregate every subject's report into qc/index.html. Always
-# refreshed (no idempotency guard) and non-fatal: a failure here must not fail a
-# run whose per-subject reports already succeeded.
-echo "Writing group QC index..."
-mkdir -p "$OUTPUT_DIR/logs"
-run_in_docker_QC "qc-group" "$OUTPUT_DIR/logs/qc-group_log.txt" \
-    "python /qc/run_qc.py --group --output_dir /derivatives"
+# Group-level QC: aggregate every subject's report into qc/index.html. Gated by
+# --stages 'qc' (like the per-subject pass) so a stage-subset invocation doesn't
+# refresh it; when selected it is always refreshed (no idempotency guard) and
+# non-fatal: a failure here must not fail a run whose per-subject reports already
+# succeeded.
+if want_stage "qc"; then
+    echo "Writing group QC index..."
+    mkdir -p "$OUTPUT_DIR/logs"
+    run_in_docker_QC "qc-group" "$OUTPUT_DIR/logs/qc-group_log.txt" \
+        "python /qc/run_qc.py --group --output_dir /derivatives"
+fi
 
 echo ""
 echo "====================================================================="
