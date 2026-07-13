@@ -15,7 +15,11 @@ version = "0.1.0"
 
 [tasks]
 # `pixi run <name>` — reproducible, discoverable entry points.
-nb = "marimo edit development/tvb-optim_EEG/eeg.py"
+# TVB→EEG optimization workbench (imports the tvbeeg/ package). cwd is set so
+# the notebook's relative imports resolve; data paths are package-anchored.
+nb = { cmd = "marimo edit eeg_optim.py", cwd = "development/tvb-optim_EEG" }
+# One-off EEG extraction (.set → EEG/all_data.pkl).
+nb-extract = { cmd = "marimo edit eeg_extract.py", cwd = "development/tvb-optim_EEG" }
 
 [dependencies]
 # Pinned interpreter: without this, pixi resolves the newest Python (3.14),
