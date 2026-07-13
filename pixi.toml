@@ -33,6 +33,7 @@ scipy = "*"
 matplotlib = "*"
 mne = "*"
 marimo = ">=0.23.13,<0.24"
+ipykernel = ">=7.3.0,<8"
 
 [pypi-dependencies]
 # Cross-platform pure-Python / wheel deps. tvboptim is built on JAX, so it
