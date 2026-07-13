@@ -3,6 +3,8 @@ import nibabel as nib
 import meshio
 import numpy as np
 import argparse
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 
 def read_medit(input_path):
     # reads medit file outputted by CGAL 6.1.1 mesher
@@ -79,6 +81,35 @@ def write_medit(output_path, vertices, vertex_labels, triangles, triangle_labels
     return
 
 
+def largest_connected_component(n_points, tetrahedra, tetrahedron_labels):
+    """Keep only the tetrahedra of the mesh's largest connected component.
+
+    CGAL meshing can pinch off tiny islands of tetrahedra (e.g. a few
+    skull-cortical tets) disconnected from the main head volume. Each floating
+    component is a null space in the FEM stiffness matrix, so DUNEuro's CG solve
+    diverges to defect=nan or stagnates for hours. Returns the tets (+ labels) of
+    the single largest component and diagnostics (n_dropped_tets, n_tet_components);
+    the caller's vertex compaction then removes the islands' now-orphan vertices.
+
+    Connectivity is over the node graph induced by tet edges (two nodes are
+    adjacent iff they share a tetrahedron). Vertices used by no tetrahedron
+    (label-0 orphans) form singleton components and are ignored here.
+    """
+    e = tetrahedra
+    pairs = np.vstack([e[:, [0, 1]], e[:, [0, 2]], e[:, [0, 3]],
+                       e[:, [1, 2]], e[:, [1, 3]], e[:, [2, 3]]])
+    g = coo_matrix((np.ones(len(pairs), dtype=np.int8), (pairs[:, 0], pairs[:, 1])),
+                   shape=(n_points, n_points))
+    _, comp = connected_components(g, directed=False)
+    tet_comp = comp[tetrahedra[:, 0]]          # a tet's 4 nodes all share one component
+    tet_components = np.unique(tet_comp)
+    if len(tet_components) <= 1:
+        return tetrahedra, tetrahedron_labels, 0, len(tet_components)
+    largest = int(np.bincount(tet_comp).argmax())
+    keep = tet_comp == largest
+    return tetrahedra[keep], tetrahedron_labels[keep], int((~keep).sum()), len(tet_components)
+
+
 if __name__ == "__main__":
     ################ input parsing ##############
     parser = argparse.ArgumentParser(
@@ -144,6 +175,15 @@ if __name__ == "__main__":
     keep_tet = tetrahedron_labels != 0
     tetrahedra = tetrahedra[keep_tet]
     tetrahedron_labels = tetrahedron_labels[keep_tet]
+
+    # Drop disconnected islands, keeping only the largest connected component (see
+    # largest_connected_component). Done BEFORE the vertex compaction below so the
+    # islands' orphan vertices are removed together with the label-0 orphans.
+    tetrahedra, tetrahedron_labels, n_island_tet, n_tet_comp = \
+        largest_connected_component(len(points), tetrahedra, tetrahedron_labels)
+    if n_island_tet > 0:
+        print(f'Kept the largest of {n_tet_comp} connected components: dropped '
+              f'{n_island_tet} tetrahedra in {n_tet_comp - 1} disconnected island(s).', flush=True)
 
     # Compact the vertex array after dropping the label-0 hull tets. Any vertex
     # that belonged ONLY to a removed background tet is now an orphan: still in
