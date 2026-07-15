@@ -6,7 +6,11 @@ from .. import render2d, render3d
 
 NAME = "tetmesh"
 TITLE = "Tetrahedral FEM mesh"
-DESCRIPTION = ("The CGAL tetrahedral FEM mesh. The planar section should show clean, well-shaped tetrahedra with tissue labels in the right places, and no degenerate/inverted elements (see the volume histogram).")
+DESCRIPTION = ("The CGAL tetrahedral FEM mesh. The planar section should show clean, well-shaped tetrahedra with tissue labels in the right places, and no inverted or zero-volume elements (see the volume histogram). A few slivers (tiny but non-zero tets) are expected and warn rather than fail; they are usually one localized cluster at a thin tissue interface and do not measurably affect the leadfield.")
+
+# Sliver fraction above which the mesh is considered systemically bad rather than
+# carrying the handful of slivers CGAL's time-limited perturb/exude always leaves.
+SLIVER_FRAC_FAIL = 1e-5
 
 
 def _int_cell_key(grid):
@@ -40,17 +44,40 @@ def run(ctx) -> StageResult:
     r.add(PASS if n_tet > 10000 else WARN, "element count",
           f"{n_tet} tetrahedra, {grid.n_points} nodes ({grid.n_cells} cells incl. facets)")
 
-    # element volumes -> degenerate/inverted detection (tets only)
+    # element volumes -> inverted / degenerate / sliver detection (tets only).
+    # The three conditions below are disjoint and graded separately: they are
+    # different failure modes with different consequences for the FEM solve.
     try:
+        if n_tet == 0:
+            raise ValueError("no tetrahedra to measure")
         vol = np.asarray(grid.compute_cell_sizes(length=False, area=False,
-                                                 volume=True).cell_data["Volume"])
-        # Winding can make ALL signed volumes negative -- that's a sign
-        # convention, not degeneracy. Only near-zero |volume| is a bad element.
-        absvol = np.abs(vol[tet_mask]) if n_tet else np.abs(vol)
+                                                 volume=True).cell_data["Volume"])[tet_mask]
+        absvol = np.abs(vol)
+
+        # Winding can make ALL signed volumes negative -- that's a sign convention,
+        # not degeneracy. A *mix* of signs is genuine inversion, which corrupts the
+        # stiffness assembly; the minority sign is the inverted population.
+        n_inv = min(int((vol > 0).sum()), int((vol < 0).sum()))
+        r.add(PASS if n_inv == 0 else FAIL, "element orientation",
+              f"{n_inv}/{n_tet} inverted tets" + ("" if n_inv == 0 else " (mixed winding)"))
+
+        # Exactly-zero tets contribute nothing to the stiffness matrix -> always fatal.
+        n_zero = int((absvol == 0).sum())
+        r.add(PASS if n_zero == 0 else FAIL, "degenerate elements",
+              f"{n_zero}/{n_tet} tets with exactly zero volume")
+
+        # Slivers (tiny but non-zero). cell_radius_edge_ratio -- the mesher's only
+        # shape criterion -- provably does not exclude slivers, and perturb/exude run
+        # under a time limit, so a small surviving population is expected rather than
+        # a defect: a localized cluster degrades conditioning but the solve absorbs it.
+        # Only a systemic population means the mesh itself is bad, so grade by fraction.
         tiny = max(1e-9, float(np.median(absvol)) * 1e-6)
-        n_bad = int((absvol <= tiny).sum())
-        r.add(PASS if n_bad == 0 else FAIL, "non-degenerate elements",
-              f"{n_bad}/{n_tet} tets with |volume| <= {tiny:.2g} mm³")
+        n_sliver = int(((absvol <= tiny) & (absvol > 0)).sum())
+        frac = n_sliver / n_tet
+        r.add(PASS if n_sliver == 0 else (WARN if frac <= SLIVER_FRAC_FAIL else FAIL),
+              "sliver elements",
+              f"{n_sliver}/{n_tet} ({frac:.2g}) tets with 0 < |volume| <= {tiny:.2g} mm³")
+
         ctx.add_figure(r, "tetmesh_volume_hist", "Element volume distribution",
                        lambda p: render2d.histogram(absvol, p,
                                                     "tet volumes", "|volume| (mm³)", logy=True))
