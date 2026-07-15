@@ -262,15 +262,41 @@ def heatmap(matrix, out, title=None, log=False, cmap="magma"):
     fig.tight_layout(); fig.savefig(out, dpi=_DPI); plt.close(fig)
 
 
-def histogram(values, out, title=None, xlabel="", bins=60, logy=False):
+def histogram(values, out, title=None, xlabel="", bins=60, logy=False, logx=False,
+              vline=None, vline_label=None):
+    """Histogram of `values`.
+
+    `logx` log-spaces the bins and the x-axis, for quantities spanning many orders
+    of magnitude (e.g. tet volumes: a 1e-10 sliver is invisible in a linear bin next
+    to a 0.2 mm³ median). Non-positive values cannot be shown on a log axis and are
+    dropped; the count is reported in the x-label so they are not silently lost.
+    `vline` draws a reference marker -- pass a check's threshold to make the figure
+    show what the check decided on.
+    """
     v = np.asarray(values, dtype=np.float64)
     v = v[np.isfinite(v)]
+    n_dropped = 0
+    if logx:
+        n_dropped = int((v <= 0).sum())
+        v = v[v > 0]
     fig, ax = plt.subplots(figsize=(5.6, 3.6))
-    ax.hist(v, bins=bins)
+    if logx and v.size and v.min() < v.max():
+        edges = np.logspace(np.log10(v.min()), np.log10(v.max()), bins + 1)
+    else:
+        edges = bins
+    ax.hist(v, bins=edges)
+    if logx:
+        ax.set_xscale("log")
     if logy:
         ax.set_yscale("log")
+    if vline is not None:
+        ax.axvline(vline, color="crimson", lw=1.0, ls="--",
+                   label=vline_label or f"{vline:.2g}")
+        ax.legend(fontsize=7, loc="upper left")
     if title:
         ax.set_title(title)
+    if n_dropped:
+        xlabel = f"{xlabel} — {n_dropped} non-positive value(s) not shown"
     ax.set_xlabel(xlabel); ax.set_ylabel("count")
     fig.tight_layout(); fig.savefig(out, dpi=_DPI); plt.close(fig)
 

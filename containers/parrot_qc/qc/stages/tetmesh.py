@@ -78,9 +78,14 @@ def run(ctx) -> StageResult:
               "sliver elements",
               f"{n_sliver}/{n_tet} ({frac:.2g}) tets with 0 < |volume| <= {tiny:.2g} mm³")
 
+        # log-x: volumes span ~11 orders of magnitude, so a sliver is invisible in a
+        # linear bin next to the median. The threshold marker shows what the sliver
+        # check graded on -- anything left of the line is a counted sliver.
         ctx.add_figure(r, "tetmesh_volume_hist", "Element volume distribution",
                        lambda p: render2d.histogram(absvol, p,
-                                                    "tet volumes", "|volume| (mm³)", logy=True))
+                                                    "tet volumes", "|volume| (mm³)",
+                                                    logy=True, logx=True, vline=tiny,
+                                                    vline_label=f"sliver threshold ({tiny:.2g})"))
     except Exception as e:  # noqa: BLE001
         r.warn("element volumes", f"could not compute: {e}")
 
