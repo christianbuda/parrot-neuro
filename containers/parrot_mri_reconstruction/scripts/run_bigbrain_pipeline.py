@@ -23,7 +23,14 @@ def run_multistage_registration(fixed, moving, outprefix):
 
     # --- STAGE 1: TRANSLATION ---
     args.extend([
-        "--initial-moving-transform", f"[{f_ptr},{m_ptr},0]",
+        # Initialize by centre of MASS (feature 1), not geometric centre (0). Both
+        # images are skull-stripped brains (subject: T1_stripped*mask; template:
+        # reference_brain), so the intensity centroid is an unbiased, far more robust
+        # starting estimate: geometric-centre init let the hard cross-contrast affine
+        # lock into a bad basin (near-identity linear + ~10 cm z-shift), leaving the
+        # warp covering only the upper third of the brain (silently corrupting the
+        # neural density downstream). Guarded by the coverage gate below.
+        "--initial-moving-transform", f"[{f_ptr},{m_ptr},1]",
         "--transform", "Translation[1]",
         "--metric", f"mattes[{f_ptr},{m_ptr},1,32,None]",
         "--convergence", "[10000x10000x0x0,1.e-8,10]",
@@ -169,3 +176,28 @@ if __name__ == "__main__":
     )
 
     ants.image_write(warped_bigbrain_100um_staining, os.path.join(output_dir,f"bigbrain/sub-{subject}/subject_full16_100um_2009b_sym.nii.gz"))
+
+    ################## VALIDATE COVERAGE #################
+    # Fail fast on a mis-registration. A healthy warp fills essentially the whole
+    # cortex; a failed subject<->BigBrain affine leaves the warped staining covering
+    # only a fraction of the brain, silently corrupting the per-parcel neural density
+    # (uncovered voxels default to a flat weight, saturated ones to zero). That is a
+    # SILENT data-quality failure -- ANTs still reports success -- so we abort here,
+    # before the expensive dipole/leadfield stages consume the bad density, rather
+    # than degrade. Cohort stats (227 LEMON subjects): healthy warps cover 99.7-99.8%;
+    # the five failures covered 3-30%. 90% sits far below every good subject and far
+    # above every failure. (The parrot_qc bigbrain stage reports the same metric and
+    # warns below 95%; this harder threshold only aborts unambiguous failures.)
+    COVERAGE_FAIL_FRAC = 0.90
+    brain_mask = subject_brain.numpy() > 0
+    covered = (warped_bigbrain_100um_staining.numpy() > 0) & brain_mask
+    n_brain = int(brain_mask.sum())
+    coverage = covered.sum() / n_brain if n_brain else 0.0
+    print(f'BigBrain warp covers {coverage*100:.1f}% of the subject brain.')
+    if coverage < COVERAGE_FAIL_FRAC:
+        raise SystemExit(
+            f'ERROR: BigBrain registration failed for sub-{subject}: warped staining '
+            f'covers only {coverage*100:.1f}% of the brain (< {COVERAGE_FAIL_FRAC*100:.0f}%). '
+            'The subject<->BigBrain affine likely locked into a bad local minimum; the '
+            'neural density would be unreliable. Delete this subject\'s bigbrain_log.txt '
+            'and re-run (center-of-mass init should fix most cases).')

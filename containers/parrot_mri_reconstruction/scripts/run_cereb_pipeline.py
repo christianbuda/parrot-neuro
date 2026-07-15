@@ -23,7 +23,12 @@ def run_multistage_registration(fixed, moving, outprefix):
 
     # --- STAGE 1: TRANSLATION ---
     args.extend([
-        "--initial-moving-transform", f"[{f_ptr},{m_ptr},0]",
+        # Centre-of-MASS init (feature 1), not geometric centre (0). Both images are
+        # skull-stripped brains (subject: T1_stripped*mask; template: cerebellum
+        # brain.nii.gz), so the intensity centroid is an unbiased, more robust start
+        # than aligning grid centres -- same fragility fix applied to the BigBrain
+        # registration (geometric-centre init let a hard fit lock into a bad basin).
+        "--initial-moving-transform", f"[{f_ptr},{m_ptr},1]",
         "--transform", "Translation[1]",
         "--metric", f"mattes[{f_ptr},{m_ptr},1,32,None]",
         "--convergence", "[10000x10000x0x0,1.e-8,10]",

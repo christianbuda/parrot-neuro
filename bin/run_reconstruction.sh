@@ -605,6 +605,15 @@ run_in_docker_QC() {
 
     CE_HOME=1; CE_EXEC=/bin/bash
     CE_BINDS=( "$OUTPUT_DIR:/derivatives" )
+    # Keep all container temp on the per-subject managed HOME (/parrot_home lives
+    # on the derivatives filesystem), not the default /tmp. On LEONARDO's Booster
+    # nodes /tmp is a RAM-backed tmpfs bounded by the job's --mem, so QC's
+    # tractogram decompress (render3d inflates the whole-brain .tck.gz via
+    # tempfile) overflows it -> "OSError: [Errno 28] No space left on device".
+    # TMPDIR steers tempfile + matplotlib's cache (MPLCONFIGDIR defaults under it)
+    # onto real disk. Harmless on the workstation (docker /tmp is ample anyway).
+    mkdir -p "$PARROT_HOME_HOST/tmp"
+    CE_ENVS=( "TMPDIR=/parrot_home/tmp" )
     if ! container_exec "$IMG_QC" -c "$cmd" > "$log_file" 2>&1; then
         echo "WARNING: $step_name failed (see $log_file)" | tee -a "${LOG_FILE:-/dev/stderr}"
     fi

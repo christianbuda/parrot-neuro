@@ -211,6 +211,11 @@ def avg_ref(mat):
 
     return np.dot(avg_ref_op, mat)
 
+# Fraction of all-zero source columns above which the processed leadfield is
+# rejected as corrupt (see the backstop check at the end of process_leadfield).
+DEAD_SOURCE_FAIL_FRAC = 0.05
+
+
 def process_leadfield(leadfield, adjust_volume = True, adjust_density = True, neuronal_strength_dict = None, rereference = True):
     if adjust_volume:
         volume = np.load(add_output_dir(f'dipoles/sub-{subject}/spacing{dipole_spacing}mm/dipole_volume.npy'))/1e9 # convert from mm3 to m3, not needed though
@@ -234,6 +239,23 @@ def process_leadfield(leadfield, adjust_volume = True, adjust_density = True, ne
     
     if rereference:
         leadfield = avg_ref(leadfield)
+
+    # Backstop: a healthy raw leadfield has no all-zero source columns, but the
+    # per-dipole weighting above (notably the BigBrain-derived neural density) can
+    # zero a column if a factor is zero -- which is how a silently mis-registered
+    # BigBrain warp deletes whole cortical regions. A few boundary sources at ~0 is
+    # normal (<0.25% across the cohort); a percent-scale block is a data fault, so we
+    # fail rather than emit a quietly corrupt leadfield. The bigbrain stage's coverage
+    # gate should catch this upstream; this is defense-in-depth for any other cause.
+    n_dip = leadfield.shape[1] // 3
+    per_dip = np.sqrt((leadfield.reshape(leadfield.shape[0], n_dip, 3) ** 2).sum(axis=(0, 2)))
+    frac_dead = (per_dip == 0).sum() / n_dip
+    if frac_dead > DEAD_SOURCE_FAIL_FRAC:
+        raise ValueError(
+            f'{(per_dip == 0).sum()}/{n_dip} ({frac_dead*100:.1f}%) leadfield source '
+            f'columns are all-zero (> {DEAD_SOURCE_FAIL_FRAC*100:.0f}% threshold). This '
+            'signals corrupt per-dipole weighting -- most often a failed BigBrain warp '
+            'zeroing the neural density (check the bigbrain stage / QC coverage).')
 
     return leadfield
 

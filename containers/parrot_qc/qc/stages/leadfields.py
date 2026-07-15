@@ -16,6 +16,11 @@ from ..checks import StageResult, PASS, WARN, FAIL, fmt_range
 from .. import render2d, render3d
 from .electrodes import _scalp_mesh
 
+# Fraction of all-zero leadfield columns above which we warn. Cohort stats (227
+# LEMON subjects): benign boundary dropout tops out at ~0.24%; real failures are
+# >=14%. 1% sits in the empty gap between the two populations.
+DEAD_SOURCE_WARN_FRAC = 0.01
+
 NAME = "leadfields"
 TITLE = "Leadfields — forward solution"
 DESCRIPTION = ("The forward-solution leadfield(s). Each should be finite, non-zero, and have the expected (n_elec, 3*n_dip) shape; the sensitivity map should show superficial sources brighter than deep ones.")
@@ -94,8 +99,18 @@ def run(ctx) -> StageResult:
             # solution. Flag them numerically here; below we clamp the colour scale to
             # the real (nonzero) distribution so those zeros don't hijack the range.
             n_zero = int((sens == 0).sum())
-            r.add(PASS if n_zero == 0 else WARN, f"dead sources {tag}",
-                  f"{n_zero}/{len(sens)} sources with all-zero leadfield columns"
+            frac_zero = n_zero / len(sens)
+            # A small fraction of all-zero columns is expected: those dipoles sit
+            # at/just outside the FEM conductor boundary and get no forward solution.
+            # Across a 227-subject cohort this stays <0.25%; only a genuine geometry
+            # or neural-density failure pushes it into the percent range (a broken
+            # BigBrain warp zeroed ~15-19% of one subject's cortex -- see the
+            # bigbrain stage's coverage check, which catches that upstream). Flag on
+            # fraction, not any-nonzero, so benign boundary dropout doesn't warn.
+            status = PASS if frac_zero < DEAD_SOURCE_WARN_FRAC else WARN
+            r.add(status, f"dead sources {tag}",
+                  f"{n_zero}/{len(sens)} ({frac_zero * 100:.2f}%) sources with all-zero "
+                  f"leadfield columns"
                   + (" (sources at/outside the FEM mesh boundary)" if n_zero else ""))
             if pos_sens.size:
                 log_sens = np.log10(sens + pos_sens.min() * 1e-3)
