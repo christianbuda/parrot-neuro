@@ -139,12 +139,13 @@ if __name__ == "__main__":
     surf_dir = args.surf_dir
     seg_dir = args.seg_dir
 
-    try:
-        os.mkdir(os.path.join(output_dir, f'atlas/sub-{subject}/hippunfold_surf'))
-        os.mkdir(os.path.join(output_dir, f'atlas/sub-{subject}/freesurfer_surf'))
-        os.mkdir(os.path.join(output_dir, f'atlas/sub-{subject}/cerebellum_surf'))
-    except FileExistsError:
-        raise RuntimeError('Atlases already detected in subject folder, you should delete the atlas folder before running this module!')
+    # Idempotent: recreate the surface subdirs if absent, else reuse them. A rerun
+    # (log deleted) overwrites the per-parcel outputs in place -- filenames are
+    # deterministic (atlas{100..1000} + these three fixed surf dirs), so no manual
+    # "delete the atlas folder first" is needed, matching every other stage.
+    os.makedirs(os.path.join(output_dir, f'atlas/sub-{subject}/hippunfold_surf'), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, f'atlas/sub-{subject}/freesurfer_surf'), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, f'atlas/sub-{subject}/cerebellum_surf'), exist_ok=True)
 
     T1 = nib.load(T1_path)
     fsLUT = get_freesurfer_LUT(os.path.join(output_dir, f'{surf_dir}/sub-{subject}/FreeSurferColorLUT.txt'))[1]

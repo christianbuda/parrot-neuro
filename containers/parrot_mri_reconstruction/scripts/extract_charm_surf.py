@@ -16,7 +16,7 @@ if __name__ == "__main__":
 
 	# Use os.path.join to create the path to the bem directory.
 	charm_dir = os.path.join(charm_dir, 'converted')
-	os.mkdir(charm_dir)
+	os.makedirs(charm_dir, exist_ok=True)
 
 	# extract interesting surfaces
 

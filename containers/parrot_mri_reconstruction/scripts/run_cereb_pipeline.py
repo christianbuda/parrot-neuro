@@ -207,7 +207,7 @@ if __name__ == "__main__":
 
     ############## RUN REGISTRATIONS #################
     # run affine+nonlinear transform
-    os.mkdir(os.path.join(output_dir, f'cerebellum/sub-{subject}/transform_files'))
+    os.makedirs(os.path.join(output_dir, f'cerebellum/sub-{subject}/transform_files'), exist_ok=True)
 
     print('Running nonlinear registration...')
     
