@@ -67,10 +67,15 @@ def run(ctx) -> StageResult:
             detail += " -- registration likely failed; neural density is unreliable"
         r.add(status, "brain coverage", detail)
 
+        # Translucent overlay (alpha): the warped staining is near-white over
+        # WM/CSF, so an opaque "hot" overlay hides the T1 entirely. At ~0.5 the T1
+        # anatomy shows through while the staining's gyral pattern (warp quality)
+        # stays visible.
         ctx.add_figure(r, "bigbrain_on_t1", "Warped BigBrain staining on T1 (coverage)",
                        lambda p: render2d.stat_overlay(
                            ctx.t1_path() if ctx.t1_path().exists() else brain,
-                           stain, p, title="warped BigBrain staining", cmap="hot"))
+                           stain, p, title="warped BigBrain staining", cmap="hot",
+                           alpha=0.5))
 
     _affine_diagnostic(r, d / "transform_files" / "0GenericAffine.mat")
     return r

@@ -207,12 +207,32 @@ def contours_overlay(bg, label, out, title=None, colors="red", linewidths=0.6):
     disp.close()
 
 
-def stat_overlay(bg, stat, out, title=None, cmap="hot", vmax=None, threshold=1e-6):
-    """Continuous map (e.g. FA) overlaid on a background volume."""
-    disp = plotting.plot_stat_map(
-        str(stat), bg_img=_masked_bg(bg), display_mode="mosaic", title=title,
-        cmap=cmap, vmax=vmax, threshold=threshold, colorbar=True, black_bg=False,
-    )
+def stat_overlay(bg, stat, out, title=None, cmap="hot", vmax=None, threshold=1e-6,
+                 alpha=None):
+    """Continuous map (e.g. FA) overlaid on a background volume.
+
+    `alpha` (0-1) draws the overlay translucently so the background anatomy shows
+    through. Use it for maps that fill large, near-opaque regions -- e.g. the warped
+    BigBrain staining, whose bright non-cortical tissue would otherwise completely
+    hide the T1. When None the overlay is opaque (default plot_stat_map behaviour).
+    """
+    if alpha is None:
+        disp = plotting.plot_stat_map(
+            str(stat), bg_img=_masked_bg(bg), display_mode="mosaic", title=title,
+            cmap=cmap, vmax=vmax, threshold=threshold, colorbar=True, black_bg=False,
+        )
+    else:
+        # plot_stat_map exposes no reliable alpha, so build the overlay by hand so
+        # the T1 shows through. No colorbar: for a coverage/quality view the absolute
+        # staining value axis isn't meaningful. nilearn renamed add_overlay's opacity
+        # kwarg alpha->transparency (>=0.13); try the new name, fall back to the old.
+        disp = plotting.plot_anat(_masked_bg(bg), display_mode="mosaic", title=title)
+        try:
+            disp.add_overlay(str(stat), cmap=cmap, threshold=threshold,
+                             transparency=alpha, vmax=vmax, colorbar=False)
+        except TypeError:
+            disp.add_overlay(str(stat), cmap=cmap, threshold=threshold,
+                             alpha=alpha, vmax=vmax, colorbar=False)
     disp.savefig(out, dpi=_DPI)
     disp.close()
 

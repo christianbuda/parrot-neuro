@@ -89,8 +89,43 @@ def run(ctx) -> StageResult:
         except Exception as e:  # noqa: BLE001
             r.warn("direction-by-region", f"could not evaluate: {e}")
 
+    # DEC (direction-encoded colour) map. The pipeline doesn't emit one, so build it
+    # here from the DTI eigenframe in mesh/T1 space (dwitensor/): DEC = |v1| * FA,
+    # mapped to RGB (R=L-R, G=A-P, B=S-I). The conductivity tensors reuse these same
+    # eigenvectors (shape-preserving orthotropic), so this shows the exact principal
+    # directions the FEM sees -- CC should read red, cortico-spinal tract blue.
     dec = d / "dec_principal_direction.nii.gz"
     if dec.exists():
         ctx.add_figure(r, "dec_map", "DEC map (CC red, CST blue)",
                        lambda p: render2d.rgb_mosaic(dec, p, "principal direction (DEC)"))
+    else:
+        dec_img = _dec_from_dti(ctx)
+        if dec_img is not None:
+            ctx.add_figure(r, "dec_map", "DEC map (CC red, CST blue)",
+                           lambda p: render2d.rgb_mosaic(dec_img, p, "principal direction (DEC)"))
     return r
+
+
+def _dec_from_dti(ctx):
+    """Build a DEC map (nibabel RGB image, last axis = 3) from the DTI eigframe +
+    FA in T1 space (dwitensor/). Returns None if the maps aren't available."""
+    dd = ctx.stage_dir("dwitensor")
+    if not dd.exists():
+        return None
+    evec = first_existing(*sorted(dd.glob("*space-T1*param-eigvecs.nii.gz")))
+    fap = first_existing(*sorted(dd.glob("*space-T1*param-fa.nii.gz")))
+    if evec is None or fap is None:
+        return None
+    try:
+        ei = nib.load(str(evec))
+        ev = np.asanyarray(ei.dataobj).astype(np.float32)
+        if ev.ndim != 4 or ev.shape[-1] < 3:
+            return None
+        v1 = ev[..., :3]  # primary eigenvector (v1|v2|v3 packed; v1 = first 3)
+        fa = np.asanyarray(nib.load(str(fap)).dataobj).astype(np.float32)
+        if fa.ndim == 4:
+            fa = fa[..., 0]
+        dec = np.abs(v1) * np.clip(fa, 0.0, 1.0)[..., None]
+        return nib.Nifti1Image(np.clip(dec, 0.0, 1.0), ei.affine)
+    except Exception:  # noqa: BLE001 - the DEC figure is a nicety, never fail the stage
+        return None

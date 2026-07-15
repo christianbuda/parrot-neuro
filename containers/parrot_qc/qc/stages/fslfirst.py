@@ -6,7 +6,7 @@ from .. import render3d
 
 NAME = "fslfirst"
 TITLE = "FSL FIRST — subcortical surfaces"
-DESCRIPTION = ("Subcortical structures from FSL FIRST. Each labelled structure should be smooth and sit deep inside the cortex (shown translucent) in its correct bilateral position, without intersecting the cortical surface or its neighbours.")
+DESCRIPTION = ("Subcortical structures from FSL FIRST. Each labelled structure should be smooth and sit deep inside the cortex (shown translucent) in its correct bilateral position, without intersecting the cortical surface or its neighbours. If a surface looks wrong (rough, misshapen, mislocated), the error is purely cosmetic — it does not affect the leadfield — and most likely reflects input T1 quality rather than a pipeline fault.")
 
 # 7 bilateral structures + brainstem
 _EXPECTED = 15
