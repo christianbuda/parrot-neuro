@@ -209,6 +209,24 @@ def register_to_atlas_frame(mp2rage_brain: Path, raw_t1w: Path, canonical: Path 
     return best_fwd, best_ncc, used
 
 
+def save_native_to_t1w_transform(fwdtransforms, out_path: Path) -> None:
+    """Save the rigid transform that resamples native-frame images into the Parrot T1w frame.
+
+    The pipeline registers fixed=mp2rage_brain (native/BOLD frame), moving=raw T1w, so its
+    ``fwdtransforms`` warp the T1w *into* native space. We save the **inverse**, so the written
+    ``.mat`` maps native -> T1w and applies directly (no invert flag), e.g. to carry the BOLD
+    (or any native-frame image) into the Parrot T1/atlas frame:
+
+        antsApplyTransforms -d 3 -i <native_image> -r <T1w> -t <this.mat> -o <out_in_T1w>
+
+    (Verified: the inverted transform applied plainly reaches within-brain NCC ~0.99.)
+    """
+    import ants
+
+    inv = ants.invert_ants_transform(ants.read_transform(fwdtransforms[0]))
+    ants.write_transform(inv, str(out_path))
+
+
 def atlas_on_bold_grid(atlas_path: Path, bold_ref, fwdtransforms, workdir: Path,
                        tag: str) -> np.ndarray:
     """Resample an atlas label volume onto the BOLD grid via the rigid transform.
@@ -268,7 +286,8 @@ def highpass_rows(ts: np.ndarray, tr: float, cutoff: float) -> np.ndarray:
 
 
 def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
-                  variants: tuple[str, ...], force: bool, canonical: Path | None = None) -> None:
+                  variants: tuple[str, ...], force: bool, canonical: Path | None = None,
+                  transforms_only: bool = False) -> None:
     """Copy the BOLD and write region time series for one subject."""
     import ants
     import nibabel as nib
@@ -283,8 +302,28 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
     out_dir = FMRI_DERIV / sub
     bold_dst = out_dir / f"{sub}_task-{TASK}_space-native_desc-preproc_bold.nii.gz"
     json_path = out_dir / f"{sub}_task-{TASK}_timeseries.json"
+    xfm_path = out_dir / f"{sub}_from-native_to-T1w_xfm.mat"
     npz_paths = {v: out_dir / f"{sub}_task-{TASK}_atlas-schaefer_desc-{v}_timeseries.npz"
                  for v in variants}
+
+    # Transforms-only backfill: just (re)compute + save the native->T1w rigid transform,
+    # skipping the BOLD copy and the (expensive) time-series extraction.
+    if transforms_only:
+        mp2rage_brain, raw_t1w = anat_pair(sub)
+        if not (mp2rage_brain.exists() and raw_t1w.exists()):
+            print("  no recon inputs -> transform SKIPPED")
+            return
+        if xfm_path.exists() and not force:
+            print("  transform exists -> skip (use --force to overwrite)")
+            return
+        fwd, ncc, n_reg = register_to_atlas_frame(mp2rage_brain, raw_t1w, canonical)
+        if not np.isfinite(ncc) or ncc < REG_NCC_GATE:
+            print(f"  registration FAILED (NCC {ncc:.3f} < {REG_NCC_GATE}) -> no transform")
+            return
+        out_dir.mkdir(parents=True, exist_ok=True)
+        save_native_to_t1w_transform(fwd, xfm_path)
+        print(f"  saved {xfm_path.name} (NCC {ncc:.3f}, {n_reg} attempt(s))")
+        return
 
     if all(p.exists() for p in npz_paths.values()) and bold_dst.exists() and not force:
         print("  outputs exist -> skip (use --force to overwrite)")
@@ -320,6 +359,11 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
                 "source_bold": bold_src.name,
             }, indent=2))
             return
+
+        # Save the native->T1w rigid transform (lets the BOLD be carried into the Parrot
+        # T1/atlas frame later; the time series themselves don't need it -- they use the
+        # atlas resampled into the BOLD frame below).
+        save_native_to_t1w_transform(fwd, xfm_path)
 
         # BOLD as arrays (float32 to keep the 4D volume ~3.5 GB, not 7) + finite brain mask.
         bold_img = nib.load(str(bold_src))
@@ -378,6 +422,13 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
             "within_brain_ncc": round(ncc, 4),
             "attempts": n_reg,
         },
+        "native_to_t1w_transform": {
+            "file": xfm_path.name,
+            "usage": ("Carries native-frame images into the Parrot T1/atlas frame. Apply "
+                      "directly (no invert flag): antsApplyTransforms -d 3 -i <native_img> "
+                      "-r <T1w> -t " + xfm_path.name + " -o <out_in_T1w>. Not needed for the "
+                      "time series (the atlas is instead resampled into the pristine native BOLD)."),
+        },
         "variants": {
             "full": "full Schaefer + subcortical/cerebellar/hippocampal label atlas (raw ids)",
             "conn": "renumbered connectome-node atlas; row i == structural-connectome node i",
@@ -419,6 +470,9 @@ def main() -> None:
                     help="regions with fewer in-brain voxels get a NaN row (default: 5)")
     ap.add_argument("--variants", default="full,conn",
                     help="comma list of atlas variants to extract (default: full,conn)")
+    ap.add_argument("--transforms-only", action="store_true",
+                    help="only (re)compute + save the native->T1w rigid transform per subject "
+                         "(skip BOLD copy and time-series extraction); for backfilling transforms")
     args = ap.parse_args()
 
     variants = tuple(v for v in args.variants.split(",") if v in VARIANTS)
@@ -434,7 +488,7 @@ def main() -> None:
               else "canonical registration init: NONE found (fallback disabled)")
         for sub in subjects:
             stage_subject(sub, args.tr, args.highpass, args.min_voxels, variants, args.force,
-                          canonical)
+                          canonical, args.transforms_only)
 
     write_dataset_description()
     print("\nDone.")
