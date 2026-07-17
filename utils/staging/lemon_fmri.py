@@ -329,19 +329,14 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
         print("  outputs exist -> skip (use --force to overwrite)")
         return
 
-    # --- 1. copy the BOLD (verbatim) + confounds record -----------------------------------
-    out_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(bold_src, bold_dst)
-    if confounds_src.exists():
-        shutil.copyfile(confounds_src, out_dir / f"{sub}_task-{TASK}_confounds.txt")
-    print(f"  BOLD copied -> {bold_dst.name}")
-
     # --- inputs for the time-series extraction (recon must exist) -------------------------
+    # The fMRI folder + BOLD copy are created only after a successful registration (below),
+    # so un-reconstructed or registration-failed subjects leave no fMRI output at all.
     mp2rage_brain, raw_t1w = anat_pair(sub)
     missing = [str(p) for p in (mp2rage_brain, raw_t1w, ATLAS_DIR / sub, CONN_DIR / sub)
                if not p.exists()]
     if missing:
-        print(f"  WARNING no recon inputs ({missing[0]} ...) -> time series SKIPPED (BOLD kept)")
+        print(f"  WARNING no recon inputs ({missing[0]} ...) -> SKIPPED (no fMRI folder)")
         return
 
     # --- 2. recover the BOLD<->atlas frame transform (rigid) -----------------------------
@@ -351,19 +346,18 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
         print(f"  rigid registration: within-brain NCC = {ncc:.3f} ({n_reg} attempt(s))")
         if not np.isfinite(ncc) or ncc < REG_NCC_GATE:
             print(f"  WARNING registration FAILED (NCC {ncc:.3f} < {REG_NCC_GATE}) -> "
-                  f"time series SKIPPED (BOLD kept). Inspect this subject.")
-            json_path.write_text(json.dumps({
-                "task": TASK, "status": "registration_failed",
-                "registration": {"within_brain_ncc": round(ncc, 4), "attempts": n_reg},
-                "note": "Rigid BOLD<->atlas registration below QC gate; no time series written.",
-                "source_bold": bold_src.name,
-            }, indent=2))
+                  f"SKIPPED (no fMRI folder). Inspect this subject.")
             return
 
-        # Save the native->T1w rigid transform (lets the BOLD be carried into the Parrot
-        # T1/atlas frame later; the time series themselves don't need it -- they use the
-        # atlas resampled into the BOLD frame below).
+        # Registration OK -> create the folder, copy the BOLD (verbatim) + confounds record,
+        # and save the native->T1w rigid transform (spatial convenience; the time series use the
+        # atlas resampled into the pristine native BOLD below, so the BOLD is never resampled).
+        out_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(bold_src, bold_dst)
+        if confounds_src.exists():
+            shutil.copyfile(confounds_src, out_dir / f"{sub}_task-{TASK}_confounds.txt")
         save_native_to_t1w_transform(fwd, xfm_path)
+        print(f"  BOLD copied -> {bold_dst.name}")
 
         # BOLD as arrays (float32 to keep the 4D volume ~3.5 GB, not 7) + finite brain mask.
         bold_img = nib.load(str(bold_src))
