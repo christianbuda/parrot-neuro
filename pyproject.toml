@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "parrot-neuro"
+version = "0.1.0"
+description = "Local-dev API over the Parrot forward-modeling pipeline outputs (Subject accessor)."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "Christian Buda", email = "chrichri975@gmail.com" }]
+
+# Core deps only. The Subject facade resolves paths with the stdlib and loads the
+# common file types with these three. Heavier readers (mne, nilearn, ...) are NOT
+# pulled in -- add them if/when the API grows a stage that needs them.
+dependencies = [
+    "numpy",
+    "nibabel",
+    "trimesh",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/parrot_neuro"]

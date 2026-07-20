@@ -34,6 +34,11 @@ matplotlib = "*"
 mne = "*"
 marimo = ">=0.23.13,<0.24"
 ipykernel = ">=7.3.0,<8"
+# Loaders for the src/parrot_neuro Subject API (volumes + surfaces). Pulled from
+# conda-forge so pixi resolves them against the same numpy as everything else.
+nibabel = "*"
+trimesh = "*"
+pytest = "*"     # runs tests/ (the Subject API smoke test)
 
 [pypi-dependencies]
 # Cross-platform pure-Python / wheel deps. tvboptim is built on JAX, so it
@@ -41,6 +46,8 @@ ipykernel = ">=7.3.0,<8"
 optax = "*"
 equinox = "*"
 tvboptim = "*"      # your TVB-optim library (PyPI, currently 0.3.1)
+# The local Subject API, installed editable so edits under src/ take effect live.
+parrot-neuro = { path = ".", editable = true }
 
 # --- JAX: GPU on linux-64, CPU everywhere else -------------------------------
 # The `cuda12` extra pulls the CUDA 12 *runtime* libraries as pip packages;
