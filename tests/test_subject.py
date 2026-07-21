@@ -56,8 +56,39 @@ def test_discovery(s: Subject):
 
 
 def test_optional_stage_flags_are_bool(s: Subject):
-    for flag in (s.has_dwi, s.has_anisotropy, s.has_artifacts, s.has_eeg, s.has_fmri):
+    for flag in (s.has_dwi, s.has_anisotropy, s.has_artifacts, s.has_eeg, s.has_fmri,
+                 s.has_optim_nodes):
         assert isinstance(flag, bool)
+
+
+def test_fmri_aligned_loaders(s: Subject):
+    """fMRI-aligned structural loaders: masked matrices are square and equal the full matrix
+    sliced by keep; labels/dipole indices align to the same K nodes."""
+    if not s.has_optim_nodes:
+        pytest.skip("no desc-optim_nodes for this subject")
+    import numpy as np
+
+    n = 1000
+    nodes = s.load.fmri_nodes(n)
+    keep = nodes.keep
+    k = int(keep.sum())
+    assert len(nodes) == k and nodes.to_conn.shape == (k,)
+    W = s.load.weights(n, fmri_aligned=True)
+    # masked == full sliced by keep (mask-first invariant)
+    assert np.array_equal(W, s.load.weights(n)[np.ix_(keep, keep)])
+    assert W.shape == (k, k)
+    assert s.load.distances(n, fmri_aligned=True).shape == (k, k)
+    assert s.load.weights(n, normalized=True, fmri_aligned=True).shape == (k, k)
+    assert len(s.load.connectivity_labels(n, fmri_aligned=True)) == k
+    # the fMRI is its own reference: its non-NaN rows are exactly the keep mask
+    ts = np.asarray(s.load.fmri_timeseries("conn")[f"ts_{n}"])
+    assert np.array_equal(~np.isnan(ts).any(axis=1), keep)
+    # dipole -> node index: valid indices land in [0, k); dropped-node dipoles are -1
+    sp = s.dipole_spacings()[0]
+    dn = s.load.dipole_node_labels(n, sp)
+    assert dn.shape == s.load.dipole_labels(n, sp).shape
+    valid = dn >= 0
+    assert dn[valid].min() >= 0 and dn[valid].max() < k
 
 
 def test_loaders_return_expected_types(s: Subject):

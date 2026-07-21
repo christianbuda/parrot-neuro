@@ -71,6 +71,11 @@ def _read_electrodes(path: Path) -> dict[str, np.ndarray]:
     return out
 
 
+def _read_lines(path: Path) -> list[str]:
+    """One entry per line, verbatim (e.g. connectivity ``labels_{N}.txt``)."""
+    return path.read_text().splitlines()
+
+
 def _read_label_table(path: Path) -> dict[int, str]:
     """Parse an ``id name ...`` LUT/labels table into ``{id: name}``. Skips comment
     and non-numeric-leading lines (mirrors the FreeSurfer-LUT parsing used in the
@@ -208,11 +213,70 @@ class SubjectLoaders:
         return self._read(self._s.path.dwi_param(param, space), _read_volume, L.DWITENSOR)
 
     # --- connectivity -------------------------------------------------------
-    def weights(self, n: int, normalized: bool = False) -> np.ndarray:
-        return self._read(self._s.path.weights(n, normalized), _read_table, L.CONNECTIVITY)
+    # `fmri_aligned=True` restricts a structural array to the fMRI-usable node set
+    # (the mask lives in the fMRI folder; see `fmri_nodes`). The mask is applied FIRST,
+    # so any global normalization you do downstream is self-consistent -- never normalize
+    # the full connectome and then slice. The fMRI side needs no such flag: the desc-conn
+    # time series *is* the reference axis and its own NaN rows define the mask.
+    def weights(self, n: int, normalized: bool = False, fmri_aligned: bool = False) -> np.ndarray:
+        W = self._read(self._s.path.weights(n, normalized), _read_table, L.CONNECTIVITY)
+        if fmri_aligned:
+            keep = self.fmri_keep(n)
+            W = W[np.ix_(keep, keep)]
+        return W
 
-    def distances(self, n: int) -> np.ndarray:
-        return self._read(self._s.path.distances(n), _read_table, L.CONNECTIVITY)
+    def distances(self, n: int, fmri_aligned: bool = False) -> np.ndarray:
+        D = self._read(self._s.path.distances(n), _read_table, L.CONNECTIVITY)
+        if fmri_aligned:
+            keep = self.fmri_keep(n)
+            D = D[np.ix_(keep, keep)]
+        return D
+
+    def connectivity_labels(self, n: int, fmri_aligned: bool = False) -> list[str]:
+        """Connectome node names aligned with the ``weights_{n}`` / ``distances_{n}`` rows
+        (length M; the leading Unknown node is dropped, matching the matrices). With
+        ``fmri_aligned=True`` the names are restricted to the fMRI-usable nodes (length K)."""
+        names = self._read(self._s.path.connectivity_labels(n), _read_lines, L.CONNECTIVITY)[1:]
+        if fmri_aligned:
+            return [nm for nm, k in zip(names, self.fmri_keep(n)) if k]
+        return names
+
+    # --- fMRI-derived node alignment (mask over the connectome axis) ---------
+    # The mask encodes BOLD coverage but indexes the connectome ROW axis, so it bridges
+    # the structural and functional sides. Consumers: the `fmri_aligned=` flags above and
+    # the dipole->node converter below.
+    def fmri_nodes(self, n: int, task: str = "rest") -> "FmriNodes":
+        """The node-alignment maps for resolution ``n`` (from the desc-optim_nodes npz):
+        ``keep`` (M,) bool, ``to_conn`` (K,) optim node -> connectome row (the shared
+        cross-subject axis; scatter fitted params here), ``from_conn`` (M,) connectome row
+        -> optim node (``-1`` if dropped)."""
+        z = self._read(self._s.path.optim_nodes(task), _read_npz, None)
+        return FmriNodes(
+            keep=np.asarray(z[f"keep_{n}"]),
+            to_conn=np.asarray(z[f"optim_to_conn_{n}"]),
+            from_conn=np.asarray(z[f"conn_to_optim_{n}"]),
+        )
+
+    def fmri_keep(self, n: int, task: str = "rest") -> np.ndarray:
+        """Boolean mask (M,) over connectome rows: True where the BOLD signal is usable
+        (``nvox >= min_voxels``), i.e. the non-NaN rows of the desc-conn time series."""
+        return self.fmri_nodes(n, task).keep
+
+    def dipole_node_labels(self, res: int, spacing: float, task: str = "rest") -> np.ndarray:
+        """Per-dipole *optimization-node* index (N,), ``-1`` where the dipole's connectome
+        node has no usable BOLD signal (dropped from the aligned set). Composes the
+        full->connectome (``full_to_reduced``) and connectome->optim (``from_conn``) maps, so
+        index k refers to ``weights(res, fmri_aligned=True)`` row k -- ready to build the
+        source->dipole projection in the aligned space. (This returns a *different id space*
+        from :meth:`dipole_labels`, which is why it is a separate method, not a flag.)"""
+        from_conn = self.fmri_nodes(res, task).from_conn
+        f2r = self._read(self._s.path.full_to_reduced(res), _read_npy, L.CONNECTIVITY)
+        labels = self.dipole_labels(res, spacing)
+        conn_row = f2r[labels] - 1  # reduced label id -> connectome row (Unknown 0 -> -1)
+        node = np.full(conn_row.shape, -1, dtype=np.int64)
+        valid = conn_row >= 0  # dipoles in Unknown (none today) never index from_conn[-1]
+        node[valid] = from_conn[conn_row[valid]]
+        return node
 
     # --- anisotropy (optional) ----------------------------------------------
     def conductivity_tensors(self) -> np.ndarray:
@@ -258,3 +322,20 @@ class DipoleSet:
 
     def __len__(self) -> int:
         return len(self.positions)
+
+
+@dataclass
+class FmriNodes:
+    """fMRI-derived node alignment for one resolution (all on the connectome row axis).
+
+    ``keep`` (M,) selects the fMRI-usable nodes; ``to_conn`` (K,) maps an aligned node back
+    to its connectome row -- the subject-independent axis to scatter fitted params onto for
+    cross-subject comparison; ``from_conn`` (M,) is the inverse, ``-1`` for dropped nodes.
+    """
+
+    keep: np.ndarray
+    to_conn: np.ndarray
+    from_conn: np.ndarray
+
+    def __len__(self) -> int:
+        return int(self.keep.sum())

@@ -151,6 +151,11 @@ class Subject:
     def has_fmri(self) -> bool:
         return (self.deriv / L.FMRI / self.subj).is_dir()
 
+    @property
+    def has_optim_nodes(self) -> bool:
+        """Whether the fMRI-derived optimization node mask (desc-optim_nodes) exists."""
+        return self.path.optim_nodes().exists()
+
     # --- discovery of variable outputs (glob) -------------------------------
     def available_leadfields(self) -> list[str]:
         """Discovered leadfield keys, e.g. ``['duneuroCGAL-2.0mm', 'openmeeg-4.0mm', ...]``.

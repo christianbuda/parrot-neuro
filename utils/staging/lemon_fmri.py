@@ -285,6 +285,62 @@ def highpass_rows(ts: np.ndarray, tr: float, cutoff: float) -> np.ndarray:
     return out
 
 
+def build_optim_nodes(nvox_by_res: dict[int, np.ndarray], min_voxels: int) -> dict[str, np.ndarray]:
+    """Optimization node mask for the connectome-node (conn) atlas, per resolution.
+
+    The optimization node set is the connectome axis restricted to rows with a usable
+    BOLD signal (``nvox_{N} >= min_voxels``) -- exactly the non-NaN rows of the desc-conn
+    time series. Everything is expressed on the connectome ROW axis (0..M-1), which is the
+    subject-independent comparison frame: ``weights_{N}`` row i == conn ``ts_{N}`` row i ==
+    connectome node i. Subjects are optimized independently on their own kept rows, but
+    ``optim_to_conn_{N}`` carries each optim node back to this shared axis so fitted
+    parameters can be compared across subjects (scatter into a length-M vector).
+
+    Returns npz arrays per resolution N:
+      * ``keep_{N}``          (M,) bool  -- nvox_{N} >= min_voxels
+      * ``optim_to_conn_{N}`` (K,) int32 -- optim node k -> connectome row (shared axis)
+      * ``conn_to_optim_{N}`` (M,) int32 -- connectome row -> optim node, -1 if dropped
+    """
+    out: dict[str, np.ndarray] = {}
+    for n, nvox in nvox_by_res.items():
+        keep = nvox >= min_voxels
+        optim_to_conn = np.flatnonzero(keep).astype(np.int32)
+        conn_to_optim = np.full(keep.size, -1, dtype=np.int32)
+        conn_to_optim[optim_to_conn] = np.arange(optim_to_conn.size, dtype=np.int32)
+        out[f"keep_{n}"] = keep
+        out[f"optim_to_conn_{n}"] = optim_to_conn
+        out[f"conn_to_optim_{n}"] = conn_to_optim
+    return out
+
+
+def backfill_optim_nodes(sub: str, min_voxels: int, force: bool) -> None:
+    """Write the desc-optim_nodes npz from an already-staged desc-conn npz.
+
+    The mask derives entirely from the saved ``nvox_{N}`` counts, so this needs no BOLD,
+    registration, or time-series re-extraction -- a near-instant pass for backfilling the
+    already-staged cohort.
+    """
+    out_dir = FMRI_DERIV / sub
+    conn_path = out_dir / f"{sub}_task-{TASK}_atlas-schaefer_desc-conn_timeseries.npz"
+    optim_path = out_dir / f"{sub}_task-{TASK}_atlas-schaefer_desc-optim_nodes.npz"
+    if not conn_path.exists():
+        print(f"  {sub}: no desc-conn npz -> skipped")
+        return
+    if optim_path.exists() and not force:
+        print(f"  {sub}: optim nodes exist -> skip (use --force)")
+        return
+    z = np.load(conn_path)
+    nvox_by_res = {n: z[f"nvox_{n}"] for n in RESOLUTIONS if f"nvox_{n}" in z.files}
+    if not nvox_by_res:
+        print(f"  {sub}: desc-conn has no nvox arrays -> skipped")
+        return
+    arrays = build_optim_nodes(nvox_by_res, min_voxels)
+    np.savez_compressed(optim_path, **arrays)
+    n = max(nvox_by_res)  # report the finest resolution present
+    print(f"  {sub}: wrote {optim_path.name} "
+          f"(kept {int(arrays[f'keep_{n}'].sum())}/{nvox_by_res[n].size} @{n})")
+
+
 def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
                   variants: tuple[str, ...], force: bool, canonical: Path | None = None,
                   transforms_only: bool = False) -> None:
@@ -372,6 +428,7 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
 
         # --- 3-5. per variant / resolution: resample atlas, region-average, high-pass -----
         meta_variants = {}
+        conn_nvox: dict[int, np.ndarray] = {}  # per-res nvox for the optim-node mask (conn only)
         for variant in variants:
             arrays: dict[str, np.ndarray] = {}
             per_res = {}
@@ -389,12 +446,22 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
                 arrays[f"ids_{n}"] = np.asarray(ids, dtype=np.int32)
                 arrays[f"labels_{n}"] = np.asarray(names)  # unicode array (no pickle on load)
                 arrays[f"nvox_{n}"] = nvox
+                if variant == "conn":
+                    conn_nvox[n] = nvox
                 empty = int((nvox < min_voxels).sum())
                 per_res[str(n)] = {"n_regions": len(ids), "n_empty": empty}
                 print(f"  [{variant} {n}] {len(ids)} regions, {empty} empty -> ts {ts.shape}")
             if arrays:
                 np.savez_compressed(npz_paths[variant], **arrays)
                 meta_variants[variant] = per_res
+
+    # --- optim node mask (conn atlas only): the non-NaN connectome rows ------------------
+    optim_path = out_dir / f"{sub}_task-{TASK}_atlas-schaefer_desc-optim_nodes.npz"
+    wrote_optim = False
+    if "conn" in variants and conn_nvox:
+        np.savez_compressed(optim_path, **build_optim_nodes(conn_nvox, min_voxels))
+        wrote_optim = True
+        print(f"  wrote {optim_path.name}")
 
     # --- 6. sidecar ----------------------------------------------------------------------
     meta = {
@@ -432,6 +499,22 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
                         "float32; ids_{N} region label ids; labels_{N} region names (row order); "
                         "nvox_{N} valid in-brain voxels per region (NaN row if < min_voxels). "
                         "Load: z = np.load(path)."),
+        "optim_nodes": ({
+            "file": optim_path.name,
+            "min_voxels": min_voxels,
+            "description": (
+                "Connectome-node subset used for TVB optimization (conn atlas only): rows with a "
+                "usable BOLD signal (nvox_{N} >= min_voxels), i.e. the non-NaN rows of desc-conn. "
+                "Arrays per resolution N on the connectome ROW axis (0..M-1; weights_{N} row i == "
+                "conn ts_{N} row i == connectome node i): keep_{N} (M,) bool; optim_to_conn_{N} "
+                "(K,) optim node -> connectome row (subject-independent comparison axis); "
+                "conn_to_optim_{N} (M,) connectome row -> optim node, -1 if dropped. "
+                "Optimize per subject on kept rows: ts_{N}[keep], weights_{N}[ix_(keep,keep)]; "
+                "apply any GLOBAL normalization AFTER masking. Dipole -> optim node: "
+                "conn_to_optim_{N}[full_to_reduced_{N}[dipole_label] - 1] (the -1: weights/ts drop "
+                "connectivity node 0 = Unknown). Compare fitted params across subjects by "
+                "scattering into a length-M vector at optim_to_conn_{N}."),
+        } if wrote_optim else None),
         "source_bold": bold_src.name,
     }
     json_path.write_text(json.dumps(meta, indent=2))
@@ -467,10 +550,22 @@ def main() -> None:
     ap.add_argument("--transforms-only", action="store_true",
                     help="only (re)compute + save the native->T1w rigid transform per subject "
                          "(skip BOLD copy and time-series extraction); for backfilling transforms")
+    ap.add_argument("--optim-nodes-only", action="store_true",
+                    help="only (re)write the desc-optim_nodes npz from each subject's existing "
+                         "desc-conn nvox (no BOLD/registration/extraction); fast backfill")
     args = ap.parse_args()
 
-    variants = tuple(v for v in args.variants.split(",") if v in VARIANTS)
     subjects = args.subjects or discover_subjects()
+
+    # Fast path: derive the optim-node mask from already-staged nvox; no ANTs, no canonical init.
+    if args.optim_nodes_only:
+        print(f"Backfilling optim-node masks for {len(subjects)} subject(s) -> {FMRI_DERIV}")
+        for sub in subjects:
+            backfill_optim_nodes(sub, args.min_voxels, args.force)
+        print("\nDone.")
+        return
+
+    variants = tuple(v for v in args.variants.split(",") if v in VARIANTS)
     print(f"Staging fMRI for {len(subjects)} subject(s) -> {FMRI_DERIV} "
           f"(variants: {', '.join(variants)}; TR={args.tr}s; high-pass={args.highpass}Hz)")
 

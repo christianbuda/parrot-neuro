@@ -169,6 +169,18 @@ class SubjectPaths:
     def connectivity_atlas(self, n: int) -> Path:
         return self.sfile(L.CONNECTIVITY, f"atlas{n}_connectivity.nii.gz")
 
+    def connectivity_labels(self, n: int) -> Path:
+        """Connectome node names, one per line; line 0 == Unknown (dropped from the matrix)."""
+        return self.sfile(L.CONNECTIVITY, f"labels_{n}.txt")
+
+    def full_to_reduced(self, n: int) -> Path:
+        """``reduced_id = full_to_reduced[full_atlas_id]`` (-1 if dropped from connectivity)."""
+        return self.sfile(L.CONNECTIVITY, f"full_to_reduced_{n}.npy")
+
+    def reduced_to_full(self, n: int) -> Path:
+        """``full_atlas_id = reduced_to_full[reduced_id]`` (index 0 == Unknown)."""
+        return self.sfile(L.CONNECTIVITY, f"reduced_to_full_{n}.npy")
+
     # --- anisotropy (optional) ----------------------------------------------
     def conductivity_tensors(self) -> Path:
         return self.sfile(L.ANISOTROPY, "conductivity_tensors.npy")
@@ -209,4 +221,11 @@ class SubjectPaths:
     def fmri_bold(self, task: str = "rest") -> Path:
         return self.sfile(
             L.FMRI, f"{self._s.subj}_task-{task}_space-native_desc-preproc_bold.nii.gz"
+        )
+
+    def optim_nodes(self, task: str = "rest") -> Path:
+        """fMRI-derived optimization node mask over the connectome axis (.npz); keys
+        ``keep_{N}``, ``optim_to_conn_{N}``, ``conn_to_optim_{N}``."""
+        return self.sfile(
+            L.FMRI, f"{self._s.subj}_task-{task}_atlas-schaefer_desc-optim_nodes.npz"
         )
