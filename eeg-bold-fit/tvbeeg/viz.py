@@ -1,0 +1,260 @@
+"""Diagnostic plots for the EEG+BOLD fit: node activity, PSD, FC, correlation.
+
+Every function takes its inputs explicitly (simulator outputs, targets,
+metadata) and returns the created ``Figure`` — none of them read module-level
+state, so they can be called mid-fit, after the fact from saved arrays, or in
+a notebook cell without re-running anything.
+"""
+from __future__ import annotations
+
+import jax.numpy as jnp
+import matplotlib.pyplot as plt
+import numpy as np
+
+from .connectivity import zscore_time
+from .forward import project_to_scalp
+from .signal import compute_psd
+
+
+def _zs(x):
+    return (x - x.mean()) / (x.std() + 1e-8)
+
+
+def plot_node_activity(sim_result, mask_cortical, dt, settle_ms=500.0, stride_ms=4.0, n_show=5):
+    """JR cortical output, WC subcortical E, and the shared network_out
+    channel for a handful of representative nodes of each type."""
+    settle, stride = int(settle_ms / dt), int(stride_ms / dt)
+    t_plot = np.arange(sim_result.ys[settle::stride].shape[0]) * stride * dt
+
+    jr_output = np.asarray(
+        (sim_result.ys[settle::stride, 1] - sim_result.ys[settle::stride, 2]).T
+    ) * np.asarray(mask_cortical)[:, None]
+    wc_E = np.asarray(sim_result.ys[settle::stride, 6].T) * (1 - np.asarray(mask_cortical))[:, None]
+    network_out = np.asarray(sim_result.ys[settle::stride, 8].T)
+
+    cortical = np.where(np.asarray(mask_cortical) == 1)[0]
+    subcortical = np.where(np.asarray(mask_cortical) == 0)[0]
+    n = min(n_show, len(cortical), len(subcortical))
+    cx, sx = cortical[:n], subcortical[:n]
+
+    fig, axes = plt.subplots(3, 1, figsize=(14, 9), sharex=True)
+
+    ax = axes[0]
+    for node in cx:
+        ax.plot(t_plot, jr_output[node], label=f"Cortex node {node}", alpha=0.8)
+    ax.set_ylabel("JR output\n(y1 - y2) [mV]")
+    ax.set_title("Cortical nodes — Jansen-Rit pyramidal output")
+    ax.legend(fontsize=7, loc="upper right")
+
+    ax = axes[1]
+    for node in sx:
+        ax.plot(t_plot, wc_E[node], label=f"Subcortex node {node}", alpha=0.8)
+    ax.set_ylabel("WC excitatory\npopulation E [a.u.]")
+    ax.set_title("Subcortical nodes — Wilson-Cowan E activity")
+    ax.legend(fontsize=7, loc="upper right")
+
+    ax = axes[2]
+    for node in cx:
+        ax.plot(t_plot, network_out[node], color="steelblue", alpha=0.5, linewidth=0.8)
+    for node in sx:
+        ax.plot(t_plot, network_out[node], color="tomato", alpha=0.5, linewidth=0.8)
+    ax.plot([], [], color="steelblue", label="Cortex (JR normalized)")
+    ax.plot([], [], color="tomato", label="Subcortex (WC E)")
+    ax.set_ylabel("network_out [0, 1]")
+    ax.set_xlabel("Time (ms)")
+    ax.set_title("network_out — unified hemodynamic/coupling input (all nodes)")
+    ax.legend(fontsize=7, loc="upper right")
+
+    plt.tight_layout()
+    return fig
+
+
+def plot_bold_timeseries(sim_bold_2d, empirical_bold, mask_cortical, tr_ms, skip_t=0, n_show=4):
+    """Simulated vs. empirical BOLD, z-scored, for a few cortical/subcortical nodes."""
+    Xs = np.asarray(sim_bold_2d)[skip_t:, :]
+    Xe = np.asarray(empirical_bold)[skip_t:, :]
+    t_sim = np.arange(Xs.shape[0]) * (tr_ms / 1000.0)
+    t_emp = np.arange(Xe.shape[0]) * (tr_ms / 1000.0)
+
+    cortical = np.where(np.asarray(mask_cortical) == 1)[0]
+    subcortical = np.where(np.asarray(mask_cortical) == 0)[0]
+    n = min(n_show, len(cortical), len(subcortical))
+    show_nodes = np.concatenate([cortical[:n], subcortical[:n]])
+
+    fig, axes = plt.subplots(len(show_nodes), 1, figsize=(12, 2 * len(show_nodes)), sharex=True)
+    axes = np.atleast_1d(axes)
+    for ax, node in zip(axes, show_nodes):
+        kind = "cortex" if mask_cortical[node] == 1 else "subcortex"
+        ax.plot(t_sim, _zs(Xs[:, node]), color="steelblue", label="sim")
+        if node < Xe.shape[1]:
+            ax.plot(t_emp, _zs(Xe[:, node]), color="tomato", alpha=0.7, label="emp")
+        ax.set_ylabel(f"node {node}\n({kind})")
+        ax.legend(fontsize=7, loc="upper right")
+
+    axes[-1].set_xlabel("Time (s)")
+    fig.suptitle("Simulated vs empirical BOLD (z-scored)")
+    plt.tight_layout()
+    return fig
+
+
+def plot_eeg_psd_comparison(sim_psd, target_psd, freqs, idx_min, idx_max, n_electrodes_show=5):
+    """Per-electrode and mean±std normalized log-PSD, simulated vs. empirical."""
+    sim_psd, target_psd = np.asarray(sim_psd), np.asarray(target_psd)
+    sim_norm = sim_psd / (sim_psd[:, idx_min:idx_max].sum(keepdims=True) + 1e-8)
+    target_norm = target_psd / (target_psd[:, idx_min:idx_max].sum(keepdims=True) + 1e-8)
+
+    electrode_indices = np.linspace(0, sim_psd.shape[0] - 1, min(n_electrodes_show, sim_psd.shape[0]), dtype=int)
+    fig, axes = plt.subplots(1, 2, figsize=(16, 5))
+
+    ax = axes[0]
+    for i, ch in enumerate(electrode_indices):
+        color = plt.cm.tab10(i / len(electrode_indices))
+        ax.semilogy(freqs[idx_min:idx_max], sim_norm[ch, idx_min:idx_max],
+                    color=color, linewidth=1.5, label=f"Sim ch{ch}")
+        ax.semilogy(freqs[idx_min:idx_max], target_norm[ch, idx_min:idx_max],
+                    color=color, linewidth=1.5, linestyle="--", alpha=0.6, label=f"Emp ch{ch}")
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("Normalized PSD")
+    ax.set_title("EEG PSD — simulated (solid) vs empirical (dashed)")
+    ax.legend(fontsize=7, ncol=2, loc="upper right")
+
+    ax = axes[1]
+    mean_sim, std_sim = sim_norm.mean(axis=0), sim_norm.std(axis=0)
+    mean_target, std_target = target_norm.mean(axis=0), target_norm.std(axis=0)
+    ax.semilogy(freqs[idx_min:idx_max], mean_sim[idx_min:idx_max], color="steelblue", linewidth=2, label="Sim (mean)")
+    ax.fill_between(freqs[idx_min:idx_max], (mean_sim - std_sim)[idx_min:idx_max],
+                     (mean_sim + std_sim)[idx_min:idx_max], color="steelblue", alpha=0.2)
+    ax.semilogy(freqs[idx_min:idx_max], mean_target[idx_min:idx_max], color="tomato", linewidth=2,
+                linestyle="--", label="Emp (mean)")
+    ax.fill_between(freqs[idx_min:idx_max], (mean_target - std_target)[idx_min:idx_max],
+                     (mean_target + std_target)[idx_min:idx_max], color="tomato", alpha=0.2)
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("Normalized PSD")
+    ax.set_title("EEG PSD — mean ± std across all electrodes")
+    ax.legend(fontsize=9)
+
+    plt.tight_layout()
+    return fig
+
+
+def plot_fc_comparison(sim_bold_2d, empirical_bold, skip_t=0, eps=1e-8):
+    """Empirical FC, simulated FC, and their upper-triangle scatter/correlation."""
+    Xs_z = zscore_time(jnp.array(np.asarray(sim_bold_2d)[skip_t:, :]), eps=eps)
+    fc_sim = np.asarray(jnp.corrcoef(Xs_z, rowvar=False))
+    Xe_z = np.asarray(zscore_time(jnp.array(np.asarray(empirical_bold)[skip_t:, :]), eps=eps))
+    fc_emp = np.corrcoef(Xe_z, rowvar=False)
+
+    iu = np.triu_indices(fc_sim.shape[0], k=1)
+    fc_sim_vec, fc_emp_vec = fc_sim[iu], fc_emp[iu]
+    fc_corr = np.corrcoef(fc_sim_vec, fc_emp_vec)[0, 1]
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    for ax, mat, title in ((axes[0], fc_emp, "Empirical FC"), (axes[1], fc_sim, "Simulated FC")):
+        im = ax.imshow(mat, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        ax.set_title(title)
+        ax.set_xlabel("Region")
+        ax.set_ylabel("Region")
+
+    ax = axes[2]
+    ax.scatter(fc_emp_vec, fc_sim_vec, alpha=0.15, s=3, color="steelblue", rasterized=True)
+    ax.plot([-1, 1], [-1, 1], "k--", linewidth=1, alpha=0.5)
+    ax.set_xlim(-1, 1)
+    ax.set_ylim(-1, 1)
+    ax.set_xlabel("Empirical FC")
+    ax.set_ylabel("Simulated FC")
+    ax.set_title(f"FC scatter\nPearson r = {fc_corr:.3f}")
+
+    plt.tight_layout()
+    return fig, fc_corr
+
+
+def plot_eeg_psd_learning(psd_before, psd_after, target_psd, freqs, idx_min, idx_max):
+    """Mean +/- std normalized log-PSD across electrodes: before vs after
+    training, against the empirical target -- shows whether the fit actually
+    moved the simulated spectrum toward the target."""
+    def _norm(p):
+        p = np.asarray(p)
+        return p / (p[:, idx_min:idx_max].sum(keepdims=True) + 1e-8)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    for norm, color, ls, label in (
+        (_norm(psd_before), "gray", ":", "Before (init params)"),
+        (_norm(psd_after), "steelblue", "-", "After (fitted params)"),
+        (_norm(target_psd), "tomato", "--", "Empirical target"),
+    ):
+        mean, std = norm.mean(axis=0), norm.std(axis=0)
+        ax.semilogy(freqs[idx_min:idx_max], mean[idx_min:idx_max], color=color, linestyle=ls,
+                    linewidth=2, label=label)
+        ax.fill_between(freqs[idx_min:idx_max], (mean - std)[idx_min:idx_max],
+                         (mean + std)[idx_min:idx_max], color=color, alpha=0.15)
+
+    ax.set_xlabel("Frequency (Hz)")
+    ax.set_ylabel("Normalized PSD")
+    ax.set_title("EEG PSD — before vs after training (mean ± std across electrodes)")
+    ax.legend(fontsize=9)
+    plt.tight_layout()
+    return fig
+
+
+def plot_bold_learning(sim_bold_2d_before, sim_bold_2d_after, empirical_bold, mask_cortical,
+                        tr_ms, skip_t=0, n_show=4):
+    """Simulated BOLD before vs after training, vs empirical, z-scored, per node --
+    the BOLD-side counterpart to plot_eeg_psd_learning."""
+    Xb = np.asarray(sim_bold_2d_before)[skip_t:, :]
+    Xa = np.asarray(sim_bold_2d_after)[skip_t:, :]
+    Xe = np.asarray(empirical_bold)[skip_t:, :]
+    t_b = np.arange(Xb.shape[0]) * (tr_ms / 1000.0)
+    t_a = np.arange(Xa.shape[0]) * (tr_ms / 1000.0)
+    t_e = np.arange(Xe.shape[0]) * (tr_ms / 1000.0)
+
+    cortical = np.where(np.asarray(mask_cortical) == 1)[0]
+    subcortical = np.where(np.asarray(mask_cortical) == 0)[0]
+    n = min(n_show, len(cortical), len(subcortical))
+    show_nodes = np.concatenate([cortical[:n], subcortical[:n]])
+
+    fig, axes = plt.subplots(len(show_nodes), 1, figsize=(12, 2 * len(show_nodes)), sharex=True)
+    axes = np.atleast_1d(axes)
+    for ax, node in zip(axes, show_nodes):
+        kind = "cortex" if mask_cortical[node] == 1 else "subcortex"
+        ax.plot(t_b, _zs(Xb[:, node]), color="gray", linestyle=":", alpha=0.8, label="before")
+        ax.plot(t_a, _zs(Xa[:, node]), color="steelblue", label="after")
+        if node < Xe.shape[1]:
+            ax.plot(t_e, _zs(Xe[:, node]), color="tomato", alpha=0.7, linestyle="--", label="emp")
+        ax.set_ylabel(f"node {node}\n({kind})")
+        ax.legend(fontsize=7, loc="upper right")
+
+    axes[-1].set_xlabel("Time (s)")
+    fig.suptitle("Simulated BOLD before vs after training (z-scored)")
+    plt.tight_layout()
+    return fig
+
+
+def plot_eeg_corr_comparison(simulated_eeg, empirical_chunks):
+    """Empirical vs. simulated inter-electrode correlation matrices."""
+    sim_corr = np.asarray(jnp.corrcoef(jnp.array(simulated_eeg)))
+    emp_corr = np.asarray(np.stack(list(map(jnp.corrcoef, empirical_chunks))).mean(axis=0))
+
+    iu = np.triu_indices(sim_corr.shape[0], k=1)
+    r = np.corrcoef(sim_corr[iu], emp_corr[iu])[0, 1]
+
+    fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    for ax, mat, title in ((axes[0], emp_corr, "Empirical EEG correlation"),
+                            (axes[1], sim_corr, "Simulated EEG correlation")):
+        im = ax.imshow(mat, cmap="RdBu_r", vmin=-1, vmax=1, aspect="auto")
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        ax.set_title(title)
+        ax.set_xlabel("Channel")
+        ax.set_ylabel("Channel")
+
+    ax = axes[2]
+    ax.scatter(emp_corr[iu], sim_corr[iu], alpha=0.15, s=3, color="steelblue", rasterized=True)
+    ax.plot([-1, 1], [-1, 1], "k--", linewidth=1, alpha=0.5)
+    ax.set_xlim(-1, 1)
+    ax.set_ylim(-1, 1)
+    ax.set_xlabel("Empirical")
+    ax.set_ylabel("Simulated")
+    ax.set_title(f"EEG correlation scatter\nPearson r = {r:.3f}")
+
+    plt.tight_layout()
+    return fig, r
