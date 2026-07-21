@@ -123,7 +123,7 @@ def make_eeg_loss_fn(simulator_eeg, mask_cortical, idx_min, idx_max, dt,
     """Log-PSD MSE loss, closing over everything that never changes per-step
     (the mask, frequency-bin window, and timing — mirrors how the simulator
     itself is a closure): only ``(diff, static, target_psd, channel_indices,
-    leadfield, smoothing_weights, dipole_labels)`` vary call to call.
+    leadfield, smoothing_blocks, dipole_labels)`` vary call to call.
     """
     settle = int(settle_ms / dt)
     stride = int(stride_ms / dt)
@@ -131,7 +131,7 @@ def make_eeg_loss_fn(simulator_eeg, mask_cortical, idx_min, idx_max, dt,
 
     @eqx.filter_jit
     def eeg_loss_fn(current_diff, current_static, target_psd, channel_indices,
-                     leadfield, smoothing_weights, dipole_labels):
+                     leadfield, smoothing_blocks, dipole_labels):
         combined = eqx.combine(current_diff, current_static)
         sim_result = simulator_eeg(combined)
 
@@ -141,7 +141,7 @@ def make_eeg_loss_fn(simulator_eeg, mask_cortical, idx_min, idx_max, dt,
         ) * mask_col
 
         simulated_eeg = project_to_scalp(
-            source_activity, channel_indices, leadfield, smoothing_weights, dipole_labels
+            source_activity, channel_indices, leadfield, smoothing_blocks, dipole_labels
         )
 
         sim_psd = smooth_ts(compute_psd(simulated_eeg))
@@ -190,10 +190,10 @@ def make_update_steps(eeg_loss_fn, bold_loss_fn, optimizer):
 
     @eqx.filter_jit
     def eeg_update_step(current_diff, current_static, current_opt_state,
-                         target_psd, channel_indices, leadfield, smoothing_weights, dipole_labels):
+                         target_psd, channel_indices, leadfield, smoothing_blocks, dipole_labels):
         loss, grads = jax.value_and_grad(eeg_loss_fn, argnums=0)(
             current_diff, current_static, target_psd, channel_indices,
-            leadfield, smoothing_weights, dipole_labels,
+            leadfield, smoothing_blocks, dipole_labels,
         )
         updates, new_opt_state = optimizer.update(grads, current_opt_state, current_diff)
         new_diff = optax.apply_updates(current_diff, updates)
@@ -253,7 +253,7 @@ def run_alternating_fit(
     target_psd,
     channel_indices,
     leadfield,
-    smoothing_weights,
+    smoothing_blocks,
     dipole_labels,
     num_epochs=200,
     bold_every=1,
@@ -271,7 +271,7 @@ def run_alternating_fit(
     for epoch in range(num_epochs):
         diff_params, opt_state, loss_eeg = eeg_update_step(
             diff_params, static_params, opt_state,
-            target_psd, channel_indices, leadfield, smoothing_weights, dipole_labels,
+            target_psd, channel_indices, leadfield, smoothing_blocks, dipole_labels,
         )
         opt_state = jax.lax.stop_gradient(opt_state)
         loss_history_eeg.append(float(loss_eeg))

@@ -57,7 +57,7 @@ class ExperimentContext:
     cfg: config.BoldFitConfig
     mask_cortical: np.ndarray
     leadfield: jnp.ndarray
-    smoothing_weights: jnp.ndarray
+    smoothing_blocks: tuple  # per-block (n_b, n_b) Gaussian smoothing matrices
     dipole_labels: jnp.ndarray
     sc: StructuralConnectivity
     network: object
@@ -106,20 +106,43 @@ def build_context(cfg: config.BoldFitConfig, dataset) -> ExperimentContext:
     dipole_labels, valid = remap_dipole_labels(
         dipole_labels, sc.missing_labels, sc.n_full_regions
     )
-    # float32: these two are dense (N_dip, N_dip) / (N_elec, N_dip) fixed geometric
-    # projection matrices, not part of the integrated ODE state -- they don't need
-    # x64 precision, and at tens of thousands of dipoles the float64 versions are
-    # large enough (multi-GB) to make the host->GPU transfer fail to pin ("could not
-    # allocate pinned host memory" / CUDA_ERROR_INVALID_VALUE). Downstream matmuls
-    # against the (float64) dynamics state still promote to float64 as usual.
-    smoothing_weights = np.asarray(smoothing_weights, dtype=np.float32)[valid][:, valid]
+    # Volume-weighted Gaussian source-smoothing is block-diagonal (a dipole only
+    # smooths within its own surface/volumetric block), so we keep it as a list
+    # of per-block matrices rather than assembling the dense (N_dip, N_dip)
+    # block-diagonal matrix -- at tens of thousands of dipoles that dense matrix
+    # is multi-GB and almost all zeros. project_to_scalp applies it as a
+    # block-diagonal matmul (forward.block_diag_matmul).
+    #
+    # `valid` drops dipoles whose region has no BOLD coverage; it's in global
+    # (block-concatenated) dipole order, so it splits into one contiguous slice
+    # per block. Subselect each block's surviving rows AND columns -- keeping
+    # every block square and the whole operator block-diagonal in the reduced
+    # dipole space. This reproduces the old dense `[valid][:, valid]` exactly
+    # (deliberately no re-normalization of the surviving rows, as before).
+    #
+    # float32: these blocks (and the leadfield) are fixed geometric projections,
+    # not part of the integrated ODE state -- they don't need x64 precision, and
+    # the float64 versions are large enough to make the host->GPU transfer fail
+    # to pin ("could not allocate pinned host memory" / CUDA_ERROR_INVALID_VALUE).
+    # Downstream matmuls against the (float64) dynamics state still promote to f64.
+    smoothing_blocks = []
+    start = 0
+    for block in weights_matrices:
+        size = block.shape[0]
+        vb = valid[start:start + size]
+        start += size
+        if vb.any():  # a block wholly inside a dropped region contributes nothing
+            sub = np.asarray(block, dtype=np.float32)[vb][:, vb]
+            smoothing_blocks.append(jnp.asarray(sub))
+    assert start == len(valid), "block sizes must tile the full dipole axis"
+    smoothing_blocks = tuple(smoothing_blocks)
+
     leadfield = np.asarray(leadfield, dtype=np.float32)[:, valid]
 
     mask_cortical = np.where(np.isin(orient_atlas, ["N", "G", "P"]), 1.0, 0.0)
     mask_cortical = drop_labels_vector(mask_cortical, sc.missing_labels)
 
     dipole_labels = jnp.array(dipole_labels)
-    smoothing_weights = jnp.array(smoothing_weights)
     leadfield = jnp.array(leadfield)
 
     # --- network + two simulators (short EEG horizon, long BOLD horizon) ---
@@ -144,7 +167,7 @@ def build_context(cfg: config.BoldFitConfig, dataset) -> ExperimentContext:
 
     return ExperimentContext(
         cfg=cfg, mask_cortical=mask_cortical, leadfield=leadfield,
-        smoothing_weights=smoothing_weights, dipole_labels=dipole_labels, sc=sc,
+        smoothing_blocks=smoothing_blocks, dipole_labels=dipole_labels, sc=sc,
         network=network, solver=solver, simulators=simulators, dataset=dataset,
         target_psd=target_psd, freqs=freqs, idx_min=idx_min, idx_max=idx_max,
         diff_params_init=diff_params_init, static_params=static_params,
@@ -167,7 +190,7 @@ def fit(ctx: ExperimentContext) -> FitResult:
     return run_alternating_fit(
         ctx.diff_params_init, ctx.static_params, eeg_update_step, bold_update_step,
         ctx.optimizer, ctx.target_psd, ctx.dataset.channel_indices,
-        ctx.leadfield, ctx.smoothing_weights, ctx.dipole_labels,
+        ctx.leadfield, ctx.smoothing_blocks, ctx.dipole_labels,
         num_epochs=ctx.cfg.num_epochs, bold_every=ctx.cfg.bold_every,
         print_every=ctx.cfg.print_params_every,
         print_fn=partial(print_learnable_params, learnable_params=ctx.cfg.learnable_params),

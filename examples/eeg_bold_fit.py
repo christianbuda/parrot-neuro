@@ -135,7 +135,7 @@ source_activity = (
     - sim_result_eeg.ys[int(500.0 / cfg.dt)::int(4 / cfg.dt), 2].T
 ) * jnp.atleast_2d(ctx.mask_cortical).T
 simulated_eeg = project_to_scalp(
-    source_activity, dataset.channel_indices, ctx.leadfield, ctx.smoothing_weights, ctx.dipole_labels
+    source_activity, dataset.channel_indices, ctx.leadfield, ctx.smoothing_blocks, ctx.dipole_labels
 )
 sim_psd = compute_psd(simulated_eeg)
 
@@ -166,7 +166,7 @@ source_activity_init = (
     - sim_result_eeg_init.ys[int(500.0 / cfg.dt)::int(4 / cfg.dt), 2].T
 ) * jnp.atleast_2d(ctx.mask_cortical).T
 simulated_eeg_init = project_to_scalp(
-    source_activity_init, dataset.channel_indices, ctx.leadfield, ctx.smoothing_weights, ctx.dipole_labels
+    source_activity_init, dataset.channel_indices, ctx.leadfield, ctx.smoothing_blocks, ctx.dipole_labels
 )
 sim_psd_init = compute_psd(simulated_eeg_init)
 sim_bold_2d_init = connectivity.extract_bold_2d(ctx.simulators.bold_monitor(sim_result_bold_init))

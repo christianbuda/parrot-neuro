@@ -141,12 +141,36 @@ def get_electric_signals(
     return leadfield, weights_matrices, dipole_labels, orient_atlas, representative_dipole
 
 
-def project_to_scalp(source_activity, channel_indices, leadfield, smoothing_weights, dipole_labels):
+def block_diag_matmul(blocks, x):
+    """Block-diagonal matmul: ``block_diag(*blocks) @ x`` without ever
+    materializing the dense block-diagonal matrix.
+
+    ``blocks`` is a tuple of square ``(n_b, n_b)`` matrices whose sizes sum to
+    ``x.shape[0]``; block *b* multiplies the contiguous ``x[offset:offset+n_b]``
+    slice and the results are stacked back into a ``(sum n_b, T)`` array. The
+    Gaussian source-smoothing matrix is block-diagonal (a dipole only smooths
+    within its own surface/volumetric block), so this is exact — but it touches
+    only the ~few-percent of entries that aren't structurally zero, and never
+    allocates the dense ``(N_dip, N_dip)`` matrix (multi-GB at tens of thousands
+    of dipoles). The tuple length and every block size are static (known at
+    trace time), so the loop unrolls cleanly under jit and stays differentiable.
+    """
+    outputs = []
+    offset = 0
+    for block in blocks:
+        size = block.shape[1]
+        outputs.append(block @ x[offset:offset + size])
+        offset += size
+    return jnp.concatenate(outputs, axis=0)
+
+
+def project_to_scalp(source_activity, channel_indices, leadfield, smoothing_blocks, dipole_labels):
     """Per-region source activity -> scalp EEG.
 
-    Broadcasts region activity to dipoles, spatially smooths, then applies the
-    leadfield for the selected channels. Returns (n_channels, T).
+    Broadcasts region activity to dipoles, spatially smooths (block-diagonal
+    Gaussian smoothing, applied without densifying — see ``block_diag_matmul``),
+    then applies the leadfield for the selected channels. Returns (n_channels, T).
     """
     source_activity = source_activity[dipole_labels]
-    source_activity = smoothing_weights @ source_activity
+    source_activity = block_diag_matmul(smoothing_blocks, source_activity)
     return leadfield[channel_indices] @ source_activity
