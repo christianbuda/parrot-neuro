@@ -47,12 +47,13 @@ cfg = config.BoldFitConfig(
     num_epochs=50,
     bold_every=1,
     # `learnable_params` controls exactly which parameters the optimizer can
-    # touch — defaults to config.DEFAULT_LEARNABLE_PARAMS (P, c_ee, G). Pass
-    # your own tuple to add/remove/rebound parameters, e.g. to also learn the
-    # JR EPSP amplitude A:
+    # touch — defaults to config.DEFAULT_LEARNABLE_PARAMS (a still-evolving
+    # prototyping set spanning JR, WC, and coupling params; see config for the
+    # current list). Pass your own tuple to add/remove/rebound parameters, e.g.
+    # to also learn the WC excitatory->inhibitory coupling c_ei:
     #
     # learnable_params=config.DEFAULT_LEARNABLE_PARAMS + (
-    #     config.LearnableParam("A", low=2.0, high=5.0, location="dynamics"),
+    #     config.LearnableParam("c_ei", low=2.0, high=8.0, location="dynamics"),
     # ),
 )
 

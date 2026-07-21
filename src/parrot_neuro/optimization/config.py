@@ -82,16 +82,17 @@ class LearnableParam:
     init: float | None = None
 
 
-#: Default set of learnable parameters for the alternating EEG+BOLD fit:
-#: the two Wilson-Cowan (subcortical) drive/excitability terms, plus the
-#: single global coupling strength. Add/remove entries — or pass a whole new
-#: tuple — to change what the optimizer is allowed to touch; ``network.py``
-#: and ``train.py`` both build off this same list, so they can never
-#: silently disagree about what's learnable.
+#: Default set of learnable parameters for the alternating EEG+BOLD fit: a
+#: working selection spanning the Jansen-Rit cortical (A, B, a, b, mu),
+#: Wilson-Cowan subcortical (P, c_ee), and global coupling (G) parameters.
+#: This is a prototyping default, not a settled choice — which parameters are
+#: worth optimizing is still being explored, so expect it to change. Add/remove
+#: entries — or pass a whole new tuple — to change what the optimizer is allowed
+#: to touch; ``network.py`` and ``train.py`` both build off this same list, so
+#: they can never silently disagree about what's learnable.
 DEFAULT_LEARNABLE_PARAMS: tuple[LearnableParam, ...] = (
     LearnableParam("P", 0.0, 2.0, "dynamics", init=0.0),
     LearnableParam("c_ee", 6.0, 20.0, "dynamics", init=12.0),
-    LearnableParam("P", 0.0, 2.0, "dynamics", init=0.0),
     LearnableParam("A", 2.0, 5.0, "dynamics", init=3.25),
     LearnableParam("B", 12.0, 35.0, "dynamics", init=22.0),
     LearnableParam("a", 0.04, 0.2, "dynamics", init=0.1),

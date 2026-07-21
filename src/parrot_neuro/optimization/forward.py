@@ -22,22 +22,6 @@ def sample_spherical(npoints, key):
 
 
 @jax.jit
-def apply_gaussian_smoothing(distance_matrix, dipole_volume, signals, sigma):
-    """Volume-weighted Gaussian spatial smoothing of dipole signals.
-
-    - distance_matrix: (N, N) inter-dipole distances.
-    - dipole_volume: (N,) tissue volume per dipole.
-    - signals: (N, T) signals to smooth.
-    - sigma: Gaussian spread (same units as distances, e.g. mm).
-    Returns (N, T) smoothed signals.
-    """
-    weights = jnp.square(distance_matrix) / (-2.0 * sigma**2)
-    weights = jnp.exp(weights) * dipole_volume[None, :]
-    weights = weights / weights.sum(axis=1, keepdims=True)
-    return weights @ signals
-
-
-@jax.jit
 def compute_cholesky_matrix(distance_matrix, lambda_decay, eps=1e-5):
     """Lower-triangular spatial-mixing matrix L (C = L @ L.T) for colored noise."""
     covariance_matrix = jnp.exp(distance_matrix / (-1.0 * lambda_decay))
