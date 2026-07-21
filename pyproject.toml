@@ -19,5 +19,19 @@ dependencies = [
     "trimesh",
 ]
 
+# The `parrot_neuro.optimization` subpackage (TVB neural-mass -> EEG/BOLD fitting)
+# needs a much heavier stack. It is never imported by `import parrot_neuro`, so
+# these stay optional: install with `pip install parrot-neuro[optim]` (the pixi
+# dev environment already provides them).
+[project.optional-dependencies]
+optim = [
+    "jax",
+    "tvboptim",
+    "optax",
+    "equinox",
+    "scipy",
+    "matplotlib",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/parrot_neuro"]

@@ -1,11 +1,11 @@
 """End-to-end orchestration: subject forward model + connectome -> network ->
 alternating EEG+BOLD fit.
 
-The thin entry point the rest of ``tvbeeg`` composes into. A driver script
+The thin entry point the rest of ``parrot_neuro.optimization`` composes into. A driver script
 next to this package does roughly::
 
     from parrot_neuro import Subject
-    from tvbeeg import config, data, pipeline
+    from parrot_neuro.optimization import config, data, pipeline
     config.apply_jax_env()                      # before any jax import!
 
     subject = Subject(bids_root, subject_id)

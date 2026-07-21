@@ -6,9 +6,9 @@ sets environment variables that only take effect if they are exported
 *before* jax is first imported. The workbench notebook therefore does, as its
 very first cell::
 
-    from tvbeeg import config
+    from parrot_neuro.optimization import config
     config.apply_jax_env()          # must run before any jax import
-    # ... only now import tvbeeg.forward / .model / .signal (which import jax)
+    # ... only now import parrot_neuro.optimization.forward / .model / .signal (jax)
 """
 from __future__ import annotations
 
@@ -103,7 +103,7 @@ DEFAULT_LEARNABLE_PARAMS: tuple[LearnableParam, ...] = (
 @dataclass
 class BoldFitConfig:
     """One place to feed a subject/run into the alternating EEG+BOLD fit
-    (``tvbeeg.pipeline.run_bold_fit``). Field defaults (other than ``subject``,
+    (``parrot_neuro.optimization.pipeline.run_bold_fit``). Field defaults (other than ``subject``,
     which has none — there's no sane default subject) mirror the plain
     module-level constants above so a bare ``BoldFitConfig(subject=...)``
     reproduces the same atlas/spacing those already point at — override
@@ -123,7 +123,7 @@ class BoldFitConfig:
 
     # --- BOLD target + connectome region alignment ---
     # Empirical BOLD + the missing-region mask are both derived from the
-    # subject's own fMRI derivatives (see tvbeeg.connectivity) rather than
+    # subject's own fMRI derivatives (see optimization.connectivity) rather than
     # passed in as separate paths — this just selects which run to read.
     fmri_task: str = "rest"
 

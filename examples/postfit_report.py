@@ -24,11 +24,13 @@ from parrot_neuro import Subject
 # =========================
 subject = "010005"
 BIDS_ROOT = "/srv/nfs-data/sisko/christian/parrot_LEMON"
-ATLAS = 100      # connectivity parcellation -- matches tvbeeg.config.ATLAS
+ATLAS = 100      # connectivity parcellation -- matches optimization.config.ATLAS
 FMRI_TASK = "rest"
 
-RUNS_DIR = Path("/srv/nfs-data/sisko/benedetta/parrot-neuro/development/tvb-optim_EEG/eeg_bold_fit_res/"+subject)   # ← your runs root
-OUT_DIR  = Path("/srv/nfs-data/sisko/benedetta/parrot-neuro/development/tvb-optim_EEG/eeg_bold_fit_res_summary/"+subject)  # ← where to save summary outputs
+# eeg_bold_fit.py writes results to <output_root>/<subject>; point RUNS_DIR at
+# the same tree. OUT_DIR is where this report's summary figures/tables land.
+RUNS_DIR = Path("eeg_bold_fit_res") / subject           # ← your fit-results root
+OUT_DIR  = Path("eeg_bold_fit_res_summary") / subject   # ← where to save summary outputs
 OUT_DIR.mkdir(exist_ok=True, parents=True)
 
 # Each subject folder must contain optimized_params.npz (saved at end of training)
@@ -39,7 +41,7 @@ subject_dirs = {SUBJECTS[0]: RUNS_DIR}
 # --- Missing labels + full atlas region count, both read straight off the
 # subject's own fMRI derivatives (a region has no BOLD coverage <=> its row in
 # the connectome-node-numbered "conn" timeseries is all-NaN) -- same logic as
-# tvbeeg.connectivity.load_structural_connectivity, so a fitted subject's
+# optimization.connectivity.load_structural_connectivity, so a fitted subject's
 # results always expand back onto the atlas the same way they were fit.
 parrot_subject = Subject(BIDS_ROOT, subject)
 _ts = parrot_subject.load.fmri_timeseries(variant="conn", task=FMRI_TASK)[f"ts_{ATLAS}"]
@@ -47,7 +49,7 @@ SUBJECT_MISSING_LABELS = np.flatnonzero(np.isnan(_ts).all(axis=1))
 TOTAL_ATLAS_NODES = _ts.shape[0]    # total parcels in the atlas (before dropping missing)
 
 # Atlas config — adjust to your setup
-ATLAS_PATH = Path("/srv/nfs-data/sisko/benedetta/ATLANTE/atlas100.nii.gz")
+ATLAS_PATH = Path("atlas100.nii.gz")  # ← edit: parcellation volume for brain maps
 
 # Parameters in this model
 CORTEX_PARAMS    = ["A", "a", "b"]       # JR — only meaningful on cortical nodes

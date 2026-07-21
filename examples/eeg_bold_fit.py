@@ -1,7 +1,7 @@
 # %% [markdown]
 # # EEG + BOLD alternating fit — JR cortex / WC subcortex
 #
-# Thin driver over the `tvbeeg` package: all the actual logic (data loading,
+# Thin driver over `parrot_neuro.optimization`: all the actual logic (data loading,
 # forward model, network assembly, loss functions, training loop, plots)
 # lives there and is reusable outside this notebook. This file only wires a
 # subject + hyperparameters together and calls it.
@@ -11,7 +11,7 @@
 # need to change.
 
 # %%
-from tvbeeg import config
+from parrot_neuro.optimization import config
 config.apply_jax_env()  # must run before any jax import (sets CUDA/JAX env vars)
 
 # %%
@@ -19,23 +19,26 @@ import jax
 jax.config.update("jax_enable_x64", True)
 
 from parrot_neuro import Subject
-from tvbeeg import connectivity, data, pipeline, train, viz
+from parrot_neuro.optimization import connectivity, data, pipeline, train, viz
 
 # %% [markdown]
 # ## Subject + hyperparameters
 #
 # `subject` is a `parrot_neuro.Subject` over one reconstructed subject's
-# Parrot derivatives. `BoldFitConfig` defaults mirror `tvbeeg.config`'s
+# Parrot derivatives. `BoldFitConfig` defaults mirror `optimization.config`'s
 # module-level atlas/spacing constants; the subject itself has no default —
 # point it at whichever subject you're fitting.
 
 # %%
+# --- edit these three for your run ---
+BIDS_ROOT = "/srv/nfs-data/sisko/christian/parrot_LEMON"  # Parrot derivatives root
 subject_id = "010005"
-subject = Subject("/srv/nfs-data/sisko/christian/parrot_LEMON", subject_id)
+output_root = "eeg_bold_fit_res"  # per-subject results go under <output_root>/<subject_id>
 
-output_dir = "/srv/nfs-data/sisko/benedetta/parrot-neuro/development/tvb-optim_EEG/eeg_bold_fit_res"+f"/{subject_id}"
+subject = Subject(BIDS_ROOT, subject_id)
 
 import os
+output_dir = os.path.join(output_root, subject_id)
 os.makedirs(output_dir, exist_ok=True)
 
 cfg = config.BoldFitConfig(
@@ -123,8 +126,8 @@ fig.savefig(out_dir / "fc_comparison.png", dpi=150)
 print(f"FC Pearson correlation (sim vs emp): {fc_corr:.4f}")
 
 # %%
-from tvbeeg.forward import project_to_scalp
-from tvbeeg.signal import compute_psd
+from parrot_neuro.optimization.forward import project_to_scalp
+from parrot_neuro.optimization.signal import compute_psd
 import jax.numpy as jnp
 
 source_activity = (

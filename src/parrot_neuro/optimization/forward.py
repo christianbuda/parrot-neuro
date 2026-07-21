@@ -6,12 +6,9 @@ optimizer needs to turn per-region source activity into scalp EEG.
 """
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-
 import jax
 import jax.numpy as jnp
 import numpy as np
-import scipy.linalg
 from jax.scipy import linalg
 
 from . import config
@@ -124,82 +121,6 @@ def get_electric_signals(
     for val in np.unique(dipole_labels):
         orient_atlas[val] = np.unique(orient_type[dipole_labels == val])[0]
 
-    # # Per-block file reads are independent I/O — parallelize across blocks
-    # # (measured ~4x on NFS: dominant cost of this whole function otherwise).
-    # with ThreadPoolExecutor(max_workers=min(8, len(all_blocks))) as pool:
-    #     dipole_volume = np.concatenate(
-    #         list(pool.map(lambda block: np.load(block / "dipole_volume.npy"), all_blocks))
-    #     )
-    #     dist_mats = list(pool.map(lambda block: np.load(block / "distance_matrix.npy"), all_blocks))
-
-    # # Volume-weighted Gaussian smoothing matrix (block-diagonal across
-    # # regions). Elementwise exp() over ~500M+ values is the other dominant
-    # # cost; numpy releases the GIL for large arrays so threading this across
-    # # blocks helps too (measured ~2.5x), unlike most pure-Python CPU work.
-    # sigma = float(spacing) * 1.5
-    # with ThreadPoolExecutor(max_workers=min(8, len(dist_mats))) as pool:
-    #     weights_blocks = list(pool.map(lambda m: np.exp(m**2 / (-2.0 * sigma**2)), dist_mats))
-
-    # # Volume-weight and row-normalize PER BLOCK before assembling into the
-    # # full (N_dip, N_dip) matrix, not after: block_diag fills everything
-    # # outside a dipole's own block with exact zeros, so a full-row sum over
-    # # the assembled matrix is mathematically identical to summing just that
-    # # dipole's own block — but touches ~4x fewer elements (blocks are ~27%
-    # # of the dense N_dip^2 total here), and the blocks are independent so
-    # # this is thread-parallelizable the same way the exp() above is.
-    # def _volume_normalize(block_w, vol):
-    #     block_w = block_w * vol[None, :]
-    #     return block_w / block_w.sum(axis=1, keepdims=True)
-
-    # volume_slices = []
-    # idx = 0
-    # for mat in dist_mats:
-    #     volume_slices.append(dipole_volume[idx : idx + len(mat)])
-    #     idx += len(mat)
-    # with ThreadPoolExecutor(max_workers=min(8, len(weights_blocks))) as pool:
-    #     weights_blocks = list(pool.map(_volume_normalize, weights_blocks, volume_slices))
-
-    # weights = scipy.linalg.block_diag(*weights_blocks)
-
-    # representative_dipole = None
-    # if compute_representative_dipole:
-    #     # Full distance matrix (inf across blocks) to pick central dipoles
-    #     # per parcel. A second dense (N_dip, N_dip) array — skip this whole
-    #     # block (compute_representative_dipole=False) if you don't need it.
-    #     n = weights.shape[0]
-    #     distances = np.full((n, n), np.inf)
-    #     block_id = np.empty(n, dtype=int)
-    #     current_idx = 0
-    #     for b, mat in enumerate(dist_mats):
-    #         sl = slice(current_idx, current_idx + len(mat))
-    #         distances[sl, sl] = mat
-    #         block_id[sl] = b
-    #         current_idx += len(mat)
-
-    #     representative_dipole = -np.ones(dipole_labels.max() + 1, dtype=int)
-    #     for i in range(len(representative_dipole)):
-    #         idx = np.flatnonzero(dipole_labels == i)
-    #         if len(idx) > 0:
-    #             # Dipoles are only mutually comparable within one block (each
-    #             # surface/volumetric block has its own independent distance
-    #             # matrix; cross-block entries are inf). A parcel can straddle
-    #             # more than one block (e.g. surface/volumetric boundary), so
-    #             # represent it from whichever block holds most of its dipoles
-    #             # rather than requiring a single shared block for all of them.
-    #             blocks, counts = np.unique(block_id[idx], return_counts=True)
-    #             idx = idx[block_id[idx] == blocks[np.argmax(counts)]]
-    #             best_dip = np.argmin(distances[np.ix_(idx, idx)].mean(axis=0))
-    #             representative_dipole[i] = idx[best_dip]
-    #             if verbose:
-    #                 print(f"lab {i}, best dip {best_dip}, val {representative_dipole[i]}")
-    # if representative_dipole is not None:
-    #     print(f"Found {np.count_nonzero(representative_dipole >= 0)} representative dipoles.")
-
-    # key = jax.random.PRNGKey(42)
-    # leadfield = np.load(
-    #     leadfields_path / f"processed_{leadfield_label}-{spacing}mm-leadfield.npy"
-    # )
-    # leadfield = set_directions(leadfield, dipoles_path, key)
     dipole_volume = np.concatenate([np.load(block / 'dipole_volume.npy') for block in all_blocks])
 
     sigma = float(spacing) * 1.5
