@@ -27,12 +27,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from . import config
-from .connectivity import (
-    StructuralConnectivity,
-    drop_labels_vector,
-    load_structural_connectivity,
-    remap_dipole_labels,
-)
+from .connectivity import StructuralConnectivity, load_structural_connectivity
 from .forward import get_electric_signals
 from .network import build_network
 from .train import (
@@ -82,7 +77,7 @@ def build_context(cfg: config.BoldFitConfig, dataset) -> ExperimentContext:
     # --- forward model (leadfield, dipole labels, cortical/subcortical type) ---
     # representative_dipole isn't used by this pipeline — skip computing it
     # (saves a second dense (N_dip, N_dip) array on top of the smoothing matrix).
-    leadfield, weights_matrices, dipole_labels, orient_atlas, _representative_dipole = (
+    leadfield, weights_matrices, _fwd_dipole_labels, orient_atlas, _representative_dipole = (
         get_electric_signals(
             cfg.subject,
             spacing=cfg.spacing,
@@ -100,12 +95,15 @@ def build_context(cfg: config.BoldFitConfig, dataset) -> ExperimentContext:
         fmri_task=cfg.fmri_task,
     )
 
-    # dipole_labels/orient_atlas are in the *pre-missing-labels* connectome
-    # region indexing; re-index them onto sc's (post-drop) region set and
-    # drop dipoles that belonged to a region BOLD has no coverage for.
-    dipole_labels, valid = remap_dipole_labels(
-        dipole_labels, sc.missing_labels, sc.n_full_regions
-    )
+    # dipoles -> optimization-node ids, already indexing sc's (fMRI-aligned) node
+    # set; -1 where the dipole's connectome node has no usable BOLD. `valid` drops
+    # exactly those dipoles. Same authoritative fmri_keep mask the SC loaders use,
+    # so no NaN re-derivation here (and same dipole ordering as the leadfield /
+    # smoothing blocks, since all three come from subject.load.dipole_labels).
+    dipole_labels = cfg.subject.load.dipole_node_labels(cfg.atlas, float(cfg.spacing), cfg.fmri_task)
+    valid = dipole_labels >= 0
+    dipole_labels = dipole_labels[valid]
+
     # Volume-weighted Gaussian source-smoothing is block-diagonal (a dipole only
     # smooths within its own surface/volumetric block), so we keep it as a list
     # of per-block matrices rather than assembling the dense (N_dip, N_dip)
@@ -140,7 +138,7 @@ def build_context(cfg: config.BoldFitConfig, dataset) -> ExperimentContext:
     leadfield = np.asarray(leadfield, dtype=np.float32)[:, valid]
 
     mask_cortical = np.where(np.isin(orient_atlas, ["N", "G", "P"]), 1.0, 0.0)
-    mask_cortical = drop_labels_vector(mask_cortical, sc.missing_labels)
+    mask_cortical = mask_cortical[sc.keep]  # full connectome axis -> fMRI-aligned node set
 
     dipole_labels = jnp.array(dipole_labels)
     leadfield = jnp.array(leadfield)

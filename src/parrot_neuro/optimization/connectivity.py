@@ -1,10 +1,12 @@
-"""Structural connectivity, empirical BOLD, and the missing-label bookkeeping
-that ties a subject's forward-model dipoles to a connectome parcellation.
+"""Structural connectivity + empirical BOLD, aligned to the fMRI-usable node set.
 
-Parcellations occasionally drop regions (no dipoles, no BOLD coverage, ...).
-Everything that must be re-indexed when regions are dropped lives here so it
-only needs to be gotten right once: SC weights/delays, the empirical BOLD
-target, and the dipole -> region label map used by the EEG forward model.
+Node alignment -- which connectome nodes have usable BOLD, and how dipoles map
+onto them -- is owned by ``parrot_neuro.Subject``: the ``fmri_aligned=True``
+loaders and ``dipole_node_labels`` apply one precomputed ``fmri_keep`` mask
+consistently across the SC weights/delays, the dipole->node map, and the BOLD
+target. This module just loads the aligned SC and the matching BOLD; it no longer
+re-derives a missing-region mask from NaN rows (that was a second, divergable copy
+of the same information).
 """
 from __future__ import annotations
 
@@ -16,60 +18,14 @@ import numpy as np
 from . import config
 
 
-def sc_weights_and_delays(subject, atlas=config.ATLAS, conduction_speed=config.CONDUCTION_SPEED):
-    """Subject-specific (DWI-derived) structural connectivity as normalized
-    (weights, delays).
-
-    weights are divided by their max (unitless coupling strength); delays are
-    tract length / conduction_speed (ms, if lengths are mm and speed is m/s* ).
-    """
-    W = subject.load.weights(atlas, normalized=True)
-    L = subject.load.distances(atlas)
-    return W, L
-
-
-def drop_labels_square(M, missing):
-    """Drop matching rows and columns from a square matrix."""
-    idx = np.array([i for i in range(M.shape[0]) if i not in missing])
-    return M[np.ix_(idx, idx)]
-
-
-def drop_labels_vector(v, missing):
-    """Drop matching entries from a 1D array (e.g. a per-region mask)."""
-    idx = np.array([i for i in range(len(v)) if i not in missing])
-    return v[idx]
-
-
-def remap_dipole_labels(dipole_labels, missing_labels, n_full_regions):
-    """Re-index dipole->region labels after dropping ``missing_labels``.
-
-    Regions in ``missing_labels`` have no valid target index; dipoles that
-    belonged to them are dropped (returned ``valid`` mask marks which of the
-    input dipoles survive).
-
-    Returns (remapped_labels, valid_mask) where remapped_labels has length
-    ``valid_mask.sum()`` and indexes into the post-drop region ordering.
-    """
-    print(f"Re-indexing {len(dipole_labels)} dipoles after dropping "
-          f"{len(missing_labels)} missing labels...")
-    old_to_new = np.full(n_full_regions, -1, dtype=int)
-    kept = np.array([i for i in range(n_full_regions) if i not in missing_labels])
-    old_to_new[kept] = np.arange(len(kept))
-
-    remapped = old_to_new[np.asarray(dipole_labels)]
-    valid = remapped >= 0
-    return remapped[valid], valid
-
-
 @dataclass
 class StructuralConnectivity:
-    """SC graph + BOLD target, already reduced to the shared region set."""
+    """SC graph + BOLD target, reduced to the fMRI-usable node set."""
 
     weights: jnp.ndarray          # (N, N) normalized coupling
     delays: jnp.ndarray           # (N, N) ms
     num_nodes: int
-    missing_labels: np.ndarray    # region indices dropped from the full atlas
-    n_full_regions: int           # atlas region count before dropping missing_labels
+    keep: np.ndarray              # (M,) bool over the full connectome axis -> the N kept nodes
     empirical_bold: jnp.ndarray   # (T, N)
 
 
@@ -79,31 +35,33 @@ def load_structural_connectivity(
     conduction_speed=config.CONDUCTION_SPEED,
     fmri_task="rest",
 ) -> StructuralConnectivity:
-    """Subject SC weights/delays + empirical BOLD, aligned to the same region set.
+    """Subject SC weights/delays + empirical BOLD, aligned to the fMRI-usable node set.
 
-    Empirical BOLD comes from the subject's own fMRI derivatives (the
-    connectome-node-numbered ``desc-conn`` Schaefer time series, where row *i*
-    already is connectome node *i*). Regions with no BOLD coverage come back as
-    an all-NaN row there -- that NaN mask *is* the missing-labels list (no
-    external missing-ROI file needed), and those regions are dropped from the
-    SC matrices too so everything shares one ``num_nodes``-length region axis.
+    Weights/distances are loaded already restricted to the fMRI-usable connectome
+    nodes via the Subject's ``fmri_aligned=True`` flag (the ``fmri_keep`` mask is
+    applied *before* the ``/max`` normalization below, so the coupling scale stays
+    self-consistent). The empirical BOLD target is the connectome-node-numbered
+    ``desc-conn`` Schaefer time series with its unusable rows dropped by the *same*
+    mask, so the SC graph and BOLD share one ``num_nodes``-length node axis. The
+    dipole->node map (``subject.load.dipole_node_labels``) indexes into this exact
+    same set. ``keep`` (over the full connectome axis) is returned so callers can
+    bring other per-node quantities (e.g. the cortical mask) onto this same set.
     """
-    print(f"Loading SC weights/delays for atlas {atlas}...")
-    W, L = sc_weights_and_delays(subject, atlas, conduction_speed)
-    print(f"  SC weights: {W.shape}  delays: {L.shape}  (num_nodes = {W.shape[0]})")
-    ts = subject.load.fmri_timeseries(variant="conn", task=fmri_task)[f"ts_{atlas}"]
-    n_full_regions = ts.shape[0]
-    missing = np.flatnonzero(np.isnan(ts).all(axis=1))
-    X_emp = np.delete(ts, missing, axis=0).T  # (n_regions, T) -> (T, n_kept_regions)
+    print(f"Loading fMRI-aligned SC weights/delays for atlas {atlas}...")
+    W = subject.load.weights(atlas, normalized=True, fmri_aligned=True)
+    L = subject.load.distances(atlas, fmri_aligned=True)
+    keep = np.asarray(subject.load.fmri_keep(atlas, fmri_task))
+    print(f"  SC weights: {W.shape}  delays: {L.shape}  "
+          f"(num_nodes = {W.shape[0]} of {keep.size} connectome nodes)")
 
-    W = drop_labels_square(W, missing)
-    L = drop_labels_square(L, missing)
+    ts = subject.load.fmri_timeseries(variant="conn", task=fmri_task)[f"ts_{atlas}"]
+    X_emp = ts[keep].T  # (n_conn_nodes, T)[keep] -> (T, n_kept)
+
     if X_emp.shape[1] != W.shape[0]:
         raise ValueError(
-            f"Empirical BOLD has {X_emp.shape[1]} regions but SC (after "
-            f"dropping missing labels) has {W.shape[0]}; check the fMRI 'conn' "
-            "atlas variant and the SC weights/distances files agree on atlas "
-            f"{atlas}'s region count/order for {subject.subj}."
+            f"Empirical BOLD has {X_emp.shape[1]} kept regions but fMRI-aligned SC "
+            f"has {W.shape[0]}; check the fMRI 'conn' timeseries and the connectivity "
+            f"weights/distances agree on atlas {atlas}'s node count/order for {subject.subj}."
         )
 
     weights = jnp.array(W, dtype=jnp.float64)
@@ -114,8 +72,7 @@ def load_structural_connectivity(
         weights=weights,
         delays=delays,
         num_nodes=int(weights.shape[0]),
-        missing_labels=missing,
-        n_full_regions=n_full_regions,
+        keep=keep,
         empirical_bold=jnp.array(X_emp, dtype=jnp.float64),
     )
 

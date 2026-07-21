@@ -38,15 +38,14 @@ OUT_DIR.mkdir(exist_ok=True, parents=True)
 SUBJECTS = [""]
 subject_dirs = {SUBJECTS[0]: RUNS_DIR}
 
-# --- Missing labels + full atlas region count, both read straight off the
-# subject's own fMRI derivatives (a region has no BOLD coverage <=> its row in
-# the connectome-node-numbered "conn" timeseries is all-NaN) -- same logic as
-# optimization.connectivity.load_structural_connectivity, so a fitted subject's
-# results always expand back onto the atlas the same way they were fit.
+# --- Node-alignment maps, read straight off the subject's own fMRI derivatives
+# (the same precomputed fmri_keep mask the optimization.connectivity loaders use,
+# so a fitted subject's per-node params always scatter back onto the connectome
+# the same way they were fit). to_conn[k] is the connectome row of optim node k.
 parrot_subject = Subject(BIDS_ROOT, subject)
-_ts = parrot_subject.load.fmri_timeseries(variant="conn", task=FMRI_TASK)[f"ts_{ATLAS}"]
-SUBJECT_MISSING_LABELS = np.flatnonzero(np.isnan(_ts).all(axis=1))
-TOTAL_ATLAS_NODES = _ts.shape[0]    # total parcels in the atlas (before dropping missing)
+_nodes = parrot_subject.load.fmri_nodes(ATLAS, FMRI_TASK)
+SUBJECT_TO_CONN = _nodes.to_conn         # (K,) optim node -> connectome row
+TOTAL_ATLAS_NODES = _nodes.keep.size     # connectome node count (M)
 
 # Atlas config — adjust to your setup
 ATLAS_PATH = Path("atlas100.nii.gz")  # ← edit: parcellation volume for brain maps
@@ -71,25 +70,22 @@ def load_subject_result(subj_dir: Path) -> dict:
 
 def expand_to_atlas(
     param_vec: np.ndarray,
-    missing_labels: np.ndarray,
+    to_conn: np.ndarray,
     total_nodes: int,
     fill: float = np.nan,
 ) -> np.ndarray:
     """
-    Expand a fitted param vector (length N_valid) to full atlas space
-    (length total_nodes), placing NaN at missing parcel positions.
+    Scatter a fitted per-optim-node vector (length K) back to full connectome
+    space (length total_nodes), placing ``fill`` (NaN) at dropped-node positions.
 
-    missing_labels: 0-indexed node indices that were dropped before fitting.
+    to_conn: (K,) connectome row of each optim node k
+    (from ``Subject.load.fmri_nodes(...).to_conn``).
     """
-    kept = np.array(
-        [i for i in range(total_nodes) if i not in set(missing_labels)],
-        dtype=int,
-    )
-    assert len(param_vec) == len(kept), (
-        f"param_vec length {len(param_vec)} != kept nodes {len(kept)}"
+    assert len(param_vec) == len(to_conn), (
+        f"param_vec length {len(param_vec)} != kept nodes {len(to_conn)}"
     )
     full = np.full(total_nodes, fill, dtype=float)
-    full[kept] = param_vec
+    full[to_conn] = param_vec
     return full
 
 
@@ -153,9 +149,9 @@ for subj in SUBJECTS:
     res      = load_subject_result(subj_dir)
     subject_results[subj] = res
 
-    # --- Missing labels for this subject (derived once, above, from its own
-    # fMRI derivatives via parrot_neuro.Subject) ---
-    missing_labels = SUBJECT_MISSING_LABELS
+    # --- optim-node -> connectome scatter map for this subject (derived once,
+    # above, from its own fMRI derivatives via parrot_neuro.Subject) ---
+    to_conn = SUBJECT_TO_CONN
 
     # --- Load fitted node-wise params (length N_valid) ---
     A_fit    = np.asarray(res["A"],    dtype=float)
@@ -166,11 +162,11 @@ for subj in SUBJECTS:
     #G        = float(res["G"])
 
     # --- Expand to full atlas space ---
-    A_full    = expand_to_atlas(A_fit,    missing_labels, TOTAL_ATLAS_NODES)
-    a_full    = expand_to_atlas(a_fit,    missing_labels, TOTAL_ATLAS_NODES)
-    b_full    = expand_to_atlas(b_fit,    missing_labels, TOTAL_ATLAS_NODES)
-    P_full    = expand_to_atlas(P_fit,    missing_labels, TOTAL_ATLAS_NODES)
-    c_ee_full = expand_to_atlas(c_ee_fit, missing_labels, TOTAL_ATLAS_NODES)
+    A_full    = expand_to_atlas(A_fit,    to_conn, TOTAL_ATLAS_NODES)
+    a_full    = expand_to_atlas(a_fit,    to_conn, TOTAL_ATLAS_NODES)
+    b_full    = expand_to_atlas(b_fit,    to_conn, TOTAL_ATLAS_NODES)
+    P_full    = expand_to_atlas(P_fit,    to_conn, TOTAL_ATLAS_NODES)
+    c_ee_full = expand_to_atlas(c_ee_fit, to_conn, TOTAL_ATLAS_NODES)
 
     param_arrays["A"].append(A_full)
     param_arrays["a"].append(a_full)
