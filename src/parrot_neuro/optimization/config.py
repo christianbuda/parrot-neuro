@@ -34,8 +34,8 @@ LEADFIELD_LABEL = "duneuroCGAL"  # which solver/mesh leadfield to load
 FS = 250                        # target EEG sampling rate (Hz) the sim matches
 TIME_STEPS = 500                # samples per analysis chunk (== CHUNK_LENGTH)
 CHUNK_LENGTH = 500              # EEG chunk length in samples
-FMIN = 0.5                      # PSD-loss lower band edge (Hz)
-FMAX = 70.0                     # PSD-loss upper band edge (Hz)
+FMIN = 1.                      # PSD-loss lower band edge (Hz)
+FMAX = 40.0                     # PSD-loss upper band edge (Hz)
 
 # Conduction speed (m/s) turning tract lengths into delays: delays = L / SPEED.
 CONDUCTION_SPEED = 3.0
