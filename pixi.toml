@@ -39,6 +39,11 @@ ipykernel = ">=7.3.0,<8"
 nibabel = "*"
 trimesh = "*"
 pytest = "*"     # runs tests/ (the Subject API smoke test)
+# Cohort-analyses deliverables (analyses/lemon/): tables + distribution plots.
+pandas = "*"
+seaborn = "*"
+rtree = "*"      # spatial index for trimesh.proximity.closest_point (electrode/depth projection)
+networkx = "*"   # trimesh.split connected-components backend (scalp largest-component)
 
 [pypi-dependencies]
 # Cross-platform pure-Python / wheel deps. tvboptim is built on JAX, so it
@@ -46,6 +51,7 @@ pytest = "*"     # runs tests/ (the Subject API smoke test)
 optax = "*"
 equinox = "*"
 tvboptim = "*"      # your TVB-optim library (PyPI, currently 0.3.1)
+potpourri3d = "*"   # heat-method geodesics on the scalp mesh (electrode analyses)
 # The local Subject API, installed editable so edits under src/ take effect live.
 parrot-neuro = { path = ".", editable = true }
 

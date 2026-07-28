@@ -4,6 +4,9 @@ development/
 # parrot specific
 .temp_pipeline*
 
+# cohort analyses (git-ignored: large caches + result artifacts, not shipped code)
+analyses/
+
 # --- Python Standard ---
 __pycache__/
 *.py[cod]

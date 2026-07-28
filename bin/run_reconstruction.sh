@@ -732,8 +732,9 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     # Auto-Discover Diffusion (DWI) — optional
     # ---------------------------------------------------------
     # DWI drives subject-specific structural connectivity + WM anisotropy. Optional:
-    # with no usable DWI the pipeline degrades to the template connectome + isotropic
-    # FEM. Three sources, selected by --dwi-preprocessed:
+    # with no usable DWI the pipeline produces no connectome at all (substitute a
+    # template at simulation time) and an isotropic FEM. Three sources, selected by
+    # --dwi-preprocessed:
     #   "" (raw) : BIDS dwi/  -> QSIPrep -> QSIRecon (--input-type qsiprep)
     #   qsiprep  : a qsiprep-derivatives tree already at <out>/qsiprep/ (skip QSIPrep)
     #   hcp      : HCP-YA native tree at <bids>/sourcedata/hcp/<ID>/ (QSIRecon hcpya)
@@ -770,7 +771,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     fi
 
     if [ -n "$DWI_FORMAT" ] && [ "$HAS_DWI" = false ]; then
-        echo "[WARN] --dwi-preprocessed $DWI_FORMAT set but no usable DWI found for sub-${SUBJECT}; falling back to template connectome." | tee -a "$LOG_FILE"
+        echo "[WARN] --dwi-preprocessed $DWI_FORMAT set but no usable DWI found for sub-${SUBJECT}; no connectome will be produced." | tee -a "$LOG_FILE"
     fi
 
     # TSV Overrides (positional columns: 4=skip-T2-reg, 5=no-neck, 6=mp2rage)
@@ -1488,10 +1489,21 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # ---------------------------------------------------------
     # DWI present and tractography succeeded -> subject connectome:
     #   atlas preparation  +  tck2connectome (run in the QSIRecon image).
-    # No DWI, or DWI too sparse for tractography -> group-average template
-    # connectome. Each sub-step has its own log guard.
+    # No DWI, or DWI too sparse for tractography -> NO connectivity output at all.
+    # We deliberately do not drop in a template connectome here: nothing in the
+    # reconstruction pipeline consumes connectivity/ (only the QC stage reads it,
+    # and it skips gracefully when absent), and a copied template is
+    # indistinguishable from a subject's own tractography once it is sitting in
+    # the derivatives tree. Template substitution belongs at simulation time,
+    # where the caller can see -- and record -- that it happened.
+    # Each sub-step has its own log guard.
     NAME="connectivity"
-    mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
+    # Only create the output dir when something will actually be written into it,
+    # so a no-DWI subject has no connectivity/ at all rather than an empty dir
+    # (HAVE_TRACKS implies HAS_DWI, so this covers the later connectome block too).
+    if [ "$HAS_DWI" = true ]; then
+        mkdir -p "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
+    fi
 
     # Did QSIRecon produce a tractogram for this subject?
     HAVE_TRACKS=false
@@ -1519,22 +1531,11 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     # Tractography present -> the subject connectome is built later, AFTER dwi2t1
     # registers the tracts into the atlas's T1/mesh space (see the connectome
     # matrices block below the DWI-tensor stages). No usable tractography here ->
-    # fall back to the group-average template connectome.
+    # no connectome is written; the QC stage reports connectivity as skipped and
+    # simulation-time code substitutes a template if it wants one.
     if [ "$HAVE_TRACKS" = false ]; then
-        if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
-            log_step "Running $NAME (template connectome fallback)..."
-            step_start=$(date +%s)
-
-            cp "$PARROT_SCRIPT_DIR"/template_data/connectivity/* \
-               "$OUTPUT_DIR/$NAME/sub-${SUBJECT}/" 2> "$LOG_DIR/${NAME}_log.txt"
-            check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt"
-            echo "Copied template connectome to sub-${SUBJECT}." >> "$LOG_DIR/${NAME}_log.txt"
-
-            step_end=$(date +%s)
-            echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
-        else
-            echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
-        fi
+        echo "No usable tractography for subject $SUBJECT -- skipping $NAME " \
+             "(no template is copied; substitute one at simulation time)." | tee -a "$LOG_FILE"
     fi
 
     # ---------------------------------------------------------
