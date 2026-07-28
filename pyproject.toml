@@ -33,5 +33,15 @@ optim = [
     "matplotlib",
 ]
 
+# parrot_neuro.eeg_qc (per-channel EEG QC: flags missing/noisy electrodes,
+# renders an HTML report) needs scipy/matplotlib for the metrics/figures and
+# jinja2 for the report template -- kept separate from `optim` since it never
+# touches jax/tvboptim.
+eeg_qc = [
+    "scipy",
+    "matplotlib",
+    "jinja2",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/parrot_neuro"]
