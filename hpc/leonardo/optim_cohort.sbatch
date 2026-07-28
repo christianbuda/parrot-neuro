@@ -50,6 +50,10 @@ OPTIM_EEG_TASK="${OPTIM_EEG_TASK:-eyesclosed}"
 OPTIM_FMRI_TASK="${OPTIM_FMRI_TASK:-rest}"
 OPTIM_LEARNING_RATE="${OPTIM_LEARNING_RATE:-1e-2}"
 OPTIM_SKIP_DIAGNOSTICS="${OPTIM_SKIP_DIAGNOSTICS:-0}"
+# Backward-pass GPU-memory/compute trade for the integration scan -- unset
+# (default) = monolithic scan, O(n_steps) memory. Set to hit the A100's 64G
+# ceiling on the long BOLD horizon; see network.build_network's docstring.
+OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-}"
 
 # --- which subject: array element, or an explicit smoke/pilot subject -------
 if [ -n "${OPTIM_SUBJECT:-}" ]; then
@@ -103,6 +107,7 @@ ARGS=(
     --learning-rate "$OPTIM_LEARNING_RATE"
 )
 [ "$OPTIM_SKIP_DIAGNOSTICS" = 1 ] && ARGS+=( --skip-diagnostics )
+[ -n "$OPTIM_SOLVER_BLOCK_SIZE" ] && ARGS+=( --solver-block-size "$OPTIM_SOLVER_BLOCK_SIZE" )
 
 SECONDS=0
 set +e

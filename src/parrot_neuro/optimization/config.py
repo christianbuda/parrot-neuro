@@ -175,6 +175,16 @@ class BoldFitConfig:
     base_sigma: float = 0.048  # noise std on JR voltages / WC proportions
     noise_seed: int = 69
 
+    # GPU-memory/wall-time trade for the integration scan's backward pass (see
+    # network.build_network's docstring for the full accounting). None (default)
+    # keeps every step's state live for the backward pass -- O(n_steps) memory,
+    # dominated by the long BOLD horizon. An int K checkpoints the scan in
+    # blocks of K steps (jax.checkpoint): O(n_steps/K + K) memory for ~1.3-1.7x
+    # more compute; K ~ sqrt(n_steps) is the rule-of-thumb optimum (e.g. ~565
+    # for the default t1_bold=320_000ms at dt=1.0ms). Exact gradient either way
+    # -- this is a pure memory/time trade, not an approximation.
+    solver_block_size: int | None = None
+
     # --- which parameters the optimizer is allowed to touch ---
     learnable_params: tuple[LearnableParam, ...] = DEFAULT_LEARNABLE_PARAMS
 

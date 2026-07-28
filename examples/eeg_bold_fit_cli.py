@@ -41,6 +41,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fmri-task", default="rest")
     p.add_argument("--learning-rate", type=float, default=1e-2)
     p.add_argument("--noise-seed", type=int, default=69)
+    p.add_argument("--solver-block-size", type=int, default=None,
+                    help="checkpoint the integration scan in blocks of this many steps -- "
+                         "trades ~1.3-1.7x compute for O(n_steps/K + K) instead of O(n_steps) "
+                         "backward-pass GPU memory (exact gradient either way). Default None = "
+                         "off (monolithic scan). K ~ sqrt(n_steps) is a good starting point -- "
+                         "e.g. ~565 for the default t1_bold=320000ms at dt=1.0ms (320k steps). "
+                         "Use this if you're hitting GPU OOM.")
     p.add_argument("--skip-diagnostics", action="store_true",
                     help="fit + save params/losses only -- skip the plotting section "
                          "(faster; useful for a smoke test)")
@@ -90,6 +97,7 @@ def main() -> None:
         fmri_task=args.fmri_task,
         learning_rate=args.learning_rate,
         noise_seed=args.noise_seed,
+        solver_block_size=args.solver_block_size,
     )
 
     load_eeg = args.optimize != "bold"

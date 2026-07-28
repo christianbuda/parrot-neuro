@@ -49,6 +49,7 @@ def build_network(
     learnable_params: Sequence[LearnableParam] = DEFAULT_LEARNABLE_PARAMS,
     base_sigma: float = 0.048,
     noise_seed: int = 69,
+    solver_block_size: int | None = None,
 ):
     """Build the JR-cortex/WC-subcortex network, wrapping each parameter
     named in ``learnable_params`` as a ``SigmoidBoundedParameter``.
@@ -58,9 +59,25 @@ def build_network(
     every other dynamics/coupling parameter) stays a plain array — see
     ``train.learnable_partition`` for why that distinction matters when
     partitioning the simulator's parameters for gradient descent.
+
+    ``solver_block_size`` (default ``None``, i.e. off) controls the native
+    solver's backward-pass memory: with ``None`` the integration is a single
+    monolithic ``jax.lax.scan`` and every step's state is kept live for the
+    backward pass -- O(n_steps) GPU memory, which is the dominant cost for
+    the long BOLD horizon (e.g. t1_bold=320s at dt=1ms is 320k steps). Set it
+    to an int ``K`` to checkpoint the scan in blocks of ``K`` steps
+    (``jax.checkpoint`` under the hood): backward memory drops to
+    ``O(n_steps/K + K)`` at the cost of ~1.3-1.7x gradient wall-time (one
+    extra forward recompute per block). Peak memory is U-shaped in ``K``;
+    ``K ~ sqrt(n_steps)`` is the rule-of-thumb optimum -- see
+    ``NativeSolver.__init__`` in ``tvboptim.experimental.network_dynamics.solvers.native``
+    for the full accounting. The forward computation and the gradient are
+    unaffected (exact, not truncated) -- this is a pure memory/compute trade,
+    unlike ``grad_horizon`` (truncated BPTT, not exposed here since it biases
+    the gradient toward fast timescales).
     """
     print(f"Building network with {num_nodes} nodes, {len(learnable_params)} learnable params, "
-          f"base_sigma={base_sigma}, noise_seed={noise_seed}")
+          f"base_sigma={base_sigma}, noise_seed={noise_seed}, solver_block_size={solver_block_size}")
     brain_model = HeterogeneousModel(mask_cortical=mask_cortical)
 
     # Each stays a plain float (not learnable) unless a "coupling"
@@ -104,6 +121,6 @@ def build_network(
     high_bounds = high_bounds.at[6:8, :].set(1.0)
     low_bounds = low_bounds.at[8, :].set(0.0)         # network_out
     high_bounds = high_bounds.at[8, :].set(1.0)
-    solver = BoundedSolver(Heun(), low=low_bounds, high=high_bounds)
+    solver = BoundedSolver(Heun(block_size=solver_block_size), low=low_bounds, high=high_bounds)
 
     return network, solver, brain_model

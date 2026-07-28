@@ -167,6 +167,7 @@ def build_context(cfg: config.BoldFitConfig, dataset=None) -> ExperimentContext:
     network, solver, _brain_model = build_network(
         mask_cortical, sc.weights, sc.delays, sc.num_nodes,
         learnable_params=cfg.learnable_params, base_sigma=cfg.base_sigma, noise_seed=cfg.noise_seed,
+        solver_block_size=cfg.solver_block_size,
     )
     simulators = build_simulators(
         network, solver, cfg.t0, cfg.dt, cfg.t1_eeg, cfg.t1_bold,

@@ -15,6 +15,15 @@ holds the cluster glue.
 | `check_leonardo.sh` | **Preflight** — run on a login node before `sbatch`; verifies runtime, `.sif` cache, **HippUnfold + TemplateFlow caches**, BIDS+license+subject, repo, work area, account. Exits non-zero on any failure. Pass **`--fix`** to prewarm any missing cache in place (runs the `prewarm_*.sh` via singularity). |
 | `pilot.sbatch` | One-subject end-to-end pilot on the Booster GPU partition, instrumented. |
 
+**EEG+BOLD optimization stage** (`parrot_neuro.optimization`, per-subject JAX/TVB fit — a *separate* stage from reconstruction above; see its own section below):
+
+| File | Role |
+|------|------|
+| `setup_optim_env.sh` | **One-time**: install `pixi` (if missing) + `pixi install` the optimization env (login node, needs internet). No container for this stage — a real Python/JAX env, self-contained CUDA via `jax[cuda12]` pip wheels. |
+| `check_optim.sh` | **Preflight** — verifies the pixi env, and (via the real `parrot_neuro.Subject` code) that the target subject actually has the EEG/fMRI/leadfield derivatives this stage reads, plus output-dir writability and account. |
+| `optim_cohort.sbatch` | Thin per-subject runner (mirrors `cohort.sbatch`) — resolves one subject, calls `examples/eeg_bold_fit_cli.py`. Never `sbatch` directly. |
+| `submit_optim.sh` | Submitter with `smoke` / `pilot` / `run` / `list` subcommands — the single source of truth for GPU/CPU/walltime resources and the fit hyperparameters. |
+
 > **Staying connected.** `sbatch` jobs run on the scheduler regardless of your SSH session —
 > no `tmux` needed for the job. But the *foreground* login-node steps (`rsync`, `prepull_sifs.sh`)
 > die if SSH drops, so run those inside `tmux`/`screen` (`tmux new -s parrot`, `Ctrl-b d` to
@@ -130,6 +139,87 @@ a two-phase SLURM array with `--dependency=aftercorr`). Don't build the array be
 
 `lrd_all_serial` being budget-free is the lever for Deliverable 2: run staging and the
 mesher+solver (CPU) phase there for free, spend GPU-hours only on recon/DWI.
+
+## EEG+BOLD optimization stage
+
+Fits the JAX-accelerated TVB (Jansen-Rit cortex / Wilson-Cowan subcortex) model to each
+subject's own EEG + BOLD, per-node (`parrot_neuro.optimization`, driven by
+`examples/eeg_bold_fit_cli.py`). This is downstream of, and **separate from**, the
+reconstruction pipeline above: it reads a subject's already-computed leadfield + EEG +
+fMRI derivatives, needs **no container**, and runs in a `pixi` environment instead
+(the same one `pixi.toml` already builds for local dev — LEONARDO is just another
+`linux-64` target). Assumes the subject is already reconstructed (i.e. `check_leonardo.sh`
+/ the recon cohort has already produced its derivatives).
+
+### One-time setup
+
+```bash
+# on a LOGIN node (needs internet: installs pixi + resolves conda-forge/PyPI):
+bash hpc/leonardo/setup_optim_env.sh
+```
+This installs `pixi` to `$HOME/.pixi/bin` (if missing) and runs `pixi install` against
+the repo's `pixi.toml`, producing a self-contained `.pixi/envs/default` — like the `.sif`
+cache, built once with egress and reused offline on compute nodes afterward (no runtime
+fetching, unlike HippUnfold/TemplateFlow). `jax[cuda12]` ships its own CUDA runtime as pip
+wheels, so it only needs the compute node's NVIDIA driver — no `module load cuda` needed
+for this stage.
+
+### Preflight, then smoke test, then pilot, then scale
+
+Same discipline as the reconstruction pilot: don't jump straight to a job array over an
+unmeasured stage.
+
+```bash
+bash hpc/leonardo/check_optim.sh              # preflight: pixi env + subject derivatives + output dir
+bash hpc/leonardo/submit_optim.sh smoke        # 1 subject, 2 epochs, debug QoS (~minutes) --
+                                                #   "does the env + pipeline even run on a GPU node"
+squeue --me                                    # watch it; check the .out for a clean finish, rc=0
+
+bash hpc/leonardo/submit_optim.sh pilot        # 1 subject, FULL hyperparameters, timed + GPU-util logged
+squeue --me
+```
+Read the pilot's `.out` for `optim finished in N min` and the GPU-idle summary (same
+`gpu_util-<jobid>.csv` sampling as the reconstruction pilot). Set `OPTIM_TIME`/`OPTIM_MEM`/
+`OPTIM_CPUS` in `config.local.sh` from what you observe (defaults are unmeasured
+placeholders — `08:00:00` / `64G` / `8` cores), then scale:
+
+```bash
+bash hpc/leonardo/submit_optim.sh list         # sanity-check the array + resource matrix first
+bash hpc/leonardo/submit_optim.sh run          # full job array over participants.tsv (same cohort list
+                                                #   the reconstruction scripts use)
+```
+`run` accepts explicit subject labels as extra args for a small pilot or targeted retry
+(`submit_optim.sh run 010002 010005`), mirroring `submit_cohort.sh run`. Each array task
+takes one Booster GPU (`--gres=gpu:1`); `ARRAY_THROTTLE` (default `%40`) caps how many run
+concurrently.
+
+### Notes / gotchas (optimization stage)
+- **Don't let this stage clobber SLURM's GPU binding.** `config.apply_jax_env()` used to
+  hardcode `CUDA_VISIBLE_DEVICES` for a shared workstation (GPU index `3`); under `--gres`
+  that variable is already scoped to the job's allocated device, so it now uses
+  `setdefault` (only applies the workstation fallback when nothing has set it). No action
+  needed on LEONARDO — this is just why it's safe.
+- **JAX compilation cache off `$HOME`.** LEONARDO's `$HOME` is small and quota'd;
+  `optim_cohort.sbatch` points `PARROT_JAX_CACHE_DIR` at
+  `$WORKDIR/parrot/.jax_cache/sub-<ID>` (one subdir per subject — a job array hitting one
+  shared cache concurrently risks lock contention).
+- **Headless plotting.** `examples/eeg_bold_fit_cli.py` forces the `Agg` matplotlib backend
+  before any `pyplot` import — compute nodes have no `DISPLAY`. Use `--skip-diagnostics`
+  (the `smoke` subcommand always does) to skip the plotting section entirely for a faster
+  sanity check.
+- **Billing is per-GPU**, same as the reconstruction Booster chunks — one job = one A100,
+  regardless of how many of its 32 cores you request.
+- **GPU out-of-memory on the 64G A100?** The BOLD simulator's default horizon
+  (`t1_bold=320_000` ms at `dt=1.0` ms = 320k integration steps) runs as one
+  monolithic scan that keeps every step's state live for the backward pass —
+  O(n_steps) memory, and by far the dominant cost (much bigger than the
+  leadfield/connectivity data). Set `OPTIM_SOLVER_BLOCK_SIZE` (in
+  `config.local.sh`, or `--solver-block-size` directly) to checkpoint the scan
+  in blocks of `K` steps instead: `O(n_steps/K + K)` memory for ~1.3-1.7x more
+  compute, with the *exact* gradient (not an approximation). `K ~ sqrt(n_steps)`
+  is the rule-of-thumb starting point — `565` for the default horizon. See
+  `parrot_neuro.optimization.network.build_network`'s docstring for the full
+  accounting.
 
 ## Notes / gotchas
 - **`signal: killed` while building a `.sif`** = the login node OOM/arbiter-killed it. Login

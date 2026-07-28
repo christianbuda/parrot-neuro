@@ -57,6 +57,12 @@ OPTIM_BOLD_EVERY="${OPTIM_BOLD_EVERY:-2}"
 OPTIM_EEG_TASK="${OPTIM_EEG_TASK:-eyesclosed}"
 OPTIM_FMRI_TASK="${OPTIM_FMRI_TASK:-rest}"
 OPTIM_LEARNING_RATE="${OPTIM_LEARNING_RATE:-1e-2}"
+# Unset (default) = monolithic scan, O(n_steps) backward-pass GPU memory --
+# dominated by the long BOLD horizon. Set to an int (K ~ sqrt(n_steps), e.g.
+# ~565 for the default t1_bold=320000ms @ dt=1.0ms) to checkpoint the scan and
+# fit within the A100's 64G if you're hitting OOM (~1.3-1.7x more compute,
+# exact gradient either way -- see network.build_network's docstring).
+OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-}"
 
 # Cohort-array resources. TIME/MEM/CPUS are UNMEASURED defaults -- run `pilot`
 # first and set these (in config.local.sh) from what you actually observe;
@@ -85,7 +91,7 @@ build_subjects() {
 export_run_vars() {
     export OPTIM_ATLAS OPTIM_SPACING OPTIM_LEADFIELD_LABEL OPTIM_OPTIMIZE OPTIM_BOLD_LOSS \
            OPTIM_NUM_EPOCHS OPTIM_BOLD_EVERY OPTIM_EEG_TASK OPTIM_FMRI_TASK OPTIM_LEARNING_RATE \
-           OPTIM_OUTPUT_DIR
+           OPTIM_OUTPUT_DIR OPTIM_SOLVER_BLOCK_SIZE
 }
 
 CMD="${1:-}"
@@ -168,8 +174,9 @@ case "$CMD" in
         N=$(build_subjects)
         echo "$N subjects -> --array=0-$((N-1))${ARRAY_THROTTLE}  (file: $SUBJ_FILE)"
         printf '  gpu:1  %sc  time=%s  mem=%s  qos=%s (part=%s)\n' "$OPTIM_CPUS" "$OPTIM_TIME" "$OPTIM_MEM" "$BOOST_QOS" "$BOOST_PART"
-        printf '  atlas=%s  optimize=%s  bold_loss=%s  epochs=%s  bold_every=%s\n' \
-            "$OPTIM_ATLAS" "$OPTIM_OPTIMIZE" "$OPTIM_BOLD_LOSS" "$OPTIM_NUM_EPOCHS" "$OPTIM_BOLD_EVERY"
+        printf '  atlas=%s  optimize=%s  bold_loss=%s  epochs=%s  bold_every=%s  solver_block_size=%s\n' \
+            "$OPTIM_ATLAS" "$OPTIM_OPTIMIZE" "$OPTIM_BOLD_LOSS" "$OPTIM_NUM_EPOCHS" "$OPTIM_BOLD_EVERY" \
+            "${OPTIM_SOLVER_BLOCK_SIZE:-off}"
         echo "  output: $OPTIM_OUTPUT_DIR"
         ;;
 
