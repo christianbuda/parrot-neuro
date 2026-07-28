@@ -19,8 +19,8 @@ import optax
 from tvboptim.experimental.network_dynamics import prepare, solve
 from tvboptim.observations.tvb_monitors import Bold
 
-from .config import DEFAULT_LEARNABLE_PARAMS, LearnableParam
-from .connectivity import fc_vector
+from .config import BOLD_BANDPASS_HIGH, BOLD_BANDPASS_LOW, BOLD_BANDPASS_ORDER, DEFAULT_LEARNABLE_PARAMS, LearnableParam
+from .connectivity import dfc_histogram, fc_vector, filter_sim_bold, wasserstein_1d_from_hist
 from .forward import project_to_scalp
 from .signal import compute_psd, smooth_ts
 
@@ -120,7 +120,7 @@ def compute_target_psd(dataset):
 
 def make_eeg_loss_fn(simulator_eeg, mask_cortical, idx_min, idx_max, dt,
                       settle_ms=500.0, stride_ms=4.0):
-    """Log-PSD MSE loss, closing over everything that never changes per-step
+    """Linear-PSD MSE loss, closing over everything that never changes per-step
     (the mask, frequency-bin window, and timing — mirrors how the simulator
     itself is a closure): only ``(diff, static, target_psd, channel_indices,
     leadfield, smoothing_blocks, dipole_labels)`` vary call to call.
@@ -150,17 +150,23 @@ def make_eeg_loss_fn(simulator_eeg, mask_cortical, idx_min, idx_max, dt,
         norm_sim = sim_psd / (jnp.sum(sim_psd[:, idx_min:idx_max], keepdims=True) + 1e-8)
         norm_target = target_psd / (jnp.sum(target_psd[:, idx_min:idx_max], keepdims=True) + 1e-8)
 
-        sim_log = jnp.log(norm_sim + 1e-8)
-        target_log = jnp.log(norm_target + 1e-8)
-        return jnp.mean((sim_log[:, idx_min:idx_max] - target_log[:, idx_min:idx_max]) ** 2)
+        return 10000 *jnp.mean((norm_sim[:, idx_min:idx_max] - norm_target[:, idx_min:idx_max]) ** 2)
 
     return eeg_loss_fn
 
 
-def make_bold_loss_fn(simulator_bold, bold_monitor, target_fc_vec, skip_t, eps=1e-8, bad_loss=1e3):
+def make_bold_loss_fn(simulator_bold, bold_monitor, target_fc_vec, skip_t, tr_ms,
+                       bandpass_low=BOLD_BANDPASS_LOW, bandpass_high=BOLD_BANDPASS_HIGH,
+                       bandpass_order=BOLD_BANDPASS_ORDER, eps=1e-8, bad_loss=1e3):
     """FC-vector MSE loss; falls back to a large constant loss (rather than
     NaN) if the simulation blew up, so a single unlucky epoch doesn't poison
-    the gradient with NaNs the optimizer can never recover from."""
+    the gradient with NaNs the optimizer can never recover from.
+
+    Simulated BOLD is bandpassed (``connectivity.filter_sim_bold``, still
+    differentiable) to the same band the empirical BOLD (hence
+    ``target_fc_vec``) was already preprocessed with -- otherwise the FC
+    comparison would be between differently-filtered signals.
+    """
 
     @eqx.filter_jit
     def bold_loss_fn(current_diff, current_static):
@@ -170,7 +176,8 @@ def make_bold_loss_fn(simulator_bold, bold_monitor, target_fc_vec, skip_t, eps=1
         ok = jnp.all(jnp.isfinite(Xs))
 
         def good(_):
-            fc_sim = fc_vector(Xs, skip_t=0, eps=eps)
+            Xs_filt = filter_sim_bold(Xs, tr_ms, low=bandpass_low, high=bandpass_high, order=bandpass_order)
+            fc_sim = fc_vector(Xs_filt, skip_t=0, eps=eps)
             return jnp.mean((fc_sim - target_fc_vec) ** 2)
 
         def bad(_):
@@ -179,6 +186,39 @@ def make_bold_loss_fn(simulator_bold, bold_monitor, target_fc_vec, skip_t, eps=1
         return jax.lax.cond(ok, good, bad, operand=None)
 
     return bold_loss_fn
+
+
+def make_bold_dfc_loss_fn(simulator_bold, bold_monitor, target_hist, skip_t, tr_ms,
+                           window_trs, step_trs, centers, k_min=1, sigma=0.05,
+                           bandpass_low=BOLD_BANDPASS_LOW, bandpass_high=BOLD_BANDPASS_HIGH,
+                           bandpass_order=BOLD_BANDPASS_ORDER, eps=1e-8, bad_loss=1e3):
+    """Dynamic-FC (FCD) Wasserstein loss -- the dfc alternative to
+    make_bold_loss_fn's static FC. Compares soft-histogram-summarized
+    FCD-value distributions rather than raw FCD matrices (see
+    connectivity.dfc_histogram for why), via the 1-Wasserstein distance
+    between the two histograms on the shared ``centers`` grid; same
+    NaN-guarded shape as make_bold_loss_fn otherwise. Simulated BOLD is
+    bandpassed the same way as make_bold_loss_fn before windowing."""
+
+    @eqx.filter_jit
+    def bold_dfc_loss_fn(current_diff, current_static):
+        combined = eqx.combine(current_diff, current_static)
+        sol = simulator_bold(combined)
+        Xs = bold_monitor(sol).ys[:, 0, :][skip_t:, :]
+        ok = jnp.all(jnp.isfinite(Xs))
+
+        def good(_):
+            Xs_filt = filter_sim_bold(Xs, tr_ms, low=bandpass_low, high=bandpass_high, order=bandpass_order)
+            sim_hist = dfc_histogram(Xs_filt, window_trs, step_trs, centers, skip_t=0,
+                                      k_min=k_min, sigma=sigma, eps=eps)
+            return wasserstein_1d_from_hist(sim_hist, target_hist)
+
+        def bad(_):
+            return jnp.array(bad_loss, dtype=jnp.float64)
+
+        return jax.lax.cond(ok, good, bad, operand=None)
+
+    return bold_dfc_loss_fn
 
 
 def make_optimizer(learning_rate=1e-3, grad_clip_norm=1.0):
@@ -259,31 +299,52 @@ def run_alternating_fit(
     bold_every=1,
     print_every=10,
     print_fn=print_learnable_params,
+    optimize="both",
 ) -> FitResult:
     """Run the alternating EEG/BOLD loop. 1 EEG step every epoch, 1 BOLD step
-    every ``bold_every`` epochs (BOLD is far more expensive per step)."""
+    every ``bold_every`` epochs (BOLD is far more expensive per step).
+
+    ``optimize`` selects which loss(es) actually take a gradient step:
+    ``"eeg"`` or ``"bold"`` fits against only that target (the other update
+    step is simply never called -- its loss history stays empty and its JAX
+    computation is never traced/compiled, so there's no wasted cost either);
+    ``"both"`` (default) is the original alternating fit.
+    """
+    if optimize not in ("eeg", "bold", "both"):
+        raise ValueError(f"optimize must be 'eeg', 'bold', or 'both', got {optimize!r}")
+    do_eeg = optimize in ("eeg", "both")
+    do_bold = optimize in ("bold", "both")
+
     diff_params = diff_params_init
     opt_state = optimizer.init(diff_params)
 
     loss_history_eeg, loss_history_bold = [], []
-    last_bold_loss = float("nan")
+    last_eeg_loss = last_bold_loss = float("nan")
 
     for epoch in range(num_epochs):
-        diff_params, opt_state, loss_eeg = eeg_update_step(
-            diff_params, static_params, opt_state,
-            target_psd, channel_indices, leadfield, smoothing_blocks, dipole_labels,
-        )
-        opt_state = jax.lax.stop_gradient(opt_state)
-        loss_history_eeg.append(float(loss_eeg))
+        if do_eeg:
+            diff_params, opt_state, loss_eeg = eeg_update_step(
+                diff_params, static_params, opt_state,
+                target_psd, channel_indices, leadfield, smoothing_blocks, dipole_labels,
+            )
+            opt_state = jax.lax.stop_gradient(opt_state)
+            loss_history_eeg.append(float(loss_eeg))
+            last_eeg_loss = float(loss_eeg)
 
-        if (epoch + 1) % bold_every == 0:
+        bold_stepped = False
+        if do_bold and (epoch + 1) % bold_every == 0:
             diff_params, opt_state, loss_bold = bold_update_step(diff_params, static_params, opt_state)
             opt_state = jax.lax.stop_gradient(opt_state)
             loss_history_bold.append(float(loss_bold))
             last_bold_loss = float(loss_bold)
-            print(f"Epoch {epoch + 1:04d} | EEG: {loss_eeg:.5f} | BOLD FC: {loss_bold:.5f}")
+            bold_stepped = True
+
+        eeg_str = f"EEG: {last_eeg_loss:.5f}" if do_eeg else "EEG: (not optimized)"
+        if do_bold:
+            bold_str = f"BOLD FC: {last_bold_loss:.5f}" + ("" if bold_stepped else " (cached)")
         else:
-            print(f"Epoch {epoch + 1:04d} | EEG: {loss_eeg:.5f} | BOLD FC: {last_bold_loss:.5f} (cached)")
+            bold_str = "BOLD FC: (not optimized)"
+        print(f"Epoch {epoch + 1:04d} | {eeg_str} | {bold_str}")
 
         if print_fn is not None and (epoch + 1) % print_every == 0:
             print_fn(diff_params)

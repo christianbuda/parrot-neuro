@@ -17,6 +17,12 @@ next to this package does roughly::
 Everything downstream of "I have a dataset" — SC/BOLD loading, dipole-label
 alignment, network construction, the two simulators, and the training loop —
 is fully generic and lives here.
+
+``dataset`` is optional (``build_context(cfg)``, no second arg) when
+``cfg.optimize == "bold"`` -- EEG isn't a fit target there, so there's no need
+to load it just to run the fit; load it later, whenever you actually want to
+look at simulated-vs-real EEG, and pass it straight to the ``viz`` plotting
+functions (they don't go through ``ctx``).
 """
 from __future__ import annotations
 
@@ -36,6 +42,7 @@ from .train import (
     build_simulators,
     compute_target_psd,
     learnable_partition,
+    make_bold_dfc_loss_fn,
     make_bold_loss_fn,
     make_eeg_loss_fn,
     make_optimizer,
@@ -68,12 +75,25 @@ class ExperimentContext:
     optimizer: object
 
 
-def build_context(cfg: config.BoldFitConfig, dataset) -> ExperimentContext:
+def build_context(cfg: config.BoldFitConfig, dataset=None) -> ExperimentContext:
     """Load forward model + connectome, align them, and build the network.
 
     ``dataset`` must already be sliced to the recordings you want the EEG
     loss fit against (e.g. resting state) — see the module docstring.
+
+    ``dataset`` is optional when ``cfg.optimize == "bold"`` -- EEG isn't a fit
+    target there, so there's no need to require (or even load) the subject's
+    EEG derivatives just to run a BOLD-only fit. It's still required for
+    ``optimize in ("eeg", "both")`` (raised below), and can always be loaded
+    later, purely for visualization, and passed to the plotting helpers
+    directly (they don't go through ``ctx``).
     """
+    if dataset is None and cfg.optimize in ("eeg", "both"):
+        raise ValueError(
+            f"optimize={cfg.optimize!r} needs an EEG dataset (pass one, or set "
+            "optimize='bold' if you don't want EEG as a fit target)."
+        )
+
     # --- forward model (leadfield, dipole labels, cortical/subcortical type) ---
     # representative_dipole isn't used by this pipeline — skip computing it
     # (saves a second dense (N_dip, N_dip) array on top of the smoothing matrix).
@@ -156,7 +176,9 @@ def build_context(cfg: config.BoldFitConfig, dataset) -> ExperimentContext:
     diff_params_init, static_params = learnable_partition(simulators.params, cfg.learnable_params)
 
     # --- EEG loss target (mean PSD across this subject's chunks) ---
-    target_psd = compute_target_psd(dataset)
+    # freqs/idx_min/idx_max only depend on cfg (fs/chunk_length/fmin/fmax), so
+    # they're always computed -- handy if EEG gets loaded later just to look.
+    target_psd = compute_target_psd(dataset) if dataset is not None else None
     freqs = np.fft.rfftfreq(cfg.chunk_length, d=1.0 / cfg.fs)
     idx_min = int(np.searchsorted(freqs, cfg.fmin))
     idx_max = int(np.searchsorted(freqs, cfg.fmax))
@@ -174,24 +196,49 @@ def build_context(cfg: config.BoldFitConfig, dataset) -> ExperimentContext:
 
 
 def fit(ctx: ExperimentContext) -> FitResult:
-    """Run the alternating EEG+BOLD training loop against ``ctx``."""
-    eeg_loss_fn = make_eeg_loss_fn(
-        ctx.simulators.simulator_eeg, ctx.mask_cortical, ctx.idx_min, ctx.idx_max, ctx.cfg.dt,
-        settle_ms=ctx.cfg.eeg_settle_ms, stride_ms=ctx.cfg.eeg_stride_ms,
-    )
-    bold_loss_fn = make_bold_loss_fn(
-        ctx.simulators.simulator_bold, ctx.simulators.bold_monitor,
-        target_fc_vec=_target_fc_vec(ctx), skip_t=ctx.cfg.bold_skip_trs,
-    )
+    """Run the alternating EEG+BOLD training loop against ``ctx``.
+
+    ``ctx.dataset`` (hence ``eeg_loss_fn``) may be ``None`` -- build_context
+    already enforced that this is only possible when ``optimize == "bold"``,
+    so ``run_alternating_fit`` simply never calls it in that case (see its
+    ``optimize`` gating); it's built here only when there's actually a target.
+    """
+    eeg_loss_fn = None
+    if ctx.dataset is not None:
+        eeg_loss_fn = make_eeg_loss_fn(
+            ctx.simulators.simulator_eeg, ctx.mask_cortical, ctx.idx_min, ctx.idx_max, ctx.cfg.dt,
+            settle_ms=ctx.cfg.eeg_settle_ms, stride_ms=ctx.cfg.eeg_stride_ms,
+        )
+
+    if ctx.cfg.bold_loss == "dfc":
+        centers = jnp.linspace(-1.0, 1.0, ctx.cfg.dfc_n_bins)
+        bold_loss_fn = make_bold_dfc_loss_fn(
+            ctx.simulators.simulator_bold, ctx.simulators.bold_monitor,
+            target_hist=_target_dfc_hist(ctx, centers), skip_t=ctx.cfg.bold_skip_trs, tr_ms=ctx.cfg.tr_ms,
+            window_trs=ctx.cfg.dfc_window_trs, step_trs=ctx.cfg.dfc_step_trs,
+            centers=centers, k_min=ctx.cfg.dfc_kmin, sigma=ctx.cfg.dfc_sigma,
+            bandpass_low=ctx.cfg.bold_bandpass_low, bandpass_high=ctx.cfg.bold_bandpass_high,
+            bandpass_order=ctx.cfg.bold_bandpass_order,
+        )
+    else:
+        bold_loss_fn = make_bold_loss_fn(
+            ctx.simulators.simulator_bold, ctx.simulators.bold_monitor,
+            target_fc_vec=_target_fc_vec(ctx), skip_t=ctx.cfg.bold_skip_trs, tr_ms=ctx.cfg.tr_ms,
+            bandpass_low=ctx.cfg.bold_bandpass_low, bandpass_high=ctx.cfg.bold_bandpass_high,
+            bandpass_order=ctx.cfg.bold_bandpass_order,
+        )
+
     eeg_update_step, bold_update_step = make_update_steps(eeg_loss_fn, bold_loss_fn, ctx.optimizer)
 
+    channel_indices = ctx.dataset.channel_indices if ctx.dataset is not None else None
     return run_alternating_fit(
         ctx.diff_params_init, ctx.static_params, eeg_update_step, bold_update_step,
-        ctx.optimizer, ctx.target_psd, ctx.dataset.channel_indices,
+        ctx.optimizer, ctx.target_psd, channel_indices,
         ctx.leadfield, ctx.smoothing_blocks, ctx.dipole_labels,
         num_epochs=ctx.cfg.num_epochs, bold_every=ctx.cfg.bold_every,
         print_every=ctx.cfg.print_params_every,
         print_fn=partial(print_learnable_params, learnable_params=ctx.cfg.learnable_params),
+        optimize=ctx.cfg.optimize,
     )
 
 
@@ -200,7 +247,15 @@ def _target_fc_vec(ctx: ExperimentContext):
     return fc_vector(ctx.sc.empirical_bold, skip_t=ctx.cfg.bold_skip_trs)
 
 
-def run(cfg: config.BoldFitConfig, dataset) -> tuple[ExperimentContext, FitResult]:
+def _target_dfc_hist(ctx: ExperimentContext, centers):
+    from .connectivity import dfc_histogram
+    return dfc_histogram(
+        ctx.sc.empirical_bold, ctx.cfg.dfc_window_trs, ctx.cfg.dfc_step_trs, centers,
+        skip_t=ctx.cfg.bold_skip_trs, k_min=ctx.cfg.dfc_kmin, sigma=ctx.cfg.dfc_sigma,
+    )
+
+
+def run(cfg: config.BoldFitConfig, dataset=None) -> tuple[ExperimentContext, FitResult]:
     """Convenience one-shot: build the context and run the fit."""
     ctx = build_context(cfg, dataset)
     return ctx, fit(ctx)

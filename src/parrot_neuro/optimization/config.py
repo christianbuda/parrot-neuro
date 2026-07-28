@@ -35,14 +35,27 @@ FS = 250                        # target EEG sampling rate (Hz) the sim matches
 TIME_STEPS = 500                # samples per analysis chunk (== CHUNK_LENGTH)
 CHUNK_LENGTH = 500              # EEG chunk length in samples
 FMIN = 1.                      # PSD-loss lower band edge (Hz)
-FMAX = 40.0                     # PSD-loss upper band edge (Hz)
+FMAX = 15.0                     # PSD-loss upper band edge (Hz)
 
 # Conduction speed (m/s) turning tract lengths into delays: delays = L / SPEED.
 CONDUCTION_SPEED = 3.0
 
+# Simulated-BOLD bandpass, applied before any FC/FCD comparison -- matches the
+# 0.01-0.1 Hz band typical resting-state fMRI preprocessing already bandpassed
+# the *empirical* BOLD to (see connectivity.filter_sim_bold: only the simulated
+# side needs filtering here).
+BOLD_BANDPASS_LOW = 0.01        # Hz
+BOLD_BANDPASS_HIGH = 0.1        # Hz
+BOLD_BANDPASS_ORDER = 4         # Butterworth order
+
 # --- JAX runtime environment ------------------------------------------------
-CUDA_DEVICE = "1"               # single GPU index (PCI_BUS_ID order, cf. nvtop)
-JAX_CACHE_DIR = os.path.expanduser("~/.cache/jax")  # per-user, always writable
+# Single GPU index (PCI_BUS_ID order, cf. nvtop) for an UNMANAGED environment
+# (e.g. a shared workstation) where nothing has already scoped
+# CUDA_VISIBLE_DEVICES. Override via $PARROT_CUDA_DEVICE if "3" isn't free.
+CUDA_DEVICE = os.environ.get("PARROT_CUDA_DEVICE", "3")
+# Default assumes $HOME is a normal, roomy filesystem -- not true everywhere
+# (e.g. LEONARDO's $HOME is small and quota'd), so this is overridable too.
+JAX_CACHE_DIR = os.environ.get("PARROT_JAX_CACHE_DIR", os.path.expanduser("~/.cache/jax"))
 JAX_ENABLE_X64 = True           # float64 — needed for stiff TVB dynamics
 
 
@@ -50,9 +63,15 @@ def apply_jax_env() -> None:
     """Export JAX/CUDA environment variables.
 
     Call this once, before importing jax anywhere. Idempotent.
+
+    Uses ``setdefault`` for ``CUDA_VISIBLE_DEVICES``: under a scheduler (e.g.
+    SLURM with ``--gres=gpu:N``), that variable is already set to the job's
+    *allocated* device(s) before this runs — overwriting it with the
+    workstation default would point at a device outside the job's cgroup
+    (wrong GPU, or none at all).
     """
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = CUDA_DEVICE
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", CUDA_DEVICE)
     os.environ["JAX_COMPILATION_CACHE_DIR"] = JAX_CACHE_DIR
     os.environ["JAX_ENABLE_X64"] = str(JAX_ENABLE_X64)
 
@@ -127,6 +146,11 @@ class BoldFitConfig:
     # subject's own fMRI derivatives (see optimization.connectivity) rather than
     # passed in as separate paths — this just selects which run to read.
     fmri_task: str = "rest"
+    # Bandpass applied to *simulated* BOLD only, right before FC/FCD -- see
+    # connectivity.filter_sim_bold. Empirical BOLD is already filtered upstream.
+    bold_bandpass_low: float = BOLD_BANDPASS_LOW
+    bold_bandpass_high: float = BOLD_BANDPASS_HIGH
+    bold_bandpass_order: int = BOLD_BANDPASS_ORDER
 
     # --- empirical EEG ---
     eeg_task: str = "eyesclosed"  # which subject.load.eeg(...) recording to fit
@@ -138,12 +162,16 @@ class BoldFitConfig:
     t0: float = 0.0
     dt: float = 1.0
     t1_eeg: float = 2_500.0     # ms; short horizon for the EEG PSD loss
-    t1_bold: float = 60_000.0  # ms; long horizon for the BOLD FC loss (>=83 TRs at TR=720ms)
+    t1_bold: float = 320_000.0  # ms; long horizon for the BOLD FC loss (42 TRs at TR=1400ms)
     eeg_settle_ms: float = 500.0  # discard as transient before computing the EEG loss
     eeg_stride_ms: float = 4.0    # subsample post-settle states at this period (1000/stride = eff. fs)
-    tr_ms: float = 720.0
+    tr_ms: float = 1400.0  # fixed by the dataset (LEMON), not tunable -- adjust the rest around it
     bold_downsample_ms: float = 4.0
-    bold_skip_trs: int = 20
+    # 8 TRs (11.2s) burn-in -- lowered from 20 (28s, ~48% of the 42-TR budget at this tr_ms) to
+    # leave enough TRs for the "dfc" loss to have more than a handful of windows. Assumes the
+    # network settles within ~8 TRs at this dt/base_sigma -- worth confirming against
+    # plot_node_activity/plot_bold_learning if you change dt or the noise level.
+    bold_skip_trs: int = 8
     base_sigma: float = 0.048  # noise std on JR voltages / WC proportions
     noise_seed: int = 69
 
@@ -151,13 +179,44 @@ class BoldFitConfig:
     learnable_params: tuple[LearnableParam, ...] = DEFAULT_LEARNABLE_PARAMS
 
     # --- optimization ---
-    learning_rate: float = 1e-3
+    learning_rate: float = 1e-2
     grad_clip_norm: float = 1.0
-    num_epochs: int = 200
+    num_epochs: int = 2
     bold_every: int = 1
     print_params_every: int = 10
+    # Which loss(es) actually take gradient steps. "both" (default) is the
+    # alternating fit; "eeg" or "bold" fits against only that target (the other
+    # simulator/loss is still built, for diagnostics, but never gets a gradient
+    # step and its loss history stays empty).
+    optimize: str = "both"  # "eeg" | "bold" | "both"
+
+    # --- BOLD loss: static FC (time-averaged) vs dynamic FC (windowed) ---
+    bold_loss: str = "fc"  # "fc" (static FC, default) | "dfc" (dynamic FC / FCD)
+    # Short window + dense overlap (step=1) is a necessity, not a choice: with only
+    # t1_bold=60s of simulated BOLD (kept short for training cost) and a fixed
+    # tr_ms=1400, there's no room for literature-standard 30-60s FCD windows -- these
+    # values instead maximize how many (highly overlapping, not independent) window
+    # snapshots survive within that budget. At bold_skip_trs=8 this gives
+    # n_windows=(34-6)//1+1=29 -> 29*28/2=406 off-diagonal FCD values to compare.
+    # Revisit if t1_bold changes.
+    dfc_window_trs: int = 6    # sliding-window length (TRs) for the "dfc" loss = 8.4s at tr_ms=1400
+    dfc_step_trs: int = 1      # sliding-window stride (TRs)
+    # k_min=1 keeps every off-diagonal FCD entry (including immediately-adjacent,
+    # heavily-overlapping windows); raise it to drop near-diagonal entries that
+    # are highly correlated by construction (step_trs << window_trs) rather than
+    # by dynamics.
+    dfc_kmin: int = 1
+    # 25, not the more common 100 -- ~406 raw FCD values can't support 100 histogram
+    # bins without mostly resolving noise (worth revisiting alongside dfc_window_trs).
+    dfc_n_bins: int = 25
+    dfc_sigma: float = 0.05    # Gaussian-kernel width (correlation units) for the soft histogram
 
     def __post_init__(self):
+        if self.optimize not in ("eeg", "bold", "both"):
+            raise ValueError(f"optimize must be 'eeg', 'bold', or 'both', got {self.optimize!r}")
+        if self.bold_loss not in ("fc", "dfc"):
+            raise ValueError(f"bold_loss must be 'fc' or 'dfc', got {self.bold_loss!r}")
+
         # The EEG loss compares the simulator's post-settle, strided output
         # directly against the empirical PSD's frequency bins — the two only
         # line up if they have the same number of samples. Changing t1_eeg,
