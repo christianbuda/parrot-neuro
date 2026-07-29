@@ -125,7 +125,10 @@ ARGS=(
 
 SECONDS=0
 set +e
-(cd "$REPO" && "$PIXI" run python examples/eeg_bold_fit_cli.py "${ARGS[@]}")
+# -u: unbuffered stdout. Without it, Python block-buffers stdout once it's not
+# a TTY (i.e. redirected to the .out file), so the epoch-by-epoch progress
+# prints can sit invisible for the whole job instead of showing up live.
+(cd "$REPO" && "$PIXI" run python -u examples/eeg_bold_fit_cli.py "${ARGS[@]}")
 rc=$?
 set -e
 echo "=== optim finished in $((SECONDS/60)) min, rc=$rc ($(date)) ==="
