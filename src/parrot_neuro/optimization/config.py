@@ -69,11 +69,26 @@ def apply_jax_env() -> None:
     *allocated* device(s) before this runs — overwriting it with the
     workstation default would point at a device outside the job's cgroup
     (wrong GPU, or none at all).
+
+    Also forces the ``platform`` (direct cudaMalloc/cudaFree, no arena) GPU
+    allocator with upfront preallocation off. Verified empirically (2026-07-29):
+    the BOLD simulator's one-off ~23GiB allocation (atlas=1000, t1_bold=320s)
+    reliably OOMs under JAX's DEFAULT allocator (BFC: an arena that grows
+    incrementally and can fail a single large request to internal
+    fragmentation even with tens of GiB nominally free) — reproduced on an
+    otherwise-idle, 93GiB-free GPU. Setting *only*
+    ``XLA_PYTHON_CLIENT_PREALLOCATE=false`` does NOT fix this (still BFC, just
+    without the upfront grab); ``XLA_PYTHON_CLIENT_ALLOCATOR=platform`` is the
+    part that actually matters, and needs both set together. Both use
+    ``setdefault`` so an explicit override (e.g. a differently-tuned SLURM
+    script) still wins.
     """
     os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", CUDA_DEVICE)
     os.environ["JAX_COMPILATION_CACHE_DIR"] = JAX_CACHE_DIR
     os.environ["JAX_ENABLE_X64"] = str(JAX_ENABLE_X64)
+    os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    os.environ.setdefault("XLA_PYTHON_CLIENT_ALLOCATOR", "platform")
 
 
 @dataclass(frozen=True)

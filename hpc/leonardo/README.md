@@ -211,13 +211,18 @@ concurrently.
   regardless of how many of its 32 cores you request.
 - **GPU out-of-memory at atlas=1000 with the default 320s BOLD horizon?**
   Already fixed by default (`OPTIM_T1_WARMUP=30000` + `OPTIM_SOLVER_BLOCK_SIZE=565`
-  in `optim_cohort.sbatch`/`submit_optim.sh`) — this note explains why, in case
-  you're tuning further or hit it at a different atlas/horizon. Validated on GPU
-  2026-07-29: atlas=1000 OOMs even on an **80G** card without both fixes; with
-  both, measured peak was **~31GiB**, comfortable under the A100's 64G.
+  in `optim_cohort.sbatch`/`submit_optim.sh`, plus a `del` in
+  `eeg_bold_fit_cli.py`'s diagnostics section — see below) — this note explains
+  why, in case you're tuning further or hit it at a different atlas/horizon.
+  Validated on GPU 2026-07-29: atlas=1000 OOMs even on an **80G** card without
+  the fixes. With them, measured peak was **~31GiB during training** and
+  **~52GiB for a full run including the diagnostics/plotting section** (the
+  default — `OPTIM_SKIP_DIAGNOSTICS=0`) — both comfortable under the A100's
+  64G, though the full-run figure has less headroom (~12GiB) than the
+  training-only one.
 
-  There are two *separate* OOM sites, and each needs its own fix — neither
-  alone is sufficient:
+  There are **three** separate OOM sites in total, and each needed its own
+  fix — none alone is sufficient:
   1. **The one-time BOLD warm-up solve** inside `build_simulators()` (seeds the
      network's initial state + a short delay-history buffer + the BOLD
      monitor's HRF-convolution tail). It's a plain forward call with no
@@ -238,11 +243,31 @@ concurrently.
      ~1.3-1.7x more compute, with the *exact* gradient (not an approximation).
      But the forward trajectory itself (~23GiB at atlas=1000/320s) is still a
      hard floor either way, since the BOLD monitor needs the whole thing.
+  3. **The diagnostics/plotting section** (`eeg_bold_fit_cli.py`, skipped only
+     by `--skip-diagnostics`) calls `ctx.simulators.simulator_bold(combined)`
+     directly — forward-only again, same as #1, so `solver_block_size` doesn't
+     help — and does it **twice** (fitted params, then again for `_init` to
+     plot before/after). The raw ~23GiB trajectory from the first call used to
+     stay referenced (only its small TR-downsampled extract was actually
+     needed) while the second call's own ~23GiB trajectory was computed on top
+     — two full trajectories resident at once. An explicit `del`, placed
+     *before* the first call that actually forces materialization (getting
+     this ordering right matters — a `del` placed after a forcing call is a
+     no-op), releases the first trajectory before the second is computed.
+  4. **The GPU allocator itself.** `config.apply_jax_env()` now forces
+     `XLA_PYTHON_CLIENT_ALLOCATOR=platform` + `XLA_PYTHON_CLIENT_PREALLOCATE=false`
+     together (both `setdefault`, so an explicit override still wins). This is
+     not just cosmetic: verified empirically (2026-07-29) that JAX's *default*
+     allocator (BFC — an arena that grows incrementally) reliably OOMs on the
+     BOLD simulator's one-off ~23GiB allocation, reproduced on an
+     otherwise-idle GPU with ~92GiB genuinely free — internal fragmentation,
+     not an actual memory shortage. Setting `PREALLOCATE=false` *alone*
+     (still BFC, just without the upfront grab) does **not** fix this; only
+     `ALLOCATOR=platform` (direct cudaMalloc/cudaFree, no arena) does. Because
+     this is now set inside `config.apply_jax_env()` itself, it applies
+     however the script is invoked (SLURM, a bare `python examples/...`, a
+     notebook) — not just under `optim_cohort.sbatch`.
 
-  `optim_cohort.sbatch` also sets `XLA_PYTHON_CLIENT_PREALLOCATE=false` (JAX
-  otherwise reserves ~75% of the GPU upfront regardless of actual need, which
-  is most of why a naive `nvidia-smi` reading looks far worse than the real
-  requirement — same losses either way, it's purely an allocator setting).
   See `train.build_simulators`'s and `network.build_network`'s docstrings for
   the full accounting.
 
