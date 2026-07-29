@@ -163,6 +163,14 @@ class BoldFitConfig:
     dt: float = 1.0
     t1_eeg: float = 2_500.0     # ms; short horizon for the EEG PSD loss
     t1_bold: float = 320_000.0  # ms; long horizon for the BOLD FC loss (42 TRs at TR=1400ms)
+    # One-time BOLD warm-up solve duration (ms), separate from t1_bold -- see
+    # train.build_simulators' docstring. None (default) = old behaviour, warm
+    # up for the full t1_bold (expensive/OOM-prone for a long t1_bold at a
+    # large atlas). Set to something with margin over both your dynamics'
+    # settling time and the HRF kernel duration (20s by default) -- e.g.
+    # 30_000 -- to shrink the warm-up's memory/time without touching t1_bold
+    # or the amount of BOLD signal available to the loss.
+    t1_warmup: float | None = None
     eeg_settle_ms: float = 500.0  # discard as transient before computing the EEG loss
     eeg_stride_ms: float = 4.0    # subsample post-settle states at this period (1000/stride = eff. fs)
     tr_ms: float = 1400.0  # fixed by the dataset (LEMON), not tunable -- adjust the rest around it

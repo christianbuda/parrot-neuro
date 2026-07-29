@@ -50,10 +50,14 @@ OPTIM_EEG_TASK="${OPTIM_EEG_TASK:-eyesclosed}"
 OPTIM_FMRI_TASK="${OPTIM_FMRI_TASK:-rest}"
 OPTIM_LEARNING_RATE="${OPTIM_LEARNING_RATE:-1e-2}"
 OPTIM_SKIP_DIAGNOSTICS="${OPTIM_SKIP_DIAGNOSTICS:-0}"
-# Backward-pass GPU-memory/compute trade for the integration scan -- unset
-# (default) = monolithic scan, O(n_steps) memory. Set to hit the A100's 64G
-# ceiling on the long BOLD horizon; see network.build_network's docstring.
-OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-}"
+# GPU-memory fixes for atlas=1000 + the long default BOLD horizon (validated
+# locally on GPU 2026-07-29: without these, even an 80G card OOMs; with both,
+# peak usage is ~31GiB -- comfortable headroom under the A100's 64G). See
+# train.build_simulators' and network.build_network's docstrings for why each
+# is needed (they fix two DIFFERENT OOM sites -- the one-time warm-up solve
+# vs. the actual training gradient step -- neither alone is sufficient).
+OPTIM_T1_WARMUP="${OPTIM_T1_WARMUP:-30000}"
+OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-565}"
 
 # --- which subject: array element, or an explicit smoke/pilot subject -------
 if [ -n "${OPTIM_SUBJECT:-}" ]; then
@@ -77,6 +81,15 @@ PIXI="$(command -v pixi || true)"
 # concurrently risks lock contention / a corrupt shared entry.
 export PARROT_JAX_CACHE_DIR="$WORKDIR/parrot/.jax_cache/sub-$SUBJECT"
 mkdir -p "$PARROT_JAX_CACHE_DIR" "$OPTIM_OUTPUT_DIR"
+
+# JAX's default preallocates ~75% of the GPU upfront regardless of actual
+# need, which inflates nvidia-smi readings and (on a tighter-memory node)
+# needlessly risks OOM before the real working set is even known. Validated
+# locally: disabling this doesn't change results (bit-identical losses),
+# just reports/uses memory honestly (measured ~31GiB actual peak vs. ~70GiB
+# with default preallocation on the same run).
+export XLA_PYTHON_CLIENT_PREALLOCATE=false
+export XLA_PYTHON_CLIENT_ALLOCATOR=platform
 
 # Anchor CWD on the robust work FS (same rationale as cohort.sbatch: avoid any
 # lstat/identity blip on the home FS at process start).
@@ -108,6 +121,7 @@ ARGS=(
 )
 [ "$OPTIM_SKIP_DIAGNOSTICS" = 1 ] && ARGS+=( --skip-diagnostics )
 [ -n "$OPTIM_SOLVER_BLOCK_SIZE" ] && ARGS+=( --solver-block-size "$OPTIM_SOLVER_BLOCK_SIZE" )
+[ -n "$OPTIM_T1_WARMUP" ] && ARGS+=( --t1-warmup "$OPTIM_T1_WARMUP" )
 
 SECONDS=0
 set +e

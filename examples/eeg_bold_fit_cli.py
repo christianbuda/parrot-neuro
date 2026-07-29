@@ -41,6 +41,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fmri-task", default="rest")
     p.add_argument("--learning-rate", type=float, default=1e-2)
     p.add_argument("--noise-seed", type=int, default=69)
+    p.add_argument("--t1-warmup", type=float, default=None,
+                    help="duration (ms) of the one-time BOLD warm-up solve, separate from "
+                         "--num-epochs's t1_bold -- default None reuses t1_bold (slow/OOM-prone "
+                         "for a long horizon at a large atlas). Set e.g. 30000 for a short "
+                         "warm-up with margin over both settling time and the HRF kernel's 20s "
+                         "duration; does not change how much BOLD signal the loss sees.")
     p.add_argument("--solver-block-size", type=int, default=None,
                     help="checkpoint the integration scan in blocks of this many steps -- "
                          "trades ~1.3-1.7x compute for O(n_steps/K + K) instead of O(n_steps) "
@@ -98,6 +104,7 @@ def main() -> None:
         learning_rate=args.learning_rate,
         noise_seed=args.noise_seed,
         solver_block_size=args.solver_block_size,
+        t1_warmup=args.t1_warmup,
     )
 
     load_eeg = args.optimize != "bold"

@@ -57,12 +57,20 @@ OPTIM_BOLD_EVERY="${OPTIM_BOLD_EVERY:-2}"
 OPTIM_EEG_TASK="${OPTIM_EEG_TASK:-eyesclosed}"
 OPTIM_FMRI_TASK="${OPTIM_FMRI_TASK:-rest}"
 OPTIM_LEARNING_RATE="${OPTIM_LEARNING_RATE:-1e-2}"
-# Unset (default) = monolithic scan, O(n_steps) backward-pass GPU memory --
-# dominated by the long BOLD horizon. Set to an int (K ~ sqrt(n_steps), e.g.
-# ~565 for the default t1_bold=320000ms @ dt=1.0ms) to checkpoint the scan and
-# fit within the A100's 64G if you're hitting OOM (~1.3-1.7x more compute,
-# exact gradient either way -- see network.build_network's docstring).
-OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-}"
+# GPU-memory fixes for atlas=1000 + the long default BOLD horizon (t1_bold=
+# 320000ms). Validated on GPU locally (2026-07-29): WITHOUT both of these,
+# atlas=1000 OOMs even on an 80G card -- they fix two DIFFERENT OOM sites
+# (the one-time warm-up solve vs. the actual training gradient step), so
+# both are needed together, not either alone. WITH both, measured peak was
+# ~31GiB -- comfortable headroom under the A100's 64G. See
+# train.build_simulators' / network.build_network's docstrings for why.
+#   t1_warmup:         duration (ms) of the one-time BOLD history warm-up,
+#                       independent of t1_bold -- does NOT shorten the BOLD
+#                       signal your FC/dFC loss actually sees.
+#   solver_block_size: checkpoints the integration scan (K ~ sqrt(n_steps));
+#                       ~1.3-1.7x more compute, exact gradient either way.
+OPTIM_T1_WARMUP="${OPTIM_T1_WARMUP:-30000}"
+OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-565}"
 
 # Cohort-array resources. TIME/MEM/CPUS are UNMEASURED defaults -- run `pilot`
 # first and set these (in config.local.sh) from what you actually observe;
@@ -91,7 +99,7 @@ build_subjects() {
 export_run_vars() {
     export OPTIM_ATLAS OPTIM_SPACING OPTIM_LEADFIELD_LABEL OPTIM_OPTIMIZE OPTIM_BOLD_LOSS \
            OPTIM_NUM_EPOCHS OPTIM_BOLD_EVERY OPTIM_EEG_TASK OPTIM_FMRI_TASK OPTIM_LEARNING_RATE \
-           OPTIM_OUTPUT_DIR OPTIM_SOLVER_BLOCK_SIZE
+           OPTIM_OUTPUT_DIR OPTIM_SOLVER_BLOCK_SIZE OPTIM_T1_WARMUP
 }
 
 CMD="${1:-}"
@@ -174,9 +182,9 @@ case "$CMD" in
         N=$(build_subjects)
         echo "$N subjects -> --array=0-$((N-1))${ARRAY_THROTTLE}  (file: $SUBJ_FILE)"
         printf '  gpu:1  %sc  time=%s  mem=%s  qos=%s (part=%s)\n' "$OPTIM_CPUS" "$OPTIM_TIME" "$OPTIM_MEM" "$BOOST_QOS" "$BOOST_PART"
-        printf '  atlas=%s  optimize=%s  bold_loss=%s  epochs=%s  bold_every=%s  solver_block_size=%s\n' \
+        printf '  atlas=%s  optimize=%s  bold_loss=%s  epochs=%s  bold_every=%s  t1_warmup=%s  solver_block_size=%s\n' \
             "$OPTIM_ATLAS" "$OPTIM_OPTIMIZE" "$OPTIM_BOLD_LOSS" "$OPTIM_NUM_EPOCHS" "$OPTIM_BOLD_EVERY" \
-            "${OPTIM_SOLVER_BLOCK_SIZE:-off}"
+            "${OPTIM_T1_WARMUP:-off}" "${OPTIM_SOLVER_BLOCK_SIZE:-off}"
         echo "  output: $OPTIM_OUTPUT_DIR"
         ;;
 

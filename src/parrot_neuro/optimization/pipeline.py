@@ -171,7 +171,7 @@ def build_context(cfg: config.BoldFitConfig, dataset=None) -> ExperimentContext:
     )
     simulators = build_simulators(
         network, solver, cfg.t0, cfg.dt, cfg.t1_eeg, cfg.t1_bold,
-        cfg.tr_ms, cfg.bold_downsample_ms,
+        cfg.tr_ms, cfg.bold_downsample_ms, t1_warmup=cfg.t1_warmup,
     )
 
     diff_params_init, static_params = learnable_partition(simulators.params, cfg.learnable_params)

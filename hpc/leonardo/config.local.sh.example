@@ -49,10 +49,15 @@ SIF="${SIF:-$WORKDIR/parrot/parrot_sif}"              # .sif cache; prewarm_*.sh
 # OPTIM_OPTIMIZE=both ; OPTIM_BOLD_LOSS=fc
 # OPTIM_NUM_EPOCHS=300 ; OPTIM_BOLD_EVERY=2
 # OPTIM_EEG_TASK=eyesclosed ; OPTIM_FMRI_TASK=rest ; OPTIM_LEARNING_RATE=1e-2
-# GPU-OOM on the A100 64G? Checkpoint the integration scan (K ~ sqrt(n_steps),
-# e.g. ~565 for the default 320k-step BOLD horizon) -- trades ~1.3-1.7x compute
-# for much less backward-pass memory; exact gradient either way.
-# OPTIM_SOLVER_BLOCK_SIZE=565
+# GPU-memory fixes for atlas=1000 + the long default BOLD horizon (t1_bold=
+# 320000ms) -- ALREADY THE DEFAULT in optim_cohort.sbatch/submit_optim.sh, so
+# you don't need to set these unless overriding. Validated on GPU (2026-07-29):
+# atlas=1000 OOMs even on an 80G card WITHOUT both of these (they fix two
+# DIFFERENT OOM sites -- the one-time warm-up solve vs. the actual training
+# gradient step); WITH both, measured peak was ~31GiB, comfortable under the
+# A100's 64G. See train.build_simulators / network.build_network docstrings.
+# OPTIM_T1_WARMUP=30000        # ms; short BOLD warm-up, independent of t1_bold
+# OPTIM_SOLVER_BLOCK_SIZE=565  # checkpoints the scan; ~1.3-1.7x more compute
 # Cohort-array resources -- UNMEASURED defaults; run `submit_optim.sh pilot` FIRST
 # and set these from the observed walltime/GPU-idle before `run`-ing the full array.
 # OPTIM_CPUS=8 ; OPTIM_MEM=64G ; OPTIM_TIME=08:00:00

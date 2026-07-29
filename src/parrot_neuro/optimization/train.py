@@ -56,22 +56,50 @@ def build_simulators(
     tr_ms: float,
     bold_downsample_ms: float,
     bold_voi: int = 8,
+    t1_warmup: float | None = None,
 ) -> Simulators:
     """Warm up ``network`` at both horizons and prepare pure solve functions.
 
     Order matters: the EEG (short) warm-up seeds the delay history first,
-    then the BOLD (long) warm-up overwrites it — the BOLD monitor's HRF
-    convolution needs that longer history. Both ``prepare()`` calls expose
-    the same differentiable leaves (only static per-horizon delay-buffer
-    metadata differs, baked into each closure), so the params from the
-    *second* call are the ones used for both simulators.
+    then the BOLD warm-up overwrites it. Both ``prepare()`` calls expose the
+    same differentiable leaves (only static per-horizon delay-buffer metadata
+    differs, baked into each closure), so the params from the *second* call
+    are the ones used for both simulators.
+
+    ``t1_warmup`` (default ``None`` -> falls back to ``t1_bold``, the old
+    behaviour) is the duration of the *BOLD warm-up solve only* -- a one-time,
+    forward-only simulation whose sole purpose is to seed ``network``'s
+    initial state (the warm-up's *last* timestep -- see
+    ``Network.initial_state``) and a short delay-coupling history buffer,
+    plus give ``HRFBold`` a history tail to convolve against. None of those
+    three consumers reads more than a short recent window regardless of how
+    long the warm-up ran (delay buffers need ``max_delay`` seconds -- tens of
+    ms for physiological conduction delays; ``HRFBold._process_history`` slices
+    exactly the kernel's ``duration`` -- 20s by default -- off the *end*).
+    Running the warm-up for the *full* ``t1_bold`` (which can be minutes, by
+    design, to give the FC/dFC loss a long BOLD signal) computes and holds a
+    proportionally huge trajectory just to throw away all but its tail --
+    the dominant GPU-memory cost of this function for a long ``t1_bold``.
+    ``t1_warmup`` decouples the two: pass something comfortably longer than
+    both the settling time of your dynamics and the HRF kernel duration (e.g.
+    30s), independent of how long ``t1_bold`` itself is. This does NOT change
+    the length of BOLD signal available to the loss -- ``simulator_bold``
+    (the one actually called during training) still integrates the full
+    ``t1_bold``; only the throwaway pre-roll gets shorter. It does change the
+    *exact* initial state training starts from (a different, still-settled,
+    point along an equally-valid stochastic trajectory -- not a less-settled
+    one), which is why this is opt-in via ``None`` rather than always-on.
     """
     print(f"Preparing simulators: EEG t1={t1_eeg:.1f}s, BOLD t1={t1_bold:.1f}s")
     result_eeg = solve(network, solver, t0=t0, t1=t1_eeg, dt=dt)
     network.update_history(result_eeg)
     simulator_eeg, _ = prepare(network, solver, t0=t0, t1=t1_eeg, dt=dt)
 
-    result_bold = solve(network, solver, t0=t0, t1=t1_bold, dt=dt)
+    warmup_t1 = t1_bold if t1_warmup is None else min(t1_warmup, t1_bold)
+    if warmup_t1 != t1_bold:
+        print(f"  BOLD warm-up solve: t1={warmup_t1:.1f}s (t1_bold={t1_bold:.1f}s used unchanged "
+              "for the actual training simulator)")
+    result_bold = solve(network, solver, t0=t0, t1=warmup_t1, dt=dt)
     network.update_history(result_bold)
     simulator_bold, params = prepare(network, solver, t0=t0, t1=t1_bold, dt=dt)
 

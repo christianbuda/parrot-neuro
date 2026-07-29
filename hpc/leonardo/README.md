@@ -209,17 +209,42 @@ concurrently.
   sanity check.
 - **Billing is per-GPU**, same as the reconstruction Booster chunks — one job = one A100,
   regardless of how many of its 32 cores you request.
-- **GPU out-of-memory on the 64G A100?** The BOLD simulator's default horizon
-  (`t1_bold=320_000` ms at `dt=1.0` ms = 320k integration steps) runs as one
-  monolithic scan that keeps every step's state live for the backward pass —
-  O(n_steps) memory, and by far the dominant cost (much bigger than the
-  leadfield/connectivity data). Set `OPTIM_SOLVER_BLOCK_SIZE` (in
-  `config.local.sh`, or `--solver-block-size` directly) to checkpoint the scan
-  in blocks of `K` steps instead: `O(n_steps/K + K)` memory for ~1.3-1.7x more
-  compute, with the *exact* gradient (not an approximation). `K ~ sqrt(n_steps)`
-  is the rule-of-thumb starting point — `565` for the default horizon. See
-  `parrot_neuro.optimization.network.build_network`'s docstring for the full
-  accounting.
+- **GPU out-of-memory at atlas=1000 with the default 320s BOLD horizon?**
+  Already fixed by default (`OPTIM_T1_WARMUP=30000` + `OPTIM_SOLVER_BLOCK_SIZE=565`
+  in `optim_cohort.sbatch`/`submit_optim.sh`) — this note explains why, in case
+  you're tuning further or hit it at a different atlas/horizon. Validated on GPU
+  2026-07-29: atlas=1000 OOMs even on an **80G** card without both fixes; with
+  both, measured peak was **~31GiB**, comfortable under the A100's 64G.
+
+  There are two *separate* OOM sites, and each needs its own fix — neither
+  alone is sufficient:
+  1. **The one-time BOLD warm-up solve** inside `build_simulators()` (seeds the
+     network's initial state + a short delay-history buffer + the BOLD
+     monitor's HRF-convolution tail). It's a plain forward call with no
+     gradient, so `jax.checkpoint`-based blocking is a no-op there — yet it
+     used to run for the *full* `t1_bold` (320s = 320k steps) just to throw
+     away all but the last ~20s of it (none of its three consumers reads more
+     than a short recent window). `t1_warmup` (`--t1-warmup`) gives this
+     warm-up its own short, separate duration — it does **not** shorten the
+     actual BOLD signal your FC/dFC loss sees (`t1_bold` is unchanged for the
+     real training simulator); it only changes the exact initial state
+     training starts from (a different, still-settled point, not a
+     less-settled one — your own `bold_skip_trs=8` comment already implies the
+     network settles in ~11.2s, well under the 30s default).
+  2. **The real training step** (`bold_loss_fn`, wrapped in `jax.grad`): this
+     one *is* differentiated, so `solver_block_size` (`--solver-block-size`,
+     checkpoints the scan in blocks of `K` steps, `K ~ sqrt(n_steps)`) actually
+     helps — `O(n_steps/K + K)` backward memory instead of `O(n_steps)`, for
+     ~1.3-1.7x more compute, with the *exact* gradient (not an approximation).
+     But the forward trajectory itself (~23GiB at atlas=1000/320s) is still a
+     hard floor either way, since the BOLD monitor needs the whole thing.
+
+  `optim_cohort.sbatch` also sets `XLA_PYTHON_CLIENT_PREALLOCATE=false` (JAX
+  otherwise reserves ~75% of the GPU upfront regardless of actual need, which
+  is most of why a naive `nvidia-smi` reading looks far worse than the real
+  requirement — same losses either way, it's purely an allocator setting).
+  See `train.build_simulators`'s and `network.build_network`'s docstrings for
+  the full accounting.
 
 ## Notes / gotchas
 - **`signal: killed` while building a `.sif`** = the login node OOM/arbiter-killed it. Login
