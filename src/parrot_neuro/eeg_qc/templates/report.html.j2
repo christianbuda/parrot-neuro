@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>EEG channel QC — {{ report.subject }}</title>
+<style>
+  :root { --pass:#0ca30c; --warn:#fab219; --fail:#d03b3b; }
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; margin: 0; color:#222; background:#fafafa; }
+  header { background:#263238; color:#fff; padding:16px 24px; }
+  header h1 { margin:0; font-size:20px; }
+  header .meta { font-size:13px; opacity:.8; margin-top:4px; }
+  .badge { display:inline-block; padding:2px 9px; border-radius:10px; color:#fff; font-size:12px; font-weight:600; text-transform:uppercase; }
+  .pass{background:var(--pass)} .warn{background:var(--warn)} .fail{background:var(--fail)} .missing{background:#898781}
+  main { padding: 16px 24px 60px; }
+  .toc { font-size:14px; margin-bottom:20px; }
+  .toc a { text-decoration:none; color:#1565c0; margin-right: 16px; }
+  section { background:#fff; border:1px solid #e0e0e0; border-radius:8px; margin:14px 0; padding:14px 18px; }
+  section h2 { font-size:17px; margin:0 0 8px; display:flex; align-items:center; gap:10px; }
+  .counts { font-size:13px; color:#555; margin-bottom:10px; }
+  table.channels { border-collapse:collapse; width:100%; font-size:12px; margin:6px 0 16px; }
+  table.channels th, table.channels td { border-bottom:1px solid #eee; padding:4px 8px; text-align:left; vertical-align:top; }
+  table.channels th { position:sticky; top:0; background:#fff; }
+  table.channels td.s { width:56px; }
+  table.channels tr.pass td { color:#777; }
+  .note { color:#777; font-style:italic; font-size:13px; }
+  .figs { display:flex; flex-wrap:wrap; gap:14px; }
+  .fig { flex:1 1 420px; }
+  .fig img { width:100%; border:1px solid #ddd; border-radius:4px; background:#fff; }
+  .fig .cap { font-size:12px; color:#555; margin-top:4px; }
+  details { margin: 10px 0; }
+  summary { cursor:pointer; font-size:13px; color:#1565c0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>EEG channel QC — {{ report.subject }}
+      <span class="badge {{ report.overall_status }}">{{ report.overall_status }}</span></h1>
+  <div class="meta">generated {{ report.generated }}</div>
+</header>
+<main>
+  <div class="toc">
+    {% for t in report.tasks %}
+      <a href="#{{ t.task }}"><span class="badge {{ t.status }}">{{ t.status }}</span> {{ t.task }}</a>
+    {% endfor %}
+  </div>
+
+  {% if report.cross_task and report.task_names|length > 1 %}
+  <section id="cross-task">
+    <h2>Cross-task consistency</h2>
+    <div class="note">A channel bad in every task points to the electrode itself; bad in only one
+      task is more likely a task-specific artifact (movement, contact settling, etc).</div>
+    <table class="channels">
+      <tr><th>Channel</th>{% for name in report.task_names %}<th>{{ name }}</th>{% endfor %}</tr>
+      {% for row in report.cross_task %}
+      <tr>
+        <td>{{ row.name }}</td>
+        {% for name in report.task_names %}
+        <td><span class="badge {{ row[name] }}">{{ row[name] }}</span></td>
+        {% endfor %}
+      </tr>
+      {% endfor %}
+    </table>
+  </section>
+  {% endif %}
+
+  {% for t in report.tasks %}
+  <section id="{{ t.task }}">
+    <h2>{{ t.task }} <span class="badge {{ t.status }}">{{ t.status }}</span></h2>
+    <div class="counts">
+      {{ t.counts.pass }} pass · {{ t.counts.warn }} warn · {{ t.counts.fail }} fail
+      {% if t.missing %} · {{ t.missing|length }} missing (expected but not recorded){% endif %}
+      {% if t.unpositioned %} · {{ t.unpositioned|length }} without a montage position{% endif %}
+    </div>
+    {% if t.missing %}
+    <div class="note">Missing: {{ t.missing|join(', ') }}</div>
+    {% endif %}
+    {% if t.unpositioned %}
+    <div class="note">No electrode position: {{ t.unpositioned|join(', ') }}</div>
+    {% endif %}
+
+    {% if t.figures %}
+    <div class="figs">
+      {% for f in t.figures %}
+      <div class="fig"><a href="{{ f.path }}"><img src="{{ f.path }}" alt="{{ f.caption }}"></a>
+        <div class="cap">{{ f.caption }}</div></div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <details>
+      <summary>Per-channel metrics table ({{ t.rows|length }} channels)</summary>
+      <table class="channels">
+        <tr>
+          <th class="s">Status</th><th>Channel</th><th>Reasons</th><th>RMS</th>
+          <th>Flatline %</th><th>Kurtosis</th><th>HF ratio</th><th>Line ratio</th>
+          <th>Neighbor r</th><th>Segment CV</th>
+        </tr>
+        {% for row in t.rows %}
+        <tr class="{{ row.status }}">
+          <td class="s"><span class="badge {{ row.status }}">{{ row.status }}</span></td>
+          <td><b>{{ row.name }}</b></td>
+          <td>{{ row.reasons }}</td>
+          <td>{{ "%.3g"|format(row.rms) }}</td>
+          <td>{{ "%.1f"|format(row.flatline_pct) }}</td>
+          <td>{{ "%.2f"|format(row.kurtosis) }}</td>
+          <td>{{ "%.3f"|format(row.hf_noise_ratio) }}</td>
+          <td>{{ "%.2f"|format(row.line_noise_ratio) }}</td>
+          <td>{{ "%.2f"|format(row.neighbor_corr) }}</td>
+          <td>{{ "%.2f"|format(row.segment_std_cv) }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </details>
+  </section>
+  {% endfor %}
+</main>
+</body>
+</html>
