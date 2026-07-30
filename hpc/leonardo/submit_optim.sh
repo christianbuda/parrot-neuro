@@ -71,6 +71,13 @@ OPTIM_LEARNING_RATE="${OPTIM_LEARNING_RATE:-1e-2}"
 #                       ~1.3-1.7x more compute, exact gradient either way.
 OPTIM_T1_WARMUP="${OPTIM_T1_WARMUP:-30000}"
 OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-565}"
+# Early stopping (train.is_loss_stalled): stop once every actively-optimized
+# loss's trend has stayed flat/increasing for OPTIM_EARLY_STOP_PATIENCE
+# consecutive OPTIM_EARLY_STOP_WINDOW-sized checks. Empty (default) = off,
+# matching config.BoldFitConfig's own default -- set an int to opt in.
+OPTIM_EARLY_STOP_PATIENCE="${OPTIM_EARLY_STOP_PATIENCE:-}"
+OPTIM_EARLY_STOP_WINDOW="${OPTIM_EARLY_STOP_WINDOW:-20}"
+OPTIM_EARLY_STOP_MIN_DELTA="${OPTIM_EARLY_STOP_MIN_DELTA:-1e-3}"
 
 # Cohort-array resources. TIME/MEM/CPUS are UNMEASURED defaults -- run `pilot`
 # first and set these (in config.local.sh) from what you actually observe;
@@ -99,7 +106,8 @@ build_subjects() {
 export_run_vars() {
     export OPTIM_ATLAS OPTIM_SPACING OPTIM_LEADFIELD_LABEL OPTIM_OPTIMIZE OPTIM_BOLD_LOSS \
            OPTIM_NUM_EPOCHS OPTIM_BOLD_EVERY OPTIM_EEG_TASK OPTIM_FMRI_TASK OPTIM_LEARNING_RATE \
-           OPTIM_OUTPUT_DIR OPTIM_SOLVER_BLOCK_SIZE OPTIM_T1_WARMUP
+           OPTIM_OUTPUT_DIR OPTIM_SOLVER_BLOCK_SIZE OPTIM_T1_WARMUP \
+           OPTIM_EARLY_STOP_PATIENCE OPTIM_EARLY_STOP_WINDOW OPTIM_EARLY_STOP_MIN_DELTA
 }
 
 CMD="${1:-}"
@@ -182,9 +190,9 @@ case "$CMD" in
         N=$(build_subjects)
         echo "$N subjects -> --array=0-$((N-1))${ARRAY_THROTTLE}  (file: $SUBJ_FILE)"
         printf '  gpu:1  %sc  time=%s  mem=%s  qos=%s (part=%s)\n' "$OPTIM_CPUS" "$OPTIM_TIME" "$OPTIM_MEM" "$BOOST_QOS" "$BOOST_PART"
-        printf '  atlas=%s  optimize=%s  bold_loss=%s  epochs=%s  bold_every=%s  t1_warmup=%s  solver_block_size=%s\n' \
+        printf '  atlas=%s  optimize=%s  bold_loss=%s  epochs=%s  bold_every=%s  t1_warmup=%s  solver_block_size=%s  early_stop_patience=%s\n' \
             "$OPTIM_ATLAS" "$OPTIM_OPTIMIZE" "$OPTIM_BOLD_LOSS" "$OPTIM_NUM_EPOCHS" "$OPTIM_BOLD_EVERY" \
-            "${OPTIM_T1_WARMUP:-off}" "${OPTIM_SOLVER_BLOCK_SIZE:-off}"
+            "${OPTIM_T1_WARMUP:-off}" "${OPTIM_SOLVER_BLOCK_SIZE:-off}" "${OPTIM_EARLY_STOP_PATIENCE:-off}"
         echo "  output: $OPTIM_OUTPUT_DIR"
         ;;
 

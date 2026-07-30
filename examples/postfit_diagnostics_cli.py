@@ -50,14 +50,17 @@ def parse_args() -> argparse.Namespace:
                     help="must match the original fit -- affects the stochastic warm-up/network dynamics")
     # Memory/compute knobs -- safe to set independently of the original fit
     # (they don't change results, see their --help in eeg_bold_fit_cli.py),
-    # except t1_warmup also affects the reconstructed warm-up state.
-    p.add_argument("--t1-warmup", type=float, default=None,
+    # except t1_warmup also affects the reconstructed warm-up state. Default to
+    # the same values eeg_bold_fit_cli.py now defaults to: the diagnostics
+    # section's own forward passes (simulator_bold called directly, twice) are
+    # just as OOM-prone at atlas=1000 as training is -- see diagnostics.py.
+    p.add_argument("--t1-warmup", type=float, default=30_000.0,
                     help="should match the original fit for a bit-identical warm-up state; "
-                         "harmless to change otherwise (still a settled state either way)")
-    p.add_argument("--solver-block-size", type=int, default=None,
-                    help="pure memory/compute trade, doesn't affect results -- set e.g. 565 if "
-                         "you hit GPU OOM here (not needed for the diagnostics forward passes "
-                         "themselves, only if it also affects context-building)")
+                         "harmless to change otherwise (still a settled state either way). "
+                         "Pass --t1-warmup=-1 for the old behaviour (reuse t1_bold).")
+    p.add_argument("--solver-block-size", type=int, default=565,
+                    help="pure memory/compute trade, doesn't affect results. Pass "
+                         "--solver-block-size=0 for the old unblocked behaviour.")
     return p.parse_args()
 
 
@@ -84,6 +87,10 @@ def main() -> None:
     npz_path = Path(args.optimized_params)
     out_dir = Path(args.output_dir) if args.output_dir else npz_path.parent
 
+    # Sentinels for "old behaviour" (see their --help text) -- BoldFitConfig wants None.
+    solver_block_size = None if args.solver_block_size == 0 else args.solver_block_size
+    t1_warmup = None if args.t1_warmup < 0 else args.t1_warmup
+
     cfg = config.BoldFitConfig(
         subject=subject,
         atlas=args.atlas,
@@ -94,8 +101,8 @@ def main() -> None:
         eeg_task=args.eeg_task,
         fmri_task=args.fmri_task,
         noise_seed=args.noise_seed,
-        solver_block_size=args.solver_block_size,
-        t1_warmup=args.t1_warmup,
+        solver_block_size=solver_block_size,
+        t1_warmup=t1_warmup,
     )
 
     dataset = data.load_subject_eeg(subject, cfg.eeg_task, cfg.chunk_length)

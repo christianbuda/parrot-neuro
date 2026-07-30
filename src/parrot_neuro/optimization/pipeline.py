@@ -240,6 +240,9 @@ def fit(ctx: ExperimentContext) -> FitResult:
         print_every=ctx.cfg.print_params_every,
         print_fn=partial(print_learnable_params, learnable_params=ctx.cfg.learnable_params),
         optimize=ctx.cfg.optimize,
+        early_stop_window=ctx.cfg.early_stop_window,
+        early_stop_patience=ctx.cfg.early_stop_patience,
+        early_stop_min_delta=ctx.cfg.early_stop_min_delta,
     )
 
 

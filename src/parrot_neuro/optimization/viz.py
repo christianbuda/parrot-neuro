@@ -70,8 +70,17 @@ def plot_node_activity(sim_result, mask_cortical, dt, settle_ms=500.0, stride_ms
 
 
 def plot_bold_timeseries(sim_bold_2d, empirical_bold, mask_cortical, tr_ms, skip_t=0, n_show=4):
-    """Simulated vs. empirical BOLD, z-scored, for a few cortical/subcortical nodes."""
-    Xs = np.asarray(sim_bold_2d)[skip_t:, :]
+    """Simulated vs. empirical BOLD, z-scored, for a few cortical/subcortical nodes.
+
+    ``sim_bold_2d`` is raw (unfiltered) simulated BOLD -- sliced to ``skip_t:``
+    and *then* bandpassed here (``connectivity.filter_sim_bold``), matching the
+    skip-then-filter order the loss/``plot_fc_comparison`` use. Filtering
+    before slicing off the burn-in would smear that unsettled transient's
+    ringing across the whole zero-phase-filtered output (see
+    ``signal.bandpass_filter``'s docstring) -- exactly the kind of spurious
+    high-frequency content this plot must not show. ``empirical_bold`` is
+    already bandpassed upstream, so only sliced, not filtered, here."""
+    Xs = np.asarray(filter_sim_bold(jnp.array(np.asarray(sim_bold_2d)[skip_t:, :]), tr_ms))
     Xe = np.asarray(empirical_bold)[skip_t:, :]
     t_sim = np.arange(Xs.shape[0]) * (tr_ms / 1000.0)
     t_emp = np.arange(Xe.shape[0]) * (tr_ms / 1000.0)
@@ -326,9 +335,13 @@ def plot_eeg_psd_learning(psd_before, psd_after, target_psd, freqs, idx_min, idx
 def plot_bold_learning(sim_bold_2d_before, sim_bold_2d_after, empirical_bold, mask_cortical,
                         tr_ms, skip_t=0, n_show=4):
     """Simulated BOLD before vs after training, vs empirical, z-scored, per node --
-    the BOLD-side counterpart to plot_eeg_psd_learning."""
-    Xb = np.asarray(sim_bold_2d_before)[skip_t:, :]
-    Xa = np.asarray(sim_bold_2d_after)[skip_t:, :]
+    the BOLD-side counterpart to plot_eeg_psd_learning.
+
+    ``sim_bold_2d_before``/``sim_bold_2d_after`` are raw (unfiltered) --
+    sliced to ``skip_t:`` and then bandpassed here, same skip-then-filter
+    order as ``plot_bold_timeseries``/the training loss (see there for why)."""
+    Xb = np.asarray(filter_sim_bold(jnp.array(np.asarray(sim_bold_2d_before)[skip_t:, :]), tr_ms))
+    Xa = np.asarray(filter_sim_bold(jnp.array(np.asarray(sim_bold_2d_after)[skip_t:, :]), tr_ms))
     Xe = np.asarray(empirical_bold)[skip_t:, :]
     t_b = np.arange(Xb.shape[0]) * (tr_ms / 1000.0)
     t_a = np.arange(Xa.shape[0]) * (tr_ms / 1000.0)

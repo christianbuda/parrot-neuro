@@ -223,6 +223,15 @@ class BoldFitConfig:
     # step and its loss history stays empty).
     optimize: str = "both"  # "eeg" | "bold" | "both"
 
+    # --- early stopping (see train.is_loss_stalled) ---
+    # None (default) = old behaviour, always run all num_epochs. Set an int to
+    # stop once every actively-optimized loss's relative trend over the last
+    # `early_stop_patience` overlapping `early_stop_window`-epoch windows has
+    # stayed >= -early_stop_min_delta (flat or increasing, not still dropping).
+    early_stop_window: int = 20
+    early_stop_patience: int | None = None
+    early_stop_min_delta: float = 1e-3
+
     # --- BOLD loss: static FC (time-averaged) vs dynamic FC (windowed) ---
     bold_loss: str = "fc"  # "fc" (static FC, default) | "dfc" (dynamic FC / FCD)
     # Short window + dense overlap (step=1) is a necessity, not a choice: with only

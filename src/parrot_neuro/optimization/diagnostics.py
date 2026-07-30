@@ -12,7 +12,6 @@ from pathlib import Path
 
 import equinox as eqx
 import jax.numpy as jnp
-import numpy as np
 
 from . import connectivity, train, viz
 from .forward import project_to_scalp
@@ -53,9 +52,8 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> None:
     # forcing call (as an earlier version of this code mistakenly did) is too
     # late to help that exact call.
     del sim_result_bold
-    sim_bold_2d_filt = connectivity.filter_sim_bold(np.asarray(sim_bold_2d), cfg.tr_ms)
 
-    fig = viz.plot_bold_timeseries(sim_bold_2d_filt, ctx.sc.empirical_bold, ctx.mask_cortical,
+    fig = viz.plot_bold_timeseries(sim_bold_2d, ctx.sc.empirical_bold, ctx.mask_cortical,
                                     cfg.tr_ms, skip_t=cfg.bold_skip_trs)
     fig.savefig(out_dir / "bold_timeseries.png", dpi=150)
 
@@ -76,9 +74,8 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> None:
     sim_result_bold_init = ctx.simulators.simulator_bold(combined_init)
     sim_bold_2d_init = connectivity.extract_bold_2d(ctx.simulators.bold_monitor(sim_result_bold_init))
     del sim_result_bold_init  # same reasoning + ordering as the del above
-    sim_bold_2d_init_filt = connectivity.filter_sim_bold(np.asarray(sim_bold_2d_init), cfg.tr_ms)
 
-    fig = viz.plot_bold_learning(sim_bold_2d_init_filt, sim_bold_2d_filt, ctx.sc.empirical_bold,
+    fig = viz.plot_bold_learning(sim_bold_2d_init, sim_bold_2d, ctx.sc.empirical_bold,
                                   ctx.mask_cortical, cfg.tr_ms, skip_t=cfg.bold_skip_trs)
     fig.savefig(out_dir / "bold_learning.png", dpi=150)
 

@@ -58,6 +58,13 @@ OPTIM_SKIP_DIAGNOSTICS="${OPTIM_SKIP_DIAGNOSTICS:-0}"
 # vs. the actual training gradient step -- neither alone is sufficient).
 OPTIM_T1_WARMUP="${OPTIM_T1_WARMUP:-30000}"
 OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-565}"
+# Early stopping (train.is_loss_stalled): stop once every actively-optimized
+# loss's trend has stayed flat/increasing for OPTIM_EARLY_STOP_PATIENCE
+# consecutive OPTIM_EARLY_STOP_WINDOW-sized checks. Empty (default) = off,
+# matching config.BoldFitConfig's own default -- set an int to opt in.
+OPTIM_EARLY_STOP_PATIENCE="${OPTIM_EARLY_STOP_PATIENCE:-}"
+OPTIM_EARLY_STOP_WINDOW="${OPTIM_EARLY_STOP_WINDOW:-20}"
+OPTIM_EARLY_STOP_MIN_DELTA="${OPTIM_EARLY_STOP_MIN_DELTA:-1e-3}"
 
 # --- which subject: array element, or an explicit smoke/pilot subject -------
 if [ -n "${OPTIM_SUBJECT:-}" ]; then
@@ -96,7 +103,7 @@ export XLA_PYTHON_CLIENT_ALLOCATOR=platform
 cd "$WORKDIR" || { echo "ERROR: cannot cd to WORKDIR=$WORKDIR"; exit 1; }
 
 echo "=== Parrot optim: job ${SLURM_JOB_ID:-?} (array ${SLURM_ARRAY_JOB_ID:--}_${SLURM_ARRAY_TASK_ID:--}) on $(hostname), $(date) ==="
-echo "subject=$SUBJECT  atlas=$OPTIM_ATLAS  optimize=$OPTIM_OPTIMIZE  bold_loss=$OPTIM_BOLD_LOSS  epochs=$OPTIM_NUM_EPOCHS"
+echo "subject=$SUBJECT  atlas=$OPTIM_ATLAS  optimize=$OPTIM_OPTIMIZE  bold_loss=$OPTIM_BOLD_LOSS  epochs=$OPTIM_NUM_EPOCHS  early_stop_patience=${OPTIM_EARLY_STOP_PATIENCE:-off}"
 nvidia-smi -L 2>/dev/null || echo "(no GPU visible -- this stage always needs one)"
 
 # --- optional GPU-utilisation sampling (submit_optim.sh sets this for `pilot`
@@ -122,6 +129,11 @@ ARGS=(
 [ "$OPTIM_SKIP_DIAGNOSTICS" = 1 ] && ARGS+=( --skip-diagnostics )
 [ -n "$OPTIM_SOLVER_BLOCK_SIZE" ] && ARGS+=( --solver-block-size "$OPTIM_SOLVER_BLOCK_SIZE" )
 [ -n "$OPTIM_T1_WARMUP" ] && ARGS+=( --t1-warmup "$OPTIM_T1_WARMUP" )
+if [ -n "$OPTIM_EARLY_STOP_PATIENCE" ]; then
+    ARGS+=( --early-stop-patience "$OPTIM_EARLY_STOP_PATIENCE"
+            --early-stop-window "$OPTIM_EARLY_STOP_WINDOW"
+            --early-stop-min-delta "$OPTIM_EARLY_STOP_MIN_DELTA" )
+fi
 
 SECONDS=0
 set +e

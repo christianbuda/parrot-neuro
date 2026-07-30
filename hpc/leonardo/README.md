@@ -194,6 +194,23 @@ takes one Booster GPU (`--gres=gpu:1`); `ARRAY_THROTTLE` (default `%40`) caps ho
 concurrently.
 
 ### Notes / gotchas (optimization stage)
+- **Early stopping is off by default.** Every array task runs the full `OPTIM_NUM_EPOCHS`
+  unless you set `OPTIM_EARLY_STOP_PATIENCE` (in `config.local.sh` or as a call-time env
+  var) — the fit then stops once every actively-optimized loss's trend over the last
+  `OPTIM_EARLY_STOP_PATIENCE` overlapping `OPTIM_EARLY_STOP_WINDOW`-sized windows has
+  stayed flat or increasing (see `train.is_loss_stalled`). Cheaper cohort runs once you've
+  picked a patience that looks safe on a pilot's loss curves — check the `.out` for the
+  `Early stopping at epoch N` line and how many entries `loss_history_*.npy` actually has.
+- **Alternating "both" fits now keep separate optimizer state per loss** (EEG PSD vs.
+  BOLD FC) instead of one shared Adam state — fixes a real bug where the BOLD loss barely
+  moved under `optimize=both` even though a BOLD-only fit converged fine at the same epoch
+  count. No config change needed; this is automatic once the cluster's clone is on a
+  commit that includes it.
+- **`bold_timeseries.png`/`bold_learning.png` used to bandpass-filter simulated BOLD
+  before slicing off the burn-in instead of after**, which smeared the unsettled onset
+  transient's ringing across the whole plotted trace (looked like spurious high-frequency
+  content). Fixed to filter after slicing, matching `fc_comparison.png`'s already-correct
+  order — the actual fitted loss was never affected, only these two diagnostic plots.
 - **Don't let this stage clobber SLURM's GPU binding.** `config.apply_jax_env()` used to
   hardcode `CUDA_VISIBLE_DEVICES` for a shared workstation (GPU index `3`); under `--gres`
   that variable is already scoped to the job's allocated device, so it now uses

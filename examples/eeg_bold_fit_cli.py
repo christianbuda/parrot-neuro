@@ -41,22 +41,36 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--fmri-task", default="rest")
     p.add_argument("--learning-rate", type=float, default=1e-2)
     p.add_argument("--noise-seed", type=int, default=69)
-    p.add_argument("--t1-warmup", type=float, default=None,
+    p.add_argument("--t1-warmup", type=float, default=30_000.0,
                     help="duration (ms) of the one-time BOLD warm-up solve, separate from "
-                         "--num-epochs's t1_bold -- default None reuses t1_bold (slow/OOM-prone "
-                         "for a long horizon at a large atlas). Set e.g. 30000 for a short "
-                         "warm-up with margin over both settling time and the HRF kernel's 20s "
-                         "duration; does not change how much BOLD signal the loss sees.")
-    p.add_argument("--solver-block-size", type=int, default=None,
+                         "--num-epochs's t1_bold. Defaults to a short warm-up (comfortable margin "
+                         "over both settling time and the HRF kernel's 20s duration) rather than "
+                         "reusing the full t1_bold, which is slow/OOM-prone at a large atlas -- "
+                         "does not change how much BOLD signal the loss sees. Pass --t1-warmup=-1 "
+                         "to get the old behaviour (reuse t1_bold) instead.")
+    p.add_argument("--solver-block-size", type=int, default=565,
                     help="checkpoint the integration scan in blocks of this many steps -- "
                          "trades ~1.3-1.7x compute for O(n_steps/K + K) instead of O(n_steps) "
-                         "backward-pass GPU memory (exact gradient either way). Default None = "
-                         "off (monolithic scan). K ~ sqrt(n_steps) is a good starting point -- "
-                         "e.g. ~565 for the default t1_bold=320000ms at dt=1.0ms (320k steps). "
-                         "Use this if you're hitting GPU OOM.")
+                         "backward-pass GPU memory (exact gradient either way). Defaults to ~565 "
+                         "(K ~ sqrt(n_steps) for the default t1_bold=320000ms at dt=1.0ms, 320k "
+                         "steps) since the unblocked monolithic scan reliably OOMs at atlas=1000 "
+                         "even on an 80G GPU. Pass --solver-block-size=0 for the old unblocked "
+                         "behaviour (e.g. if you shrink atlas/t1_bold enough that OOM isn't a risk "
+                         "and want to skip the ~1.3-1.7x compute overhead).")
     p.add_argument("--skip-diagnostics", action="store_true",
                     help="fit + save params/losses only -- skip the plotting section "
                          "(faster; useful for a smoke test)")
+    p.add_argument("--early-stop-patience", type=int, default=None,
+                    help="stop once every actively-optimized loss's trend has stayed "
+                         "flat/increasing for this many consecutive --early-stop-window "
+                         "checks -- default None keeps the old behaviour (always run all "
+                         "--num-epochs).")
+    p.add_argument("--early-stop-window", type=int, default=20,
+                    help="epochs (EEG) / bold-steps (BOLD) of loss history the trend is "
+                         "fit over for --early-stop-patience.")
+    p.add_argument("--early-stop-min-delta", type=float, default=1e-3,
+                    help="minimum relative per-step loss decrease to NOT count as stalled "
+                         "for --early-stop-patience.")
     return p.parse_args()
 
 
@@ -85,6 +99,11 @@ def main() -> None:
     output_dir = os.path.join(output_root, f"{subject.subject}_{args.optimize}_{args.bold_loss}")
     os.makedirs(output_dir, exist_ok=True)
 
+    # Sentinels for "give me the old, unblocked/full-t1_bold-warmup behaviour"
+    # (see their --help text) -- BoldFitConfig itself wants None for that.
+    solver_block_size = None if args.solver_block_size == 0 else args.solver_block_size
+    t1_warmup = None if args.t1_warmup < 0 else args.t1_warmup
+
     cfg = config.BoldFitConfig(
         subject=subject,
         atlas=args.atlas,
@@ -99,8 +118,11 @@ def main() -> None:
         fmri_task=args.fmri_task,
         learning_rate=args.learning_rate,
         noise_seed=args.noise_seed,
-        solver_block_size=args.solver_block_size,
-        t1_warmup=args.t1_warmup,
+        solver_block_size=solver_block_size,
+        t1_warmup=t1_warmup,
+        early_stop_patience=args.early_stop_patience,
+        early_stop_window=args.early_stop_window,
+        early_stop_min_delta=args.early_stop_min_delta,
     )
 
     load_eeg = args.optimize != "bold"

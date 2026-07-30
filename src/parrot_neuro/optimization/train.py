@@ -312,6 +312,33 @@ class FitResult:
     loss_history_bold: list = field(default_factory=list)
 
 
+def is_loss_stalled(history, window, patience, min_delta):
+    """True if ``history``'s relative linear trend has stayed >= ``-min_delta``
+    (i.e. not meaningfully decreasing) over each of the last ``patience``
+    overlapping windows of length ``window``.
+
+    Fits a straight line to each window and normalizes its slope by the
+    window's mean (a scale-free "fraction of the loss's own magnitude lost
+    per step", comparable across losses/epochs regardless of absolute loss
+    scale). Both a flat trend and an increasing one (e.g. the BOLD loss's
+    ``bad_loss`` divergence sentinel) count as stalled; any window where the
+    loss is still dropping faster than ``min_delta`` resets the check to
+    "not stalled" -- ``patience`` consecutive stalled windows are required
+    before this reports ``True``, so a single noisy epoch can't trigger it.
+    """
+    if len(history) < window + patience - 1:
+        return False
+    x = np.arange(window)
+    for k in range(patience):
+        end = len(history) - k
+        seg = np.asarray(history[end - window:end])
+        slope = np.polyfit(x, seg, 1)[0]
+        rel_slope = slope / (abs(seg.mean()) + 1e-8)
+        if rel_slope <= -min_delta:
+            return False
+    return True
+
+
 def run_alternating_fit(
     diff_params_init,
     static_params,
@@ -328,6 +355,9 @@ def run_alternating_fit(
     print_every=10,
     print_fn=print_learnable_params,
     optimize="both",
+    early_stop_window=20,
+    early_stop_patience=None,
+    early_stop_min_delta=1e-3,
 ) -> FitResult:
     """Run the alternating EEG/BOLD loop. 1 EEG step every epoch, 1 BOLD step
     every ``bold_every`` epochs (BOLD is far more expensive per step).
@@ -337,6 +367,14 @@ def run_alternating_fit(
     step is simply never called -- its loss history stays empty and its JAX
     computation is never traced/compiled, so there's no wasted cost either);
     ``"both"`` (default) is the original alternating fit.
+
+    ``early_stop_patience`` (``None`` by default = old behaviour, always run
+    all ``num_epochs``) stops the loop once every *actively optimized* loss
+    (per ``optimize``) is stalled per ``is_loss_stalled`` with the given
+    ``early_stop_window``/``early_stop_min_delta``. In ``"both"`` mode this
+    requires BOTH losses to be stalled -- EEG is cheap and plateaus fast, so
+    stopping the moment it alone plateaus would cut off BOLD's (typically
+    much slower) fit early.
     """
     if optimize not in ("eeg", "bold", "both"):
         raise ValueError(f"optimize must be 'eeg', 'bold', or 'both', got {optimize!r}")
@@ -344,25 +382,32 @@ def run_alternating_fit(
     do_bold = optimize in ("bold", "both")
 
     diff_params = diff_params_init
-    opt_state = optimizer.init(diff_params)
+    # Separate optimizer state per loss -- not just one shared state -- so
+    # Adam's per-parameter moment estimates (and step-count-dependent bias
+    # correction) for the EEG PSD loss and the BOLD FC loss don't overwrite
+    # each other between interleaved steps. Sharing one state here previously
+    # made the alternating "both" fit's BOLD loss barely move even though a
+    # BOLD-only fit converged fine at the same epoch count.
+    opt_state_eeg = optimizer.init(diff_params)
+    opt_state_bold = optimizer.init(diff_params)
 
     loss_history_eeg, loss_history_bold = [], []
     last_eeg_loss = last_bold_loss = float("nan")
 
     for epoch in range(num_epochs):
         if do_eeg:
-            diff_params, opt_state, loss_eeg = eeg_update_step(
-                diff_params, static_params, opt_state,
+            diff_params, opt_state_eeg, loss_eeg = eeg_update_step(
+                diff_params, static_params, opt_state_eeg,
                 target_psd, channel_indices, leadfield, smoothing_blocks, dipole_labels,
             )
-            opt_state = jax.lax.stop_gradient(opt_state)
+            opt_state_eeg = jax.lax.stop_gradient(opt_state_eeg)
             loss_history_eeg.append(float(loss_eeg))
             last_eeg_loss = float(loss_eeg)
 
         bold_stepped = False
         if do_bold and (epoch + 1) % bold_every == 0:
-            diff_params, opt_state, loss_bold = bold_update_step(diff_params, static_params, opt_state)
-            opt_state = jax.lax.stop_gradient(opt_state)
+            diff_params, opt_state_bold, loss_bold = bold_update_step(diff_params, static_params, opt_state_bold)
+            opt_state_bold = jax.lax.stop_gradient(opt_state_bold)
             loss_history_bold.append(float(loss_bold))
             last_bold_loss = float(loss_bold)
             bold_stepped = True
@@ -376,5 +421,15 @@ def run_alternating_fit(
 
         if print_fn is not None and (epoch + 1) % print_every == 0:
             print_fn(diff_params)
+
+        if early_stop_patience is not None:
+            eeg_stalled = (not do_eeg) or is_loss_stalled(
+                loss_history_eeg, early_stop_window, early_stop_patience, early_stop_min_delta)
+            bold_stalled = (not do_bold) or is_loss_stalled(
+                loss_history_bold, early_stop_window, early_stop_patience, early_stop_min_delta)
+            if eeg_stalled and bold_stalled:
+                print(f"Early stopping at epoch {epoch + 1}: loss trend stalled "
+                      f"(window={early_stop_window}, patience={early_stop_patience}).")
+                break
 
     return FitResult(diff_params, static_params, loss_history_eeg, loss_history_bold)
