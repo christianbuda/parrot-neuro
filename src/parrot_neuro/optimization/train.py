@@ -189,7 +189,7 @@ def make_eeg_loss_fn(simulator_eeg, mask_cortical, idx_min, idx_max, dt,
         norm_sim = sim_psd / (jnp.sum(sim_psd[:, idx_min:idx_max], keepdims=True) + 1e-8)
         norm_target = target_psd / (jnp.sum(target_psd[:, idx_min:idx_max], keepdims=True) + 1e-8)
 
-        loss = 10000 * jnp.mean((norm_sim[:, idx_min:idx_max] - norm_target[:, idx_min:idx_max]) ** 2)
+        loss = jnp.mean((norm_sim[:, idx_min:idx_max] - norm_target[:, idx_min:idx_max]) ** 2)
 
         if gamma_weight > 0:
             log_sim = jnp.log(sim_psd[:, gamma_idx_min:gamma_idx_max] + eps)
