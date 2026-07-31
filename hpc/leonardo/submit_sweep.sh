@@ -56,7 +56,13 @@ case "$CMD" in
         [ -f "$SWEEP_ID_FILE" ] && { echo "ERROR: $SWEEP_ID_FILE already exists (sweep $(cat "$SWEEP_ID_FILE")) -- rm it to register a new one" >&2; exit 1; }
         entity_flag=(); [ -n "${WANDB_ENTITY:-}" ] && entity_flag=( --entity "$WANDB_ENTITY" )
         out="$("${WANDB_BIN[@]}" sweep --project "$WANDB_PROJECT" "${entity_flag[@]}" "$SCRIPT_DIR/sweep_eeg_bold.yaml" 2>&1 | tee /dev/stderr)"
-        id="$(printf '%s\n' "$out" | grep -oE 'Creating sweep with ID: [A-Za-z0-9]+' | awk '{print $NF}')"
+        # Save the FULLY-QUALIFIED "entity/project/sweep_id" path (from wandb's own
+        # "Run sweep agent with: wandb agent entity/project/id" line), not just the
+        # bare ID -- `wandb agent <bare_id>` has to resolve a default entity via the
+        # API, which fails ("entityName required for project query") for accounts
+        # without one (e.g. team/org accounts). The qualified path never needs that.
+        id="$(printf '%s\n' "$out" | grep -oE 'Run sweep agent with: wandb agent .*' | awk '{print $NF}')"
+        [ -n "$id" ] || id="$(printf '%s\n' "$out" | grep -oE 'Creating sweep with ID: [A-Za-z0-9]+' | awk '{print $NF}')"
         [ -n "$id" ] || { echo "ERROR: could not parse sweep ID from wandb output above" >&2; exit 1; }
         printf '%s\n' "$id" > "$SWEEP_ID_FILE"
         echo "[create] sweep ID $id saved to $SWEEP_ID_FILE"
