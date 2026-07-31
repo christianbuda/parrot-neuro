@@ -209,13 +209,16 @@ def build_context(cfg: config.BoldFitConfig, dataset=None) -> ExperimentContext:
     )
 
 
-def fit(ctx: ExperimentContext) -> FitResult:
+def fit(ctx: ExperimentContext, on_epoch=None) -> FitResult:
     """Run the alternating EEG+BOLD training loop against ``ctx``.
 
     ``ctx.dataset`` (hence ``eeg_loss_fn``) may be ``None`` -- build_context
     already enforced that this is only possible when ``optimize == "bold"``,
     so ``run_alternating_fit`` simply never calls it in that case (see its
     ``optimize`` gating); it's built here only when there's actually a target.
+
+    ``on_epoch`` is passed straight through to ``train.run_alternating_fit``
+    -- see its docstring (per-epoch metric-streaming hook, e.g. for wandb).
     """
     eeg_loss_fn = None
     if ctx.dataset is not None:
@@ -259,6 +262,7 @@ def fit(ctx: ExperimentContext) -> FitResult:
         early_stop_window=ctx.cfg.early_stop_window,
         early_stop_patience=ctx.cfg.early_stop_patience,
         early_stop_min_delta=ctx.cfg.early_stop_min_delta,
+        on_epoch=on_epoch,
     )
 
 

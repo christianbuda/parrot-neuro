@@ -303,6 +303,92 @@ concurrently.
   See `train.build_simulators`'s and `network.build_network`'s docstrings for
   the full accounting.
 
+## Hyperparameter sweep (wandb)
+
+A W&B **Bayesian sweep** over the optimization stage's learning rates, BOLD
+loss-term weights, and dFC window size — each trial fits a **fixed list of
+subjects** (`SWEEP_SUBJECTS`) with one sampled hyperparameter set, in one
+wandb run, logging per-subject curves/plots as well as an
+`aggregate/combined_loss` objective (mean final EEG+BOLD loss across
+subjects) the sweep minimizes. Driven by `examples/eeg_bold_fit_sweep.py`
+(a twin of `eeg_bold_fit_cli.py` that loops over subjects instead of taking
+one) plus `hpc/leonardo/sweep_eeg_bold.yaml`, `sweep_dispatch.sh`,
+`sweep_train.sbatch`, `submit_sweep.sh`.
+
+**Why this isn't just "`submit_optim.sh` but with a sweep flag":** `wandb
+agent` needs live access to `api.wandb.ai`, both to fetch each trial's
+Bayesian-suggested config and to stream `wandb.log()` calls — but this
+README already established that **LEONARDO's compute nodes have no internet**
+(only login nodes do). So the agent runs on the **login node**, and hands
+each trial off to a compute node via `sbatch --wait`, training fully
+offline (`WANDB_MODE=offline`) there, and syncing the result back once the
+job returns and the login node has egress again:
+
+```
+login node (has egress)                    compute node (Booster GPU, NO egress)
+wandb agent <SWEEP_ID>  (x8, one per worker)
+  │ polls api.wandb.ai for the next Bayes-suggested config
+  ▼
+sweep_dispatch.sh --learning_rate=... ...
+  │ WANDB_RUN_ID/WANDB_SWEEP_ID/WANDB_API_KEY already in env (wandb agent sets them)
+  │ sbatch --wait --export=ALL,WANDB_MODE=offline,...  ──▶  sweep_train.sbatch
+  │                                                           pixi run python -u
+  │                                                             examples/eeg_bold_fit_sweep.py
+  │                                                           loops over $SWEEP_SUBJECTS,
+  │                                                           wandb.init(mode="offline", id=$WANDB_RUN_ID)
+  │  ◀── job exit code ──────────────────────────────────── writes offline run dir
+  ▼
+wandb sync --id "$WANDB_RUN_ID" <offline run dir>
+exit  →  agent sees the trial finished, polls for the next one
+```
+
+### One-time setup
+
+Add to `config.local.sh` (see `config.local.sh.example`'s "W&B hyperparameter
+sweep" block): `WANDB_API_KEY` (from https://wandb.ai/authorize) and
+`SWEEP_SUBJECTS` (the fixed subject list every trial fits, e.g.
+`010002,010003,010004,010005,010006`). Everything else has a default.
+
+### Smoke test first — mandatory
+
+This chain has several hops (login-node agent → `sbatch --wait` → offline
+training → `wandb sync`); validate all of them with one cheap trial before
+committing real GPU-hours:
+
+```bash
+bash hpc/leonardo/submit_sweep.sh create      # registers the sweep, saves its ID
+bash hpc/leonardo/submit_sweep.sh smoke       # ONE trial, 1 subject, 2 epochs, foreground
+```
+Confirm: the compute job appears in `squeue --me`, finishes with `rc=0`, and
+the trial shows up as a **finished** run on the wandb dashboard (not stuck
+"crashed" from a failed sync). Only then scale up:
+
+```bash
+bash hpc/leonardo/submit_sweep.sh start 8 5   # 8 background agents x 5 runs each = 40 trials
+bash hpc/leonardo/submit_sweep.sh status      # squeue + how many agents are still alive
+bash hpc/leonardo/submit_sweep.sh stop        # kill the background agents
+```
+
+### Notes / gotchas (sweep)
+- **A trial fits `SWEEP_SUBJECTS` sequentially at full epoch count** — several
+  times a single-subject `submit_optim.sh` fit's walltime. `sweep_dispatch.sh`
+  defaults its QoS to `boost_qos_lprod` (4-day wall), not `normal` (24h), for
+  exactly this reason — still, measure with `smoke`/a short manual run before
+  trusting `SWEEP_TIME`'s default.
+- **`start`'s background `wandb agent` processes live on the login node for
+  as long as trials keep dispatching** (hours to days) — run `start` inside
+  `tmux`/`screen`, not a plain interactive shell that dies on logout.
+- **Bayesian search only sees a trial once it's synced.** If a trial's
+  compute job OOMs or crashes, `sweep_dispatch.sh` still attempts a sync (of
+  whatever got logged before the crash) and propagates the failing exit
+  code — check `sweep_logs/agent-<i>.log` and the wandb dashboard if a trial
+  shows up as failed/incomplete.
+- **The 7 swept fields** (`learning_rate`, `learning_rate_bold`,
+  `bold_fc_weight`, `bold_dfc_weight`, `bold_psd_weight`, `dfc_window_trs`,
+  `dfc_step_trs`) are defined in `sweep_eeg_bold.yaml`; everything else
+  (`atlas`, `num_epochs`, `optimize`, etc.) is fixed across the whole sweep
+  via `SWEEP_*` env vars, same as `OPTIM_*` for `submit_optim.sh`.
+
 ## Notes / gotchas
 - **`signal: killed` while building a `.sif`** = the login node OOM/arbiter-killed it. Login
   nodes have a small per-user memory cap and a RAM-backed `/tmp`, so building a multi-GB `.sif`

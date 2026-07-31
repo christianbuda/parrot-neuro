@@ -1,0 +1,56 @@
+# wandb Bayesian sweep over the EEG+BOLD fit's learning rates, BOLD loss-term
+# weights, and dFC window size -- one trial fits ALL of $SWEEP_SUBJECTS (see
+# config.local.sh) with one sampled hyperparameter set (examples/
+# eeg_bold_fit_sweep.py), logging per-subject curves/plots plus the
+# aggregate/combined_loss objective below.
+#
+# Register with: wandb sweep hpc/leonardo/sweep_eeg_bold.yaml
+# (see submit_sweep.sh, which wraps this + the Leonardo login-node-agent /
+# offline-compute-node dispatch described in README.md's "Hyperparameter
+# sweep" section -- compute nodes have no internet, so `wandb agent` cannot
+# run there directly).
+program: sweep_dispatch.sh
+method: bayes
+metric:
+  name: aggregate/combined_loss
+  goal: minimize
+parameters:
+  learning_rate:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 0.1
+  learning_rate_bold:
+    distribution: log_uniform_values
+    min: 0.001
+    max: 0.9
+  bold_fc_weight:
+    distribution: uniform
+    min: 0.1
+    max: 1.0
+  bold_dfc_weight:
+    distribution: uniform
+    min: 0.0
+    max: 1.0
+  bold_psd_weight:
+    distribution: uniform
+    min: 0.0
+    max: 0.5
+  dfc_window_trs:
+    distribution: int_uniform
+    min: 4
+    max: 12
+  dfc_step_trs:
+    distribution: int_uniform
+    min: 1
+    max: 3
+# Fully custom command (not the default ${interpreter} ${program} ${args}):
+# `wandb agent` runs on the Leonardo LOGIN node and must hand each trial off
+# to a compute node itself -- sweep_dispatch.sh is that hand-off, not the
+# training script. ${args} expands to `--learning_rate=... --bold_fc_weight=...`
+# etc. for the trial's sampled values; WANDB_RUN_ID/WANDB_SWEEP_ID/
+# WANDB_API_KEY are already in the agent's own environment and inherited by
+# this command automatically.
+command:
+  - bash
+  - hpc/leonardo/sweep_dispatch.sh
+  - ${args}

@@ -382,6 +382,7 @@ def run_alternating_fit(
     early_stop_window=20,
     early_stop_patience=None,
     early_stop_min_delta=1e-3,
+    on_epoch=None,
 ) -> FitResult:
     """Run the alternating EEG/BOLD loop. 1 EEG step every epoch, 1 BOLD step
     every ``bold_every`` epochs (BOLD is far more expensive per step).
@@ -399,6 +400,13 @@ def run_alternating_fit(
     requires BOTH losses to be stalled -- EEG is cheap and plateaus fast, so
     stopping the moment it alone plateaus would cut off BOLD's (typically
     much slower) fit early.
+
+    ``on_epoch`` (``None`` by default), if given, is called after every epoch
+    as ``on_epoch(epoch, loss_eeg, loss_bold, bold_stepped)`` -- ``loss_eeg``/
+    ``loss_bold`` are ``None`` when that loss wasn't computed this epoch (not
+    optimized, or a non-BOLD-step epoch). This is the hook external callers
+    (e.g. an experiment-tracking sweep script) use to stream per-epoch metrics
+    without this module needing to know anything about how they're logged.
     """
     if optimize not in ("eeg", "bold", "both"):
         raise ValueError(f"optimize must be 'eeg', 'bold', or 'both', got {optimize!r}")
@@ -444,6 +452,14 @@ def run_alternating_fit(
         else:
             bold_str = "BOLD FC: (not optimized)"
         print(f"Epoch {epoch + 1:04d} | {eeg_str} | {bold_str}")
+
+        if on_epoch is not None:
+            on_epoch(
+                epoch,
+                last_eeg_loss if do_eeg else None,
+                last_bold_loss if bold_stepped else None,
+                bold_stepped,
+            )
 
         if print_fn is not None and (epoch + 1) % print_every == 0:
             print_fn(diff_params)

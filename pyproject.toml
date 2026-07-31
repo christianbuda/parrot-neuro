@@ -31,6 +31,7 @@ optim = [
     "equinox",
     "scipy",
     "matplotlib",
+    "wandb",
 ]
 
 # parrot_neuro.eeg_qc (per-channel EEG QC: flags missing/noisy electrodes,

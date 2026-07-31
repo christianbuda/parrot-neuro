@@ -191,7 +191,7 @@ class BoldFitConfig:
     t0: float = 0.0
     dt: float = 1.0
     t1_eeg: float = 2_500.0     # ms; short horizon for the EEG PSD loss
-    t1_bold: float = 320_000.0  # ms; long horizon for the BOLD FC loss (42 TRs at TR=1400ms)
+    t1_bold: float = 900_000.0  # ms; long horizon for the BOLD FC loss (42 TRs at TR=1400ms)
     # One-time BOLD warm-up solve duration (ms), separate from t1_bold -- see
     # train.build_simulators' docstring. None (default) = old behaviour, warm
     # up for the full t1_bold (expensive/OOM-prone for a long t1_bold at a
@@ -218,7 +218,7 @@ class BoldFitConfig:
     # dominated by the long BOLD horizon. An int K checkpoints the scan in
     # blocks of K steps (jax.checkpoint): O(n_steps/K + K) memory for ~1.3-1.7x
     # more compute; K ~ sqrt(n_steps) is the rule-of-thumb optimum (e.g. ~565
-    # for the default t1_bold=320_000ms at dt=1.0ms). Exact gradient either way
+    # for the default t1_bold=900_000ms at dt=1.0ms). Exact gradient either way
     # -- this is a pure memory/time trade, not an approximation.
     solver_block_size: int | None = None
 
@@ -261,7 +261,7 @@ class BoldFitConfig:
     bold_fc_weight: float = 0.5
     bold_dfc_weight: float = 0.5
     # Short window + dense overlap (step=1) is a necessity, not a choice: with only
-    # t1_bold=60s of simulated BOLD (kept short for training cost) and a fixed
+    # t1_bold=900s of simulated BOLD (kept short for training cost) and a fixed
     # tr_ms=1400, there's no room for literature-standard 30-60s FCD windows -- these
     # values instead maximize how many (highly overlapping, not independent) window
     # snapshots survive within that budget. At bold_skip_trs=8 this gives

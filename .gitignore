@@ -1,6 +1,8 @@
 # parrot development
 development/
-
+eeg_bold_fit_res/
+eeg_bold_fit_res_summary/
+eeg_channel_qc_res/
 # parrot specific
 .temp_pipeline*
 
@@ -82,3 +84,9 @@ template_data/hartmut/assets/
 !.pixi/config.toml
 templateflow_cache/
 hpc/leonardo/config.local.sh
+
+# W&B sweep operator state (submit_sweep.sh) -- run-specific, not portable across machines
+hpc/leonardo/.sweep_id
+hpc/leonardo/.sweep_agent_pids
+hpc/leonardo/sweep_logs/
+wandb/
