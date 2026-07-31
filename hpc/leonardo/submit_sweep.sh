@@ -33,12 +33,16 @@ SWEEP_ID_FILE="$SCRIPT_DIR/.sweep_id"
 AGENT_PID_FILE="$SCRIPT_DIR/.sweep_agent_pids"
 AGENT_LOG_DIR="${SWEEP_AGENT_LOG_DIR:-$SCRIPT_DIR/sweep_logs}"
 
-WANDB_BIN="$(command -v wandb || true)"
-if [ -z "$WANDB_BIN" ]; then
+# Array, not a string -- "pixi run wandb" is 3 words, and quoting a string
+# variable containing spaces makes bash look for one file with that literal
+# name (exactly the "No such file or directory" bug this used to hit).
+if command -v wandb >/dev/null 2>&1; then
+    WANDB_BIN=(wandb)
+else
     PIXI="$(command -v pixi || true)"
     [ -z "$PIXI" ] && [ -x "$HOME/.pixi/bin/pixi" ] && PIXI="$HOME/.pixi/bin/pixi"
     [ -n "$PIXI" ] || { echo "ERROR: neither 'wandb' nor 'pixi' found on PATH"; exit 1; }
-    WANDB_BIN="$PIXI run wandb"
+    WANDB_BIN=("$PIXI" run wandb)
 fi
 
 sweep_id() {
@@ -51,7 +55,7 @@ case "$CMD" in
     create)
         [ -f "$SWEEP_ID_FILE" ] && { echo "ERROR: $SWEEP_ID_FILE already exists (sweep $(cat "$SWEEP_ID_FILE")) -- rm it to register a new one" >&2; exit 1; }
         entity_flag=(); [ -n "${WANDB_ENTITY:-}" ] && entity_flag=( --entity "$WANDB_ENTITY" )
-        out="$($WANDB_BIN sweep --project "$WANDB_PROJECT" "${entity_flag[@]}" "$SCRIPT_DIR/sweep_eeg_bold.yaml" 2>&1 | tee /dev/stderr)"
+        out="$("${WANDB_BIN[@]}" sweep --project "$WANDB_PROJECT" "${entity_flag[@]}" "$SCRIPT_DIR/sweep_eeg_bold.yaml" 2>&1 | tee /dev/stderr)"
         id="$(printf '%s\n' "$out" | grep -oE 'Creating sweep with ID: [A-Za-z0-9]+' | awk '{print $NF}')"
         [ -n "$id" ] || { echo "ERROR: could not parse sweep ID from wandb output above" >&2; exit 1; }
         printf '%s\n' "$id" > "$SWEEP_ID_FILE"
@@ -63,7 +67,7 @@ case "$CMD" in
         subject="${2:-${SUBJECT:-010002}}"
         echo "[smoke] ONE foreground trial: subject=$subject epochs=2, no diagnostics -- sanity check only"
         export SWEEP_SUBJECTS="$subject" SWEEP_NUM_EPOCHS=2 SWEEP_SKIP_DIAGNOSTICS=1
-        "$WANDB_BIN" agent --count 1 "$id"
+        "${WANDB_BIN[@]}" agent --count 1 "$id"
         ;;
 
     start)
@@ -77,7 +81,7 @@ case "$CMD" in
         echo "        not a plain shell that dies on logout."
         for i in $(seq 1 "$n_agents"); do
             log="$AGENT_LOG_DIR/agent-$i.log"
-            nohup "$WANDB_BIN" agent --count "$runs_per_agent" "$id" > "$log" 2>&1 < /dev/null &
+            nohup "${WANDB_BIN[@]}" agent --count "$runs_per_agent" "$id" > "$log" 2>&1 < /dev/null &
             pid=$!
             disown "$pid" 2>/dev/null || true
             echo "$pid" >> "$AGENT_PID_FILE"
