@@ -12,6 +12,8 @@ very first cell::
 """
 from __future__ import annotations
 
+import dataclasses
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,6 +38,8 @@ TIME_STEPS = 500                # samples per analysis chunk (== CHUNK_LENGTH)
 CHUNK_LENGTH = 500              # EEG chunk length in samples
 FMIN = 1.                      # PSD-loss lower band edge (Hz)
 FMAX = 15.0                     # PSD-loss upper band edge (Hz)
+GAMMA_FMIN = 15.0                # optional gamma-band log-PSD term lower edge (Hz)
+GAMMA_FMAX = 40.0                # optional gamma-band log-PSD term upper edge (Hz)
 
 # Conduction speed (m/s) turning tract lengths into delays: delays = L / SPEED.
 CONDUCTION_SPEED = 3.0
@@ -156,6 +160,16 @@ class BoldFitConfig:
     fmax: float = FMAX
     conduction_speed: float = CONDUCTION_SPEED
 
+    # --- optional EEG gamma-band term (see train.make_eeg_loss_fn) ---
+    # 0 (default) = off, preserving the old main-band-only EEG loss. > 0 adds a
+    # log(PSD) MSE term over [gamma_fmin, gamma_fmax) alongside the main
+    # normalized-linear PSD MSE over [fmin, fmax) -- log-space because gamma
+    # power is orders of magnitude smaller than the main band's and would be
+    # swamped by a linear/normalized comparison.
+    gamma_weight: float = 0.0
+    gamma_fmin: float = GAMMA_FMIN
+    gamma_fmax: float = GAMMA_FMAX
+
     # --- BOLD target + connectome region alignment ---
     # Empirical BOLD + the missing-region mask are both derived from the
     # subject's own fMRI derivatives (see optimization.connectivity) rather than
@@ -213,6 +227,12 @@ class BoldFitConfig:
 
     # --- optimization ---
     learning_rate: float = 1e-2
+    # None (default) = reuse learning_rate for the BOLD step too (old behaviour).
+    # Now that EEG and BOLD each get their own Adam state (see train.run_alternating_fit),
+    # they can also use different step sizes -- set this to tune the BOLD step
+    # independently (e.g. if it's cheap/fast to plateau at the shared rate, or
+    # too unstable at it given how much more expensive/noisy a BOLD step is).
+    learning_rate_bold: float | None = None
     grad_clip_norm: float = 1.0
     num_epochs: int = 2
     bold_every: int = 1
@@ -232,8 +252,14 @@ class BoldFitConfig:
     early_stop_patience: int | None = None
     early_stop_min_delta: float = 1e-3
 
-    # --- BOLD loss: static FC (time-averaged) vs dynamic FC (windowed) ---
-    bold_loss: str = "fc"  # "fc" (static FC, default) | "dfc" (dynamic FC / FCD)
+    # --- BOLD loss: weighted combination of static FC + dynamic FC (FCD) ---
+    # Both terms are always computed (from the SAME simulated trajectory, so
+    # neither doubles the cost of the expensive BOLD forward pass -- see
+    # train.make_bold_loss_fn) and combined as
+    # bold_fc_weight * fc_loss + bold_dfc_weight * dfc_loss. Set either to 0 to
+    # recover the old single-mode ("fc"-only or "dfc"-only) behaviour.
+    bold_fc_weight: float = 0.5
+    bold_dfc_weight: float = 0.5
     # Short window + dense overlap (step=1) is a necessity, not a choice: with only
     # t1_bold=60s of simulated BOLD (kept short for training cost) and a fixed
     # tr_ms=1400, there's no room for literature-standard 30-60s FCD windows -- these
@@ -241,7 +267,7 @@ class BoldFitConfig:
     # snapshots survive within that budget. At bold_skip_trs=8 this gives
     # n_windows=(34-6)//1+1=29 -> 29*28/2=406 off-diagonal FCD values to compare.
     # Revisit if t1_bold changes.
-    dfc_window_trs: int = 6    # sliding-window length (TRs) for the "dfc" loss = 8.4s at tr_ms=1400
+    dfc_window_trs: int = 6    # sliding-window length (TRs) for the dFC term = 8.4s at tr_ms=1400
     dfc_step_trs: int = 1      # sliding-window stride (TRs)
     # k_min=1 keeps every off-diagonal FCD entry (including immediately-adjacent,
     # heavily-overlapping windows); raise it to drop near-diagonal entries that
@@ -253,11 +279,25 @@ class BoldFitConfig:
     dfc_n_bins: int = 25
     dfc_sigma: float = 0.05    # Gaussian-kernel width (correlation units) for the soft histogram
 
+    # --- optional BOLD spectral-shape term (see connectivity.bold_psd_band) ---
+    # 0 (default) = off. > 0 adds a Welch-PSD MSE term, restricted+normalized to
+    # [bold_bandpass_low, bold_bandpass_high], to the combined BOLD loss above --
+    # fc_vector's time-averaged correlation has no sensitivity at all to each
+    # signal's own temporal/spectral shape (only to which regions co-fluctuate).
+    bold_psd_weight: float = 0.0
+    # Welch-segment length/overlap, in TRs -- shared between simulated and
+    # empirical so their PSDs land on the same frequency-bin grid despite very
+    # different total recording lengths (same "necessity given the short
+    # simulated horizon" rationale as dfc_window_trs/dfc_step_trs above).
+    bold_psd_nperseg_trs: int = 32
+    bold_psd_noverlap_trs: int = 16
+
     def __post_init__(self):
         if self.optimize not in ("eeg", "bold", "both"):
             raise ValueError(f"optimize must be 'eeg', 'bold', or 'both', got {self.optimize!r}")
-        if self.bold_loss not in ("fc", "dfc"):
-            raise ValueError(f"bold_loss must be 'fc' or 'dfc', got {self.bold_loss!r}")
+        for name in ("bold_fc_weight", "bold_dfc_weight", "bold_psd_weight", "gamma_weight"):
+            if getattr(self, name) < 0:
+                raise ValueError(f"{name} must be >= 0, got {getattr(self, name)!r}")
 
         # The EEG loss compares the simulator's post-settle, strided output
         # directly against the empirical PSD's frequency bins — the two only
@@ -273,3 +313,47 @@ class BoldFitConfig:
                 "empirical PSD it's compared against must have the same length. Adjust "
                 "t1_eeg, eeg_settle_ms, eeg_stride_ms, or chunk_length so they agree."
             )
+
+    def to_dict(self) -> dict:
+        """JSON-serializable dict of this run's exact configuration.
+
+        Built field-by-field (not a bare ``dataclasses.asdict(self)``) because
+        two fields need special handling: ``subject`` is a ``parrot_neuro.Subject``,
+        not a dataclass -- ``asdict`` would fall back to ``copy.deepcopy``-ing
+        the whole object (including any populated internal load caches), which
+        is wasteful and not guaranteed to succeed; reduced instead to its
+        identifying ``(bids_root, subject id)`` pair. ``output_dir`` (a
+        ``Path``) becomes a plain string. ``learnable_params`` is fine to
+        ``asdict`` -- each ``LearnableParam`` holds only plain scalars.
+        """
+        d = {}
+        for f in dataclasses.fields(self):
+            value = getattr(self, f.name)
+            if f.name == "subject":
+                value = {"bids_root": str(value.bids_root), "subject": value.subject}
+            elif f.name == "output_dir":
+                value = str(value)
+            elif f.name == "learnable_params":
+                value = [dataclasses.asdict(lp) for lp in value]
+            d[f.name] = value
+        return d
+
+    def save(self, out_dir: str | Path | None = None) -> Path:
+        """Write this run's full configuration to ``<out_dir>/config.json``
+        (default: ``self.output_dir``) -- so a results folder always says
+        exactly what hyperparameters produced it, without cross-referencing a
+        script version or commit hash. Call this right after constructing the
+        config (before ``pipeline.fit``) so even a crashed/OOM'd run leaves
+        behind a record of what was attempted.
+
+        ``default=str`` in the ``json.dump`` call is a defensive fallback for
+        any value ``to_dict`` didn't anticipate (e.g. a stray ``Path`` or
+        numpy scalar) -- everything already-anticipated is a plain
+        str/int/float/bool/list/dict by the time it gets there.
+        """
+        out_dir = Path(out_dir) if out_dir is not None else Path(self.output_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / "config.json"
+        with open(path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2, default=str)
+        return path

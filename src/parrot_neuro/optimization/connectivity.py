@@ -17,7 +17,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from . import config
-from .signal import bandpass_filter
+from .signal import bandpass_filter, welch_psd
 
 
 @dataclass
@@ -114,6 +114,30 @@ def filter_sim_bold(X, tr_ms, low=config.BOLD_BANDPASS_LOW, high=config.BOLD_BAN
     return bandpass_filter(X, fs, low, high, order=order)
 
 
+def bold_psd_band(X, tr_ms, nperseg, noverlap, skip_t=0,
+                   low=config.BOLD_BANDPASS_LOW, high=config.BOLD_BANDPASS_HIGH, eps=1e-8):
+    """Welch PSD of a ``(T, N)`` BOLD array, restricted + per-node normalized
+    (each node's band power sums to 1) to ``[low, high]`` Hz.
+
+    Welch's fixed ``nperseg`` fixes the frequency-bin grid independent of how
+    long ``X`` is -- so a much-shorter simulated horizon and a much-longer
+    empirical recording, computed with the SAME ``nperseg``/``noverlap``/
+    ``tr_ms``, land on identical frequency bins and are directly comparable
+    band-for-band despite the very different lengths. This is the mechanism
+    the optional BOLD spectral-shape loss term (``train.make_bold_loss_fn``'s
+    ``psd_weight``) relies on -- ``fc_vector``'s time-averaged correlation has
+    no sensitivity at all to each signal's own temporal/spectral shape, only
+    to which regions co-fluctuate.
+    """
+    fs = 1000.0 / tr_ms
+    psd = welch_psd(X[skip_t:].T, fs=fs, nperseg=nperseg, noverlap=noverlap)  # (N, n_freq)
+    freqs = np.fft.rfftfreq(nperseg, d=1.0 / fs)
+    idx_min = int(np.searchsorted(freqs, low))
+    idx_max = int(np.searchsorted(freqs, high))
+    band = psd[:, idx_min:idx_max]
+    return band / (jnp.sum(band, axis=-1, keepdims=True) + eps)
+
+
 # --- dynamic FC (FCD) -- the windowed alternative to the static fc_vector ---
 
 def sliding_windows(X, window_size, step):
@@ -203,7 +227,7 @@ def dfc_histogram(X, window_trs, step_trs, centers, skip_t=0, k_min=1, sigma=0.0
     gradient-based optimization. Binning both onto the same ``centers`` grid
     via ``soft_histogram`` and comparing those with ``wasserstein_1d_from_hist``
     is a smooth, shape-independent stand-in that can be used directly inside a
-    jax.grad'd loss (see train.make_bold_dfc_loss_fn).
+    jax.grad'd loss (see train.make_bold_loss_fn's dFC term).
     """
     fcd = fcd_matrix(X, window_trs, step_trs, skip_t=skip_t, eps=eps)
     values = fcd_values(fcd, k_min=k_min)

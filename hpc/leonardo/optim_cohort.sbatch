@@ -43,12 +43,27 @@ OPTIM_ATLAS="${OPTIM_ATLAS:-1000}"
 OPTIM_SPACING="${OPTIM_SPACING:-2.0}"
 OPTIM_LEADFIELD_LABEL="${OPTIM_LEADFIELD_LABEL:-duneuroCGAL}"
 OPTIM_OPTIMIZE="${OPTIM_OPTIMIZE:-both}"
-OPTIM_BOLD_LOSS="${OPTIM_BOLD_LOSS:-fc}"
+# BOLD loss is a weighted combination of static FC + dFC/FCD (both computed
+# from the same simulated trajectory -- see train.make_bold_loss_fn); either
+# weight at 0 recovers a single-mode fit.
+OPTIM_BOLD_FC_WEIGHT="${OPTIM_BOLD_FC_WEIGHT:-0.5}"
+OPTIM_BOLD_DFC_WEIGHT="${OPTIM_BOLD_DFC_WEIGHT:-0.5}"
 OPTIM_NUM_EPOCHS="${OPTIM_NUM_EPOCHS:-300}"
 OPTIM_BOLD_EVERY="${OPTIM_BOLD_EVERY:-2}"
 OPTIM_EEG_TASK="${OPTIM_EEG_TASK:-eyesclosed}"
 OPTIM_FMRI_TASK="${OPTIM_FMRI_TASK:-rest}"
 OPTIM_LEARNING_RATE="${OPTIM_LEARNING_RATE:-1e-2}"
+# Empty (default) = reuse OPTIM_LEARNING_RATE for the BOLD step too -- EEG and
+# BOLD each get their own Adam state, so they can also use different rates.
+OPTIM_LEARNING_RATE_BOLD="${OPTIM_LEARNING_RATE_BOLD:-}"
+# Optional BOLD spectral-shape term (connectivity.bold_psd_band, restricted to
+# the 0.01-0.1Hz bandpass) -- 0 (default) = off. fc_vector's time-averaged
+# correlation has no sensitivity at all to each signal's own temporal/spectral
+# shape; this adds a gradient for it.
+OPTIM_BOLD_PSD_WEIGHT="${OPTIM_BOLD_PSD_WEIGHT:-0}"
+# Optional EEG gamma-band term: log(PSD) MSE over 15-40Hz, alongside the
+# existing normalized-linear PSD MSE over 1-15Hz -- 0 (default) = off.
+OPTIM_GAMMA_WEIGHT="${OPTIM_GAMMA_WEIGHT:-0}"
 OPTIM_SKIP_DIAGNOSTICS="${OPTIM_SKIP_DIAGNOSTICS:-0}"
 # GPU-memory fixes for atlas=1000 + the long default BOLD horizon (validated
 # locally on GPU 2026-07-29: without these, even an 80G card OOMs; with both,
@@ -103,7 +118,7 @@ export XLA_PYTHON_CLIENT_ALLOCATOR=platform
 cd "$WORKDIR" || { echo "ERROR: cannot cd to WORKDIR=$WORKDIR"; exit 1; }
 
 echo "=== Parrot optim: job ${SLURM_JOB_ID:-?} (array ${SLURM_ARRAY_JOB_ID:--}_${SLURM_ARRAY_TASK_ID:--}) on $(hostname), $(date) ==="
-echo "subject=$SUBJECT  atlas=$OPTIM_ATLAS  optimize=$OPTIM_OPTIMIZE  bold_loss=$OPTIM_BOLD_LOSS  epochs=$OPTIM_NUM_EPOCHS  early_stop_patience=${OPTIM_EARLY_STOP_PATIENCE:-off}"
+echo "subject=$SUBJECT  atlas=$OPTIM_ATLAS  optimize=$OPTIM_OPTIMIZE  bold_fc_weight=$OPTIM_BOLD_FC_WEIGHT  bold_dfc_weight=$OPTIM_BOLD_DFC_WEIGHT  epochs=$OPTIM_NUM_EPOCHS  early_stop_patience=${OPTIM_EARLY_STOP_PATIENCE:-off}"
 nvidia-smi -L 2>/dev/null || echo "(no GPU visible -- this stage always needs one)"
 
 # --- optional GPU-utilisation sampling (submit_optim.sh sets this for `pilot`
@@ -121,7 +136,8 @@ fi
 ARGS=(
     --bids-root "$BIDS" --subject "$SUBJECT" --output-root "$OPTIM_OUTPUT_DIR"
     --atlas "$OPTIM_ATLAS" --spacing "$OPTIM_SPACING" --leadfield-label "$OPTIM_LEADFIELD_LABEL"
-    --optimize "$OPTIM_OPTIMIZE" --bold-loss "$OPTIM_BOLD_LOSS"
+    --optimize "$OPTIM_OPTIMIZE"
+    --bold-fc-weight "$OPTIM_BOLD_FC_WEIGHT" --bold-dfc-weight "$OPTIM_BOLD_DFC_WEIGHT"
     --num-epochs "$OPTIM_NUM_EPOCHS" --bold-every "$OPTIM_BOLD_EVERY"
     --eeg-task "$OPTIM_EEG_TASK" --fmri-task "$OPTIM_FMRI_TASK"
     --learning-rate "$OPTIM_LEARNING_RATE"
@@ -129,6 +145,9 @@ ARGS=(
 [ "$OPTIM_SKIP_DIAGNOSTICS" = 1 ] && ARGS+=( --skip-diagnostics )
 [ -n "$OPTIM_SOLVER_BLOCK_SIZE" ] && ARGS+=( --solver-block-size "$OPTIM_SOLVER_BLOCK_SIZE" )
 [ -n "$OPTIM_T1_WARMUP" ] && ARGS+=( --t1-warmup "$OPTIM_T1_WARMUP" )
+[ -n "$OPTIM_LEARNING_RATE_BOLD" ] && ARGS+=( --learning-rate-bold "$OPTIM_LEARNING_RATE_BOLD" )
+[ -n "$OPTIM_BOLD_PSD_WEIGHT" ] && [ "$OPTIM_BOLD_PSD_WEIGHT" != 0 ] && ARGS+=( --bold-psd-weight "$OPTIM_BOLD_PSD_WEIGHT" )
+[ -n "$OPTIM_GAMMA_WEIGHT" ] && [ "$OPTIM_GAMMA_WEIGHT" != 0 ] && ARGS+=( --gamma-weight "$OPTIM_GAMMA_WEIGHT" )
 if [ -n "$OPTIM_EARLY_STOP_PATIENCE" ]; then
     ARGS+=( --early-stop-patience "$OPTIM_EARLY_STOP_PATIENCE"
             --early-stop-window "$OPTIM_EARLY_STOP_WINDOW"

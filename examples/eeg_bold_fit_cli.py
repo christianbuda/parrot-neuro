@@ -10,9 +10,9 @@ point at each subject without editing a file per run:
 
     python examples/eeg_bold_fit_cli.py --bids-root <BIDS> --subject 010005
 
-Defaults mirror eeg_bold_fit_new.py (atlas=1000, optimize=both, bold_loss=fc,
-num_epochs=300, bold_every=2). See --help for the full set of overridable
-BoldFitConfig fields. For interactive/exploratory edits, use
+Defaults mirror eeg_bold_fit_new.py (atlas=1000, optimize=both, BOLD loss =
+0.5*fc + 0.5*dfc, num_epochs=300, bold_every=2). See --help for the full set
+of overridable BoldFitConfig fields. For interactive/exploratory edits, use
 eeg_bold_fit_new.py directly -- this file is the batch entry point.
 """
 from __future__ import annotations
@@ -29,17 +29,35 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bids-root", required=True, help="Parrot dataset root (dir containing 'derivatives/')")
     p.add_argument("--subject", required=True, help="participant label, with or without 'sub-' prefix")
     p.add_argument("--output-root", default="eeg_bold_fit_res",
-                    help="results land under <output-root>/atlas-<atlas>/<subject>_<optimize>_<bold-loss>")
+                    help="results land under <output-root>/atlas-<atlas>/<subject>_<optimize>")
     p.add_argument("--atlas", type=int, default=1000, choices=(100, 1000))
     p.add_argument("--spacing", default="2.0", help="dipole spacing in mm (string)")
     p.add_argument("--leadfield-label", default="duneuroCGAL")
     p.add_argument("--optimize", default="both", choices=("eeg", "bold", "both"))
-    p.add_argument("--bold-loss", default="fc", choices=("fc", "dfc"))
+    p.add_argument("--bold-fc-weight", type=float, default=0.5,
+                    help="weight of the static-FC term in the combined BOLD loss -- 0 drops it "
+                         "(dfc-only fit).")
+    p.add_argument("--bold-dfc-weight", type=float, default=0.5,
+                    help="weight of the dynamic-FC (FCD) term in the combined BOLD loss -- 0 drops "
+                         "it (fc-only fit, and also disables the FCD diagnostic plots).")
     p.add_argument("--num-epochs", type=int, default=300)
     p.add_argument("--bold-every", type=int, default=2)
     p.add_argument("--eeg-task", default="eyesclosed", help="subject.load.eeg(...) recording to fit")
     p.add_argument("--fmri-task", default="rest")
     p.add_argument("--learning-rate", type=float, default=1e-2)
+    p.add_argument("--learning-rate-bold", type=float, default=None,
+                    help="learning rate for the BOLD step -- default None reuses --learning-rate "
+                         "(EEG and BOLD each get their own Adam state, so they can also use "
+                         "different step sizes).")
+    p.add_argument("--bold-psd-weight", type=float, default=0.0,
+                    help="weight of an optional Welch-PSD spectral-shape term (restricted to the "
+                         "0.01-0.1Hz BOLD bandpass) added to the combined BOLD loss -- 0 (default) "
+                         "= off. fc_vector's time-averaged correlation has no sensitivity at all "
+                         "to each signal's own temporal/spectral shape; this adds a gradient for it.")
+    p.add_argument("--gamma-weight", type=float, default=0.0,
+                    help="weight of an optional log(PSD) MSE term over 15-40Hz added to the EEG "
+                         "loss, alongside the existing normalized-linear PSD MSE over 1-15Hz -- "
+                         "0 (default) = off.")
     p.add_argument("--noise-seed", type=int, default=69)
     p.add_argument("--t1-warmup", type=float, default=30_000.0,
                     help="duration (ms) of the one-time BOLD warm-up solve, separate from "
@@ -96,7 +114,7 @@ def main() -> None:
     subject = Subject(args.bids_root, args.subject)
 
     output_root = os.path.join(args.output_root, f"atlas-{args.atlas}")
-    output_dir = os.path.join(output_root, f"{subject.subject}_{args.optimize}_{args.bold_loss}")
+    output_dir = os.path.join(output_root, f"{subject.subject}_{args.optimize}")
     os.makedirs(output_dir, exist_ok=True)
 
     # Sentinels for "give me the old, unblocked/full-t1_bold-warmup behaviour"
@@ -113,10 +131,14 @@ def main() -> None:
         num_epochs=args.num_epochs,
         bold_every=args.bold_every,
         optimize=args.optimize,
-        bold_loss=args.bold_loss,
+        bold_fc_weight=args.bold_fc_weight,
+        bold_dfc_weight=args.bold_dfc_weight,
         eeg_task=args.eeg_task,
         fmri_task=args.fmri_task,
         learning_rate=args.learning_rate,
+        learning_rate_bold=args.learning_rate_bold,
+        bold_psd_weight=args.bold_psd_weight,
+        gamma_weight=args.gamma_weight,
         noise_seed=args.noise_seed,
         solver_block_size=solver_block_size,
         t1_warmup=t1_warmup,
@@ -124,6 +146,8 @@ def main() -> None:
         early_stop_window=args.early_stop_window,
         early_stop_min_delta=args.early_stop_min_delta,
     )
+    cfg_path = cfg.save()
+    print(f"Saved run config to {cfg_path}")
 
     load_eeg = args.optimize != "bold"
     dataset = data.load_subject_eeg(subject, cfg.eeg_task, cfg.chunk_length) if load_eeg else None

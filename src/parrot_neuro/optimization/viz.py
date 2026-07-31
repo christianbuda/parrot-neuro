@@ -203,7 +203,7 @@ def plot_fcd_comparison(sim_bold_2d, empirical_bold, tr_ms, window_trs, step_trs
     1-Wasserstein distance the "dfc" loss optimizes (see
     connectivity.dfc_histogram/wasserstein_1d_from_hist). ``sim_bold_2d`` is
     sliced to ``skip_t:`` and bandpassed (``connectivity.filter_sim_bold``)
-    before windowing -- matching the order ``make_bold_dfc_loss_fn`` uses --
+    before windowing -- matching the order ``make_bold_loss_fn``'s dFC term uses --
     the empirical side is already filtered upstream."""
     Xs = filter_sim_bold(jnp.array(np.asarray(sim_bold_2d))[skip_t:, :], tr_ms)
     Xe = jnp.array(np.asarray(empirical_bold))
@@ -248,7 +248,7 @@ def plot_fcd_learning(sim_bold_2d_before, sim_bold_2d_after, empirical_bold, tr_
     the same 1-Wasserstein distance the "dfc" loss optimizes. Both simulated
     (before/after) series are sliced to ``skip_t:`` and bandpassed
     (``connectivity.filter_sim_bold``) before windowing -- matching the order
-    ``make_bold_dfc_loss_fn`` uses -- the empirical side is already filtered
+    ``make_bold_loss_fn``'s dFC term uses -- the empirical side is already filtered
     upstream."""
     Xb = filter_sim_bold(jnp.array(np.asarray(sim_bold_2d_before))[skip_t:, :], tr_ms)
     Xa = filter_sim_bold(jnp.array(np.asarray(sim_bold_2d_after))[skip_t:, :], tr_ms)

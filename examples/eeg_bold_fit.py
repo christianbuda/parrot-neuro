@@ -42,21 +42,28 @@ output_root = "eeg_bold_fit_res"  # per-subject results go under <output_root>/<
 # the before/after diagnostics below) but never gets a gradient step.
 OPTIMIZE = "both"  # "eeg" | "bold" | "both"
 
-# BOLD loss: "fc" (static, time-averaged FC -- default) or "dfc" (dynamic FC /
-# FCD: windowed FC-of-FC, compared via a 1-Wasserstein distance between
+# BOLD loss is always a weighted combination of static FC (time-averaged) and
+# dFC/FCD (windowed FC-of-FC, compared via a 1-Wasserstein distance between
 # soft-histogram-summarized value distributions, since the sim/empirical BOLD
-# horizons have different window counts -- see optimization.connectivity.dfc_histogram).
+# horizons have different window counts -- see optimization.connectivity.dfc_histogram),
+# both computed from the SAME simulated trajectory (see train.make_bold_loss_fn).
+# Set either weight to 0 to recover a single-mode ("fc"-only or "dfc"-only) fit.
 # Only matters when BOLD is optimized.
-BOLD_LOSS = "fc"  # "fc" | "dfc"
+BOLD_FC_WEIGHT = 0.5
+BOLD_DFC_WEIGHT = 0.5
 
-ATLAS = 1000
+GAMMA_WEIGHT = 0.0  # gamma loss is not used in this example
+BOLD_PSD_WEIGHT = 0.0  # BOLD PSD loss is not used in this example
+LEARNING_RATE = 0.01
+LEARNING_RATE_BOLD = 0.01
+ATLAS = 100
 
 subject = Subject(BIDS_ROOT, subject_id)
 output_root = os.path.join(output_root, f"atlas-{ATLAS}")
 os.makedirs(output_root, exist_ok=True)
 
 
-output_dir = os.path.join(output_root, f"{subject_id}_{OPTIMIZE}_{BOLD_LOSS}")
+output_dir = os.path.join(output_root, f"{subject_id}_{OPTIMIZE}")
 os.makedirs(output_dir, exist_ok=True)
 
 cfg = config.BoldFitConfig(
@@ -66,7 +73,13 @@ cfg = config.BoldFitConfig(
     num_epochs=300,
     bold_every=2,
     optimize=OPTIMIZE,
-    bold_loss=BOLD_LOSS,
+    bold_fc_weight=BOLD_FC_WEIGHT,
+    bold_dfc_weight=BOLD_DFC_WEIGHT,
+    gamma_weight = GAMMA_WEIGHT,  # gamma loss is not used in this example
+    learning_rate = LEARNING_RATE,
+    learning_rate_bold = LEARNING_RATE_BOLD,
+    bold_psd_weight = BOLD_PSD_WEIGHT,  # BOLD PSD loss is not used in this example
+
     # `learnable_params` controls exactly which parameters the optimizer can
     # touch — defaults to config.DEFAULT_LEARNABLE_PARAMS (a still-evolving
     # prototyping set spanning JR, WC, and coupling params; see config for the
@@ -77,6 +90,8 @@ cfg = config.BoldFitConfig(
     #     config.LearnableParam("c_ei", low=2.0, high=8.0, location="dynamics"),
     # ),
 )
+cfg_path = cfg.save()
+print(f"Saved run config to {cfg_path}")
 
 # %% [markdown]
 # ## Load this subject's EEG chunks (only if EEG is actually a fit target)
@@ -162,7 +177,7 @@ fig = viz.plot_bold_timeseries(sim_bold_2d, ctx.sc.empirical_bold, ctx.mask_cort
 fig.savefig(out_dir / "bold_timeseries.png", dpi=150)
 
 # %%
-if cfg.bold_loss == "dfc":
+if cfg.bold_dfc_weight > 0:
     fig, dfc_w_dist = viz.plot_fcd_comparison(sim_bold_2d, ctx.sc.empirical_bold, cfg.tr_ms,
                                                cfg.dfc_window_trs, cfg.dfc_step_trs,
                                                skip_t=cfg.bold_skip_trs, k_min=cfg.dfc_kmin,
@@ -192,7 +207,7 @@ fig = viz.plot_bold_learning(sim_bold_2d_init, sim_bold_2d, ctx.sc.empirical_bol
 fig.savefig(out_dir / "bold_learning.png", dpi=150)
 
 # %%
-if cfg.bold_loss == "dfc":
+if cfg.bold_dfc_weight > 0:
     fig, dfc_w_dist_before, dfc_w_dist_after = viz.plot_fcd_learning(
         sim_bold_2d_init, sim_bold_2d, ctx.sc.empirical_bold, cfg.tr_ms,
         cfg.dfc_window_trs, cfg.dfc_step_trs, skip_t=cfg.bold_skip_trs,

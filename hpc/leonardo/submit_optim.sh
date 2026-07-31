@@ -51,12 +51,25 @@ OPTIM_ATLAS="${OPTIM_ATLAS:-1000}"
 OPTIM_SPACING="${OPTIM_SPACING:-2.0}"
 OPTIM_LEADFIELD_LABEL="${OPTIM_LEADFIELD_LABEL:-duneuroCGAL}"
 OPTIM_OPTIMIZE="${OPTIM_OPTIMIZE:-both}"
-OPTIM_BOLD_LOSS="${OPTIM_BOLD_LOSS:-fc}"
+# BOLD loss is a weighted combination of static FC + dFC/FCD (both computed
+# from the same simulated trajectory -- see train.make_bold_loss_fn); either
+# weight at 0 recovers a single-mode fit.
+OPTIM_BOLD_FC_WEIGHT="${OPTIM_BOLD_FC_WEIGHT:-0.5}"
+OPTIM_BOLD_DFC_WEIGHT="${OPTIM_BOLD_DFC_WEIGHT:-0.5}"
 OPTIM_NUM_EPOCHS="${OPTIM_NUM_EPOCHS:-300}"
 OPTIM_BOLD_EVERY="${OPTIM_BOLD_EVERY:-2}"
 OPTIM_EEG_TASK="${OPTIM_EEG_TASK:-eyesclosed}"
 OPTIM_FMRI_TASK="${OPTIM_FMRI_TASK:-rest}"
 OPTIM_LEARNING_RATE="${OPTIM_LEARNING_RATE:-1e-2}"
+# Empty (default) = reuse OPTIM_LEARNING_RATE for the BOLD step too -- EEG and
+# BOLD each get their own Adam state, so they can also use different rates.
+OPTIM_LEARNING_RATE_BOLD="${OPTIM_LEARNING_RATE_BOLD:-}"
+# Optional BOLD spectral-shape term (connectivity.bold_psd_band, restricted to
+# the 0.01-0.1Hz bandpass) -- 0 (default) = off.
+OPTIM_BOLD_PSD_WEIGHT="${OPTIM_BOLD_PSD_WEIGHT:-0}"
+# Optional EEG gamma-band term: log(PSD) MSE over 15-40Hz, alongside the
+# existing normalized-linear PSD MSE over 1-15Hz -- 0 (default) = off.
+OPTIM_GAMMA_WEIGHT="${OPTIM_GAMMA_WEIGHT:-0}"
 # GPU-memory fixes for atlas=1000 + the long default BOLD horizon (t1_bold=
 # 320000ms). Validated on GPU locally (2026-07-29): WITHOUT both of these,
 # atlas=1000 OOMs even on an 80G card -- they fix two DIFFERENT OOM sites
@@ -104,8 +117,10 @@ build_subjects() {
 
 # Exports every OPTIM_* + resource var so `--export=ALL` propagates them.
 export_run_vars() {
-    export OPTIM_ATLAS OPTIM_SPACING OPTIM_LEADFIELD_LABEL OPTIM_OPTIMIZE OPTIM_BOLD_LOSS \
+    export OPTIM_ATLAS OPTIM_SPACING OPTIM_LEADFIELD_LABEL OPTIM_OPTIMIZE \
+           OPTIM_BOLD_FC_WEIGHT OPTIM_BOLD_DFC_WEIGHT \
            OPTIM_NUM_EPOCHS OPTIM_BOLD_EVERY OPTIM_EEG_TASK OPTIM_FMRI_TASK OPTIM_LEARNING_RATE \
+           OPTIM_LEARNING_RATE_BOLD OPTIM_BOLD_PSD_WEIGHT OPTIM_GAMMA_WEIGHT \
            OPTIM_OUTPUT_DIR OPTIM_SOLVER_BLOCK_SIZE OPTIM_T1_WARMUP \
            OPTIM_EARLY_STOP_PATIENCE OPTIM_EARLY_STOP_WINDOW OPTIM_EARLY_STOP_MIN_DELTA
 }
@@ -190,9 +205,11 @@ case "$CMD" in
         N=$(build_subjects)
         echo "$N subjects -> --array=0-$((N-1))${ARRAY_THROTTLE}  (file: $SUBJ_FILE)"
         printf '  gpu:1  %sc  time=%s  mem=%s  qos=%s (part=%s)\n' "$OPTIM_CPUS" "$OPTIM_TIME" "$OPTIM_MEM" "$BOOST_QOS" "$BOOST_PART"
-        printf '  atlas=%s  optimize=%s  bold_loss=%s  epochs=%s  bold_every=%s  t1_warmup=%s  solver_block_size=%s  early_stop_patience=%s\n' \
-            "$OPTIM_ATLAS" "$OPTIM_OPTIMIZE" "$OPTIM_BOLD_LOSS" "$OPTIM_NUM_EPOCHS" "$OPTIM_BOLD_EVERY" \
+        printf '  atlas=%s  optimize=%s  bold_fc_weight=%s  bold_dfc_weight=%s  epochs=%s  bold_every=%s  t1_warmup=%s  solver_block_size=%s  early_stop_patience=%s\n' \
+            "$OPTIM_ATLAS" "$OPTIM_OPTIMIZE" "$OPTIM_BOLD_FC_WEIGHT" "$OPTIM_BOLD_DFC_WEIGHT" "$OPTIM_NUM_EPOCHS" "$OPTIM_BOLD_EVERY" \
             "${OPTIM_T1_WARMUP:-off}" "${OPTIM_SOLVER_BLOCK_SIZE:-off}" "${OPTIM_EARLY_STOP_PATIENCE:-off}"
+        printf '  learning_rate_bold=%s  bold_psd_weight=%s  gamma_weight=%s\n' \
+            "${OPTIM_LEARNING_RATE_BOLD:-off}" "$OPTIM_BOLD_PSD_WEIGHT" "$OPTIM_GAMMA_WEIGHT"
         echo "  output: $OPTIM_OUTPUT_DIR"
         ;;
 

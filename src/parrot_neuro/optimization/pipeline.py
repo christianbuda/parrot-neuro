@@ -42,7 +42,6 @@ from .train import (
     build_simulators,
     compute_target_psd,
     learnable_partition,
-    make_bold_dfc_loss_fn,
     make_bold_loss_fn,
     make_eeg_loss_fn,
     make_optimizer,
@@ -70,9 +69,12 @@ class ExperimentContext:
     freqs: np.ndarray
     idx_min: int
     idx_max: int
+    gamma_idx_min: int
+    gamma_idx_max: int
     diff_params_init: object
     static_params: object
-    optimizer: object
+    eeg_optimizer: object
+    bold_optimizer: object
 
 
 def build_context(cfg: config.BoldFitConfig, dataset=None) -> ExperimentContext:
@@ -183,16 +185,27 @@ def build_context(cfg: config.BoldFitConfig, dataset=None) -> ExperimentContext:
     freqs = np.fft.rfftfreq(cfg.chunk_length, d=1.0 / cfg.fs)
     idx_min = int(np.searchsorted(freqs, cfg.fmin))
     idx_max = int(np.searchsorted(freqs, cfg.fmax))
+    # Same freqs grid (independent of the band) also gives the optional gamma
+    # term's band -- see train.make_eeg_loss_fn's gamma_weight.
+    gamma_idx_min = int(np.searchsorted(freqs, cfg.gamma_fmin))
+    gamma_idx_max = int(np.searchsorted(freqs, cfg.gamma_fmax))
 
-    optimizer = make_optimizer(cfg.learning_rate, cfg.grad_clip_norm)
+    # Separate optimizer per loss (see train.run_alternating_fit) -- also lets
+    # EEG and BOLD use different learning rates.
+    eeg_optimizer = make_optimizer(cfg.learning_rate, cfg.grad_clip_norm)
+    bold_optimizer = make_optimizer(
+        cfg.learning_rate_bold if cfg.learning_rate_bold is not None else cfg.learning_rate,
+        cfg.grad_clip_norm,
+    )
 
     return ExperimentContext(
         cfg=cfg, mask_cortical=mask_cortical, leadfield=leadfield,
         smoothing_blocks=smoothing_blocks, dipole_labels=dipole_labels, sc=sc,
         network=network, solver=solver, simulators=simulators, dataset=dataset,
         target_psd=target_psd, freqs=freqs, idx_min=idx_min, idx_max=idx_max,
+        gamma_idx_min=gamma_idx_min, gamma_idx_max=gamma_idx_max,
         diff_params_init=diff_params_init, static_params=static_params,
-        optimizer=optimizer,
+        eeg_optimizer=eeg_optimizer, bold_optimizer=bold_optimizer,
     )
 
 
@@ -209,32 +222,35 @@ def fit(ctx: ExperimentContext) -> FitResult:
         eeg_loss_fn = make_eeg_loss_fn(
             ctx.simulators.simulator_eeg, ctx.mask_cortical, ctx.idx_min, ctx.idx_max, ctx.cfg.dt,
             settle_ms=ctx.cfg.eeg_settle_ms, stride_ms=ctx.cfg.eeg_stride_ms,
+            gamma_weight=ctx.cfg.gamma_weight, gamma_idx_min=ctx.gamma_idx_min, gamma_idx_max=ctx.gamma_idx_max,
         )
 
-    if ctx.cfg.bold_loss == "dfc":
-        centers = jnp.linspace(-1.0, 1.0, ctx.cfg.dfc_n_bins)
-        bold_loss_fn = make_bold_dfc_loss_fn(
-            ctx.simulators.simulator_bold, ctx.simulators.bold_monitor,
-            target_hist=_target_dfc_hist(ctx, centers), skip_t=ctx.cfg.bold_skip_trs, tr_ms=ctx.cfg.tr_ms,
-            window_trs=ctx.cfg.dfc_window_trs, step_trs=ctx.cfg.dfc_step_trs,
-            centers=centers, k_min=ctx.cfg.dfc_kmin, sigma=ctx.cfg.dfc_sigma,
-            bandpass_low=ctx.cfg.bold_bandpass_low, bandpass_high=ctx.cfg.bold_bandpass_high,
-            bandpass_order=ctx.cfg.bold_bandpass_order,
-        )
-    else:
-        bold_loss_fn = make_bold_loss_fn(
-            ctx.simulators.simulator_bold, ctx.simulators.bold_monitor,
-            target_fc_vec=_target_fc_vec(ctx), skip_t=ctx.cfg.bold_skip_trs, tr_ms=ctx.cfg.tr_ms,
-            bandpass_low=ctx.cfg.bold_bandpass_low, bandpass_high=ctx.cfg.bold_bandpass_high,
-            bandpass_order=ctx.cfg.bold_bandpass_order,
-        )
+    # fc and dfc targets are always built -- the combined BOLD loss always
+    # computes both terms (from one simulated trajectory), weighted by
+    # cfg.bold_fc_weight/bold_dfc_weight (either at 0 recovers a single-mode fit).
+    centers = jnp.linspace(-1.0, 1.0, ctx.cfg.dfc_n_bins)
+    target_psd_band = _target_bold_psd_band(ctx) if ctx.cfg.bold_psd_weight > 0 else None
+    bold_loss_fn = make_bold_loss_fn(
+        ctx.simulators.simulator_bold, ctx.simulators.bold_monitor,
+        target_fc_vec=_target_fc_vec(ctx), target_dfc_hist=_target_dfc_hist(ctx, centers),
+        skip_t=ctx.cfg.bold_skip_trs, tr_ms=ctx.cfg.tr_ms,
+        dfc_window_trs=ctx.cfg.dfc_window_trs, dfc_step_trs=ctx.cfg.dfc_step_trs,
+        dfc_centers=centers, dfc_k_min=ctx.cfg.dfc_kmin, dfc_sigma=ctx.cfg.dfc_sigma,
+        fc_weight=ctx.cfg.bold_fc_weight, dfc_weight=ctx.cfg.bold_dfc_weight,
+        bandpass_low=ctx.cfg.bold_bandpass_low, bandpass_high=ctx.cfg.bold_bandpass_high,
+        bandpass_order=ctx.cfg.bold_bandpass_order,
+        psd_weight=ctx.cfg.bold_psd_weight, target_psd_band=target_psd_band,
+        psd_nperseg=ctx.cfg.bold_psd_nperseg_trs, psd_noverlap=ctx.cfg.bold_psd_noverlap_trs,
+    )
 
-    eeg_update_step, bold_update_step = make_update_steps(eeg_loss_fn, bold_loss_fn, ctx.optimizer)
+    eeg_update_step, bold_update_step = make_update_steps(
+        eeg_loss_fn, bold_loss_fn, ctx.eeg_optimizer, ctx.bold_optimizer
+    )
 
     channel_indices = ctx.dataset.channel_indices if ctx.dataset is not None else None
     return run_alternating_fit(
         ctx.diff_params_init, ctx.static_params, eeg_update_step, bold_update_step,
-        ctx.optimizer, ctx.target_psd, channel_indices,
+        ctx.eeg_optimizer, ctx.bold_optimizer, ctx.target_psd, channel_indices,
         ctx.leadfield, ctx.smoothing_blocks, ctx.dipole_labels,
         num_epochs=ctx.cfg.num_epochs, bold_every=ctx.cfg.bold_every,
         print_every=ctx.cfg.print_params_every,
@@ -256,6 +272,14 @@ def _target_dfc_hist(ctx: ExperimentContext, centers):
     return dfc_histogram(
         ctx.sc.empirical_bold, ctx.cfg.dfc_window_trs, ctx.cfg.dfc_step_trs, centers,
         skip_t=ctx.cfg.bold_skip_trs, k_min=ctx.cfg.dfc_kmin, sigma=ctx.cfg.dfc_sigma,
+    )
+
+
+def _target_bold_psd_band(ctx: ExperimentContext):
+    from .connectivity import bold_psd_band
+    return bold_psd_band(
+        ctx.sc.empirical_bold, ctx.cfg.tr_ms, ctx.cfg.bold_psd_nperseg_trs, ctx.cfg.bold_psd_noverlap_trs,
+        skip_t=ctx.cfg.bold_skip_trs, low=ctx.cfg.bold_bandpass_low, high=ctx.cfg.bold_bandpass_high,
     )
 
 

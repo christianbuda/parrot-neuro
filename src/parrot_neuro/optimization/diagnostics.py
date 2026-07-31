@@ -57,7 +57,7 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> None:
                                     cfg.tr_ms, skip_t=cfg.bold_skip_trs)
     fig.savefig(out_dir / "bold_timeseries.png", dpi=150)
 
-    if cfg.bold_loss == "dfc":
+    if cfg.bold_dfc_weight > 0:
         fig, dfc_w_dist = viz.plot_fcd_comparison(sim_bold_2d, ctx.sc.empirical_bold, cfg.tr_ms,
                                                     cfg.dfc_window_trs, cfg.dfc_step_trs,
                                                     skip_t=cfg.bold_skip_trs, k_min=cfg.dfc_kmin,
@@ -79,7 +79,7 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> None:
                                   ctx.mask_cortical, cfg.tr_ms, skip_t=cfg.bold_skip_trs)
     fig.savefig(out_dir / "bold_learning.png", dpi=150)
 
-    if cfg.bold_loss == "dfc":
+    if cfg.bold_dfc_weight > 0:
         fig, dfc_w_dist_before, dfc_w_dist_after = viz.plot_fcd_learning(
             sim_bold_2d_init, sim_bold_2d, ctx.sc.empirical_bold, cfg.tr_ms,
             cfg.dfc_window_trs, cfg.dfc_step_trs, skip_t=cfg.bold_skip_trs,

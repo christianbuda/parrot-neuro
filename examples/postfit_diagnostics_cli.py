@@ -9,9 +9,9 @@ tweaked ``--solver-block-size``/rendering and want fresh figures for the same
 fitted parameters.
 
 Rebuilds the same network/simulators as the original fit (pass MATCHING
---atlas/--spacing/--leadfield-label/--bold-loss/--eeg-task/--fmri-task/
---noise-seed -- these determine what gets built, and must agree with however
-the npz was produced), then reconstructs the fitted parameters from the npz
+--atlas/--spacing/--leadfield-label/--eeg-task/--fmri-task/--noise-seed --
+these determine what gets built, and must agree with however the npz was
+produced), then reconstructs the fitted parameters from the npz
 (saved in natural post-sigmoid units -- see
 ``parrot_neuro.optimization.train.extract_learnable_values``) and calls
 ``parrot_neuro.optimization.diagnostics.run_and_save``, the same function
@@ -19,7 +19,7 @@ the npz was produced), then reconstructs the fitted parameters from the npz
 
     python examples/postfit_diagnostics_cli.py \\
         --bids-root <BIDS> --subject 010005 \\
-        --optimized-params eeg_bold_fit_res/atlas-1000/010005_both_fc/optimized_params.npz
+        --optimized-params eeg_bold_fit_res/atlas-1000/010005_both/optimized_params.npz
 """
 from __future__ import annotations
 
@@ -42,8 +42,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--atlas", type=int, default=1000, choices=(100, 1000))
     p.add_argument("--spacing", default="2.0", help="dipole spacing in mm (string)")
     p.add_argument("--leadfield-label", default="duneuroCGAL")
-    p.add_argument("--bold-loss", default="fc", choices=("fc", "dfc"),
-                    help="must match the original fit -- selects whether the dFC/FCD plots also run")
+    p.add_argument("--bold-dfc-weight", type=float, default=0.5,
+                    help="doesn't need to match the original fit's weights -- purely controls "
+                         "whether the FCD/dFC diagnostic plots render here (>0 = render them).")
     p.add_argument("--eeg-task", default="eyesclosed", help="must match the original fit")
     p.add_argument("--fmri-task", default="rest", help="must match the original fit")
     p.add_argument("--noise-seed", type=int, default=69,
@@ -97,7 +98,7 @@ def main() -> None:
         spacing=args.spacing,
         leadfield_label=args.leadfield_label,
         output_dir=out_dir,
-        bold_loss=args.bold_loss,
+        bold_dfc_weight=args.bold_dfc_weight,
         eeg_task=args.eeg_task,
         fmri_task=args.fmri_task,
         noise_seed=args.noise_seed,
@@ -128,7 +129,7 @@ def main() -> None:
         if lp.name not in npz.files:
             raise KeyError(
                 f"{lp.name!r} (from cfg.learnable_params) not found in {npz_path} -- "
-                f"available: {list(npz.files)}. Does --atlas/--bold-loss/etc match the original fit?"
+                f"available: {list(npz.files)}. Does --atlas/--spacing/etc match the original fit?"
             )
         natural_value = jnp.asarray(npz[lp.name])
         if lp.location == "dynamics":

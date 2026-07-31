@@ -194,6 +194,21 @@ takes one Booster GPU (`--gres=gpu:1`); `ARRAY_THROTTLE` (default `%40`) caps ho
 concurrently.
 
 ### Notes / gotchas (optimization stage)
+- **BOLD loss is now always a weighted combination of static FC + dFC/FCD**
+  (`OPTIM_BOLD_FC_WEIGHT`/`OPTIM_BOLD_DFC_WEIGHT`, default `0.5`/`0.5`), replacing the old
+  exclusive `OPTIM_BOLD_LOSS=fc|dfc` selector — both terms come from the SAME simulated
+  trajectory (see `train.make_bold_loss_fn`), so combining them doesn't double the cost of
+  the expensive BOLD forward pass. Set either weight to `0` to recover a single-mode fit.
+  This also changed the output directory naming: new runs land under
+  `<subject>_<optimize>/` (no more `_fc`/`_dfc` suffix) — old saved directories/npz files
+  are untouched and still fully readable via `postfit_diagnostics_cli.py`.
+- **Two new optional, off-by-default loss terms**: `OPTIM_BOLD_PSD_WEIGHT` (a Welch-PSD
+  spectral-shape term for BOLD, restricted to the 0.01-0.1Hz bandpass — `fc_vector`'s
+  time-averaged correlation has no sensitivity at all to each signal's own temporal/
+  spectral shape) and `OPTIM_GAMMA_WEIGHT` (a log(PSD) MSE term for EEG over 15-40Hz,
+  alongside the existing 1-15Hz normalized-linear term). Both default to `0` (off).
+  `OPTIM_LEARNING_RATE_BOLD` (default empty = reuse `OPTIM_LEARNING_RATE`) lets the BOLD
+  step use a different rate than EEG now that they have separate optimizer state.
 - **Early stopping is off by default.** Every array task runs the full `OPTIM_NUM_EPOCHS`
   unless you set `OPTIM_EARLY_STOP_PATIENCE` (in `config.local.sh` or as a call-time env
   var) — the fit then stops once every actively-optimized loss's trend over the last
