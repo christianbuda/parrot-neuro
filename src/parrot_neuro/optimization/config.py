@@ -191,7 +191,7 @@ class BoldFitConfig:
     t0: float = 0.0
     dt: float = 1.0
     t1_eeg: float = 2_500.0     # ms; short horizon for the EEG PSD loss
-    t1_bold: float = 900_000.0  # ms; long horizon for the BOLD FC loss (42 TRs at TR=1400ms)
+    t1_bold: float = 700_000.0  # ms; long horizon for the BOLD FC loss (42 TRs at TR=1400ms)
     # One-time BOLD warm-up solve duration (ms), separate from t1_bold -- see
     # train.build_simulators' docstring. None (default) = old behaviour, warm
     # up for the full t1_bold (expensive/OOM-prone for a long t1_bold at a
