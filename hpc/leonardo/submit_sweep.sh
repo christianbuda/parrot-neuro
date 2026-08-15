@@ -20,7 +20,10 @@
 ###############################################################################
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# BASH_SOURCE, not $0 -- $0 is the invoking shell (e.g. "-bash"), not this
+# script's path, if this is run with `source`/`.` instead of executed directly
+# (dirname would then choke on "-bash", misreading "-b" as an option flag).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [ -f "$SCRIPT_DIR/config.local.sh" ] || { echo "ERROR: hpc/leonardo/config.local.sh not found -- cp it from config.local.sh.example"; exit 1; }
 . "$SCRIPT_DIR/config.local.sh"
 
