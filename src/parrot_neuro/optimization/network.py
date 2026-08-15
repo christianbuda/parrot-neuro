@@ -75,6 +75,13 @@ def build_network(
     unaffected (exact, not truncated) -- this is a pure memory/compute trade,
     unlike ``grad_horizon`` (truncated BPTT, not exposed here since it biases
     the gradient toward fast timescales).
+
+    This ``solver`` is shared by both the EEG and BOLD ``prepare()`` calls in
+    ``train.build_simulators`` -- the BOLD one also streams its HRF
+    convolution through this same block scan (``reduce=streaming_hrf_bold``),
+    which requires ``K`` to be an *exact* multiple of the BOLD period in raw
+    steps (``tr_ms / dt``), not just close to ``sqrt(n_steps)``. See
+    ``config.BoldFitConfig.solver_block_size`` for the full rationale.
     """
     print(f"Building network with {num_nodes} nodes, {len(learnable_params)} learnable params, "
           f"base_sigma={base_sigma}, noise_seed={noise_seed}, solver_block_size={solver_block_size}")

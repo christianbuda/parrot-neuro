@@ -72,8 +72,11 @@ SIF="${SIF:-$WORKDIR/parrot/parrot_sif}"              # .sif cache; prewarm_*.sh
 # DIFFERENT OOM sites -- the one-time warm-up solve vs. the actual training
 # gradient step); WITH both, measured peak was ~31GiB, comfortable under the
 # A100's 64G. See train.build_simulators / network.build_network docstrings.
-# OPTIM_T1_WARMUP=30000        # ms; short BOLD warm-up, independent of t1_bold
-# OPTIM_SOLVER_BLOCK_SIZE=565  # checkpoints the scan; ~1.3-1.7x more compute
+# OPTIM_T1_WARMUP=30000         # ms; short BOLD warm-up, independent of t1_bold
+# OPTIM_SOLVER_BLOCK_SIZE=1400  # checkpoints the scan (~1.3-1.7x more compute) AND drives the
+#                               # BOLD simulator's streaming HRF convolution block size -- must be
+#                               # an exact multiple of the BOLD period in raw steps (tr_ms/dt);
+#                               # 1400 = one TR/block, the smallest valid value.
 # Early stopping (train.is_loss_stalled) -- stop once every actively-optimized
 # loss's trend has stayed flat/increasing for OPTIM_EARLY_STOP_PATIENCE
 # consecutive OPTIM_EARLY_STOP_WINDOW-sized checks. Unset/empty (default) =

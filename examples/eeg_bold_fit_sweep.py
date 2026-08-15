@@ -70,8 +70,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--noise-seed", type=int, default=69)
     p.add_argument("--t1-warmup", type=float, default=30_000.0,
                     help="see eeg_bold_fit_cli.py --t1-warmup; -1 = old full-t1_bold warm-up")
-    p.add_argument("--solver-block-size", type=int, default=565,
-                    help="see eeg_bold_fit_cli.py --solver-block-size; 0 = unblocked")
+    p.add_argument("--solver-block-size", type=int, default=1400,
+                    help="see eeg_bold_fit_cli.py --solver-block-size; must be an exact multiple "
+                         "of the BOLD period in raw steps (tr_ms/dt); 0 = unblocked")
     p.add_argument("--gamma-weight", type=float, default=0.0)
     p.add_argument("--skip-diagnostics", action="store_true",
                     help="fit + save params/losses only -- skip plots (faster smoke test)")

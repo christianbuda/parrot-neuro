@@ -234,7 +234,7 @@ def fit(ctx: ExperimentContext, on_epoch=None) -> FitResult:
     centers = jnp.linspace(-1.0, 1.0, ctx.cfg.dfc_n_bins)
     target_psd_band = _target_bold_psd_band(ctx) if ctx.cfg.bold_psd_weight > 0 else None
     bold_loss_fn = make_bold_loss_fn(
-        ctx.simulators.simulator_bold, ctx.simulators.bold_monitor,
+        ctx.simulators.simulator_bold,
         target_fc_vec=_target_fc_vec(ctx), target_dfc_hist=_target_dfc_hist(ctx, centers),
         skip_t=ctx.cfg.bold_skip_trs, tr_ms=ctx.cfg.tr_ms,
         dfc_window_trs=ctx.cfg.dfc_window_trs, dfc_step_trs=ctx.cfg.dfc_step_trs,

@@ -97,8 +97,16 @@ def fc_vector(X, skip_t=0, eps=1e-8):
 
 
 def extract_bold_2d(bold_result):
-    """(T, n_voi, N) Bold-monitor output with a single voi -> (T, N)."""
-    return bold_result.ys[:, 0, :]
+    """(T, n_voi, N) BOLD output with a single voi -> (T, N).
+
+    Accepts either a plain ``(T, n_voi, N)`` array (``simulator_bold``'s
+    streaming-reduced return -- see ``train.build_simulators``) or, for
+    backward compatibility, anything with a ``.ys`` attribute of that shape
+    (a ``NativeSolution``-like object, e.g. from a direct post-hoc
+    ``HRFBold(...)`` call).
+    """
+    ys = getattr(bold_result, "ys", bold_result)
+    return ys[:, 0, :]
 
 
 def filter_sim_bold(X, tr_ms, low=config.BOLD_BANDPASS_LOW, high=config.BOLD_BANDPASS_HIGH,

@@ -45,8 +45,11 @@ SWEEP_EEG_TASK="${SWEEP_EEG_TASK:-eyesclosed}"
 SWEEP_FMRI_TASK="${SWEEP_FMRI_TASK:-rest}"
 # Same GPU-memory-OOM fixes as optim_cohort.sbatch (atlas=1000 + a long BOLD
 # horizon reliably OOMs without both of these -- see their docstrings).
+# solver_block_size also drives the BOLD simulator's streaming HRF
+# convolution block size (train.build_simulators) -- must be an exact
+# multiple of the BOLD period in raw steps (tr_ms/dt); 1400 = one TR/block.
 SWEEP_T1_WARMUP="${SWEEP_T1_WARMUP:-30000}"
-SWEEP_SOLVER_BLOCK_SIZE="${SWEEP_SOLVER_BLOCK_SIZE:-565}"
+SWEEP_SOLVER_BLOCK_SIZE="${SWEEP_SOLVER_BLOCK_SIZE:-1400}"
 SWEEP_SKIP_DIAGNOSTICS="${SWEEP_SKIP_DIAGNOSTICS:-0}"
 
 # --- pixi -------------------------------------------------------------------

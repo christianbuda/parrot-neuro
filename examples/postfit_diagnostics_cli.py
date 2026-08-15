@@ -59,9 +59,13 @@ def parse_args() -> argparse.Namespace:
                     help="should match the original fit for a bit-identical warm-up state; "
                          "harmless to change otherwise (still a settled state either way). "
                          "Pass --t1-warmup=-1 for the old behaviour (reuse t1_bold).")
-    p.add_argument("--solver-block-size", type=int, default=565,
-                    help="pure memory/compute trade, doesn't affect results. Pass "
-                         "--solver-block-size=0 for the old unblocked behaviour.")
+    p.add_argument("--solver-block-size", type=int, default=1400,
+                    help="pure memory/compute trade, doesn't affect results -- EXCEPT it must be "
+                         "an exact multiple of the BOLD period in raw steps (tr_ms/dt -- 1400 for "
+                         "the defaults), since the BOLD simulator streams its HRF convolution "
+                         "through this same block scan (see train.build_simulators). Pass "
+                         "--solver-block-size=0 for the old unblocked behaviour (also drops the "
+                         "streaming BOLD monitor's memory win).")
     return p.parse_args()
 
 

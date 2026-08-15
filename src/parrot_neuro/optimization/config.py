@@ -191,7 +191,7 @@ class BoldFitConfig:
     t0: float = 0.0
     dt: float = 1.0
     t1_eeg: float = 2_500.0     # ms; short horizon for the EEG PSD loss
-    t1_bold: float = 700_000.0  # ms; long horizon for the BOLD FC loss (42 TRs at TR=1400ms)
+    t1_bold: float = 700_000.0  # ms; long horizon for the BOLD FC loss (500 TRs at TR=1400ms)
     # One-time BOLD warm-up solve duration (ms), separate from t1_bold -- see
     # train.build_simulators' docstring. None (default) = old behaviour, warm
     # up for the full t1_bold (expensive/OOM-prone for a long t1_bold at a
@@ -217,9 +217,20 @@ class BoldFitConfig:
     # keeps every step's state live for the backward pass -- O(n_steps) memory,
     # dominated by the long BOLD horizon. An int K checkpoints the scan in
     # blocks of K steps (jax.checkpoint): O(n_steps/K + K) memory for ~1.3-1.7x
-    # more compute; K ~ sqrt(n_steps) is the rule-of-thumb optimum (e.g. ~565
-    # for the default t1_bold=900_000ms at dt=1.0ms). Exact gradient either way
-    # -- this is a pure memory/time trade, not an approximation.
+    # more compute. Exact gradient either way -- this is a pure memory/time
+    # trade, not an approximation.
+    #
+    # The BOLD simulator's prepare() call also folds a streaming HRF
+    # convolution (tvboptim's streaming_hrf_bold, see train.build_simulators)
+    # into this same block scan -- K is the ONLY memory knob for BOLD now (the
+    # old "materialize the whole ~23GiB+ trajectory, convolve post-hoc" path
+    # is gone). This adds a hard constraint the plain sqrt(n_steps) heuristic
+    # doesn't have to satisfy on its own: K (and n_steps = t1_bold/dt) MUST
+    # both be exact multiples of the BOLD period in raw steps (tr_ms/dt --
+    # 1400 for the defaults below), or streaming_hrf_bold's block-alignment
+    # assert fails. K=1400 (one TR per block) is the smallest valid choice;
+    # it's above the unconstrained sqrt(700_000)~=837 optimum but the
+    # trajectory-materialization win dwarfs that ~13% block-size suboptimality.
     solver_block_size: int | None = None
 
     # --- which parameters the optimizer is allowed to touch ---

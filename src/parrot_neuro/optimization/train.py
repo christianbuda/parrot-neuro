@@ -17,7 +17,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from tvboptim.experimental.network_dynamics import prepare, solve
-from tvboptim.observations.tvb_monitors import Bold
+from tvboptim.observations.tvb_monitors import HRFBold, SubSampling, streaming_hrf_bold
 
 from .config import BOLD_BANDPASS_HIGH, BOLD_BANDPASS_LOW, BOLD_BANDPASS_ORDER, DEFAULT_LEARNABLE_PARAMS, LearnableParam
 from .connectivity import bold_psd_band, dfc_histogram, fc_vector, filter_sim_bold, wasserstein_1d_from_hist
@@ -38,11 +38,19 @@ def _param_node(params, lp: LearnableParam):
 class Simulators:
     """Two prepared simulators (short EEG horizon, long BOLD horizon)
     sharing one parameter pytree, plus the BOLD monitor built on the long
-    warm-up's history."""
+    warm-up's history.
+
+    ``simulator_bold``'s HRF convolution is streamed (folded into
+    ``prepare()``'s ``reduce=`` block scan -- see ``build_simulators``), so
+    calling it already returns the final BOLD buffer, not a raw solution to
+    run ``bold_monitor`` on afterward. ``bold_monitor`` is kept on this
+    dataclass only because ``_process_history``'s warm-start buffer and
+    ``streaming_hrf_bold``'s kernel/period/voi config live on it -- it is
+    never called directly as a function anymore."""
 
     simulator_eeg: Callable
     simulator_bold: Callable
-    bold_monitor: Bold
+    bold_monitor: HRFBold
     params: object  # Bunch — feed to learnable_partition() / eqx.combine
 
 
@@ -101,14 +109,38 @@ def build_simulators(
               "for the actual training simulator)")
     result_bold = solve(network, solver, t0=t0, t1=warmup_t1, dt=dt)
     network.update_history(result_bold)
-    simulator_bold, params = prepare(network, solver, t0=t0, t1=t1_bold, dt=dt)
 
-    bold_monitor = Bold(
+    # SubSampling (pick every downsample_period-th raw sample), NOT HRFBold's
+    # own default (TemporalAverage, mean over each window): streaming_hrf_bold
+    # below requires a uniform-integer-stride downsampler -- its per-block
+    # update() always does a hard-coded "take every Nth sample" slice
+    # regardless of what monitor.downsample actually is, so passing anything
+    # else here would silently desync the streaming path from what this
+    # object's own (now never-called-directly) __call__ would have computed.
+    # A deliberate, small numerical difference from the old TemporalAverage
+    # default -- see build_simulators' docstring.
+    bold_monitor = HRFBold(
         history=result_bold,
         period=tr_ms,
         downsample_period=bold_downsample_ms,
         voi=bold_voi,
+        downsample=SubSampling(voi=bold_voi, period=bold_downsample_ms),
     )
+    # reduce=streaming_hrf_bold(...) folds the HRF convolution into the same
+    # block scan solver_block_size checkpoints, block-by-block, instead of
+    # materializing the full raw trajectory and convolving it post-hoc (the
+    # dominant GPU-memory cost of this whole pipeline for a long t1_bold --
+    # see config.BoldFitConfig.solver_block_size). simulator_bold(combined)
+    # therefore returns the final [n_bold, n_voi, n_nodes] BOLD buffer
+    # directly, not a raw solution -- there is no post-hoc bold_monitor(sol)
+    # call anywhere anymore (make_bold_loss_fn, diagnostics.py). Requires
+    # solver.block_size to be an exact multiple of the BOLD period in raw
+    # steps (tr_ms/dt); see streaming_hrf_bold's own docstring.
+    simulator_bold, params = prepare(
+        network, solver, t0=t0, t1=t1_bold, dt=dt,
+        reduce=streaming_hrf_bold(bold_monitor, dt),
+    )
+
     return Simulators(simulator_eeg, simulator_bold, bold_monitor, params)
 
 
@@ -201,7 +233,7 @@ def make_eeg_loss_fn(simulator_eeg, mask_cortical, idx_min, idx_max, dt,
     return eeg_loss_fn
 
 
-def make_bold_loss_fn(simulator_bold, bold_monitor, target_fc_vec, target_dfc_hist, skip_t, tr_ms,
+def make_bold_loss_fn(simulator_bold, target_fc_vec, target_dfc_hist, skip_t, tr_ms,
                        dfc_window_trs, dfc_step_trs, dfc_centers, dfc_k_min=1, dfc_sigma=0.05,
                        fc_weight=0.5, dfc_weight=0.5,
                        bandpass_low=BOLD_BANDPASS_LOW, bandpass_high=BOLD_BANDPASS_HIGH,
@@ -221,6 +253,14 @@ def make_bold_loss_fn(simulator_bold, bold_monitor, target_fc_vec, target_dfc_hi
     any wasted compute on the zeroed-out term (its gradient is simply 0, XLA
     still traces it, but this is cheap relative to the simulator itself).
 
+    ``simulator_bold`` (as built by ``build_simulators``) already returns the
+    HRF-convolved, TR-downsampled BOLD buffer directly -- the streaming
+    ``reduce=streaming_hrf_bold(...)`` baked into its ``prepare()`` call folds
+    the HRF convolution block-by-block during integration instead of
+    materializing the full raw trajectory and convolving it post-hoc. There is
+    no separate ``bold_monitor(sol)`` call here (unlike the EEG side, which
+    still needs its own post-hoc scalp projection).
+
     Simulated BOLD is bandpassed (``connectivity.filter_sim_bold``, still
     differentiable) to the same band the empirical BOLD (hence
     ``target_fc_vec``/``target_dfc_hist``/``target_psd_band``) was already
@@ -239,8 +279,8 @@ def make_bold_loss_fn(simulator_bold, bold_monitor, target_fc_vec, target_dfc_hi
     @eqx.filter_jit
     def bold_loss_fn(current_diff, current_static):
         combined = eqx.combine(current_diff, current_static)
-        sol = simulator_bold(combined)
-        Xs = bold_monitor(sol).ys[:, 0, :][skip_t:, :]
+        bold_buffer = simulator_bold(combined)  # [n_bold, n_voi, n_nodes], already HRF-convolved
+        Xs = bold_buffer[:, 0, :][skip_t:, :]
         ok = jnp.all(jnp.isfinite(Xs))
 
         def good(_):

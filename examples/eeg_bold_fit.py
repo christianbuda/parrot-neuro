@@ -170,7 +170,7 @@ fig = viz.plot_node_activity(sim_result_eeg, ctx.mask_cortical, cfg.dt)
 fig.savefig(out_dir / "node_activity.png", dpi=150)
 
 # %%
-sim_bold_2d = connectivity.extract_bold_2d(ctx.simulators.bold_monitor(sim_result_bold))
+sim_bold_2d = connectivity.extract_bold_2d(sim_result_bold)
 
 fig = viz.plot_bold_timeseries(sim_bold_2d, ctx.sc.empirical_bold, ctx.mask_cortical,
                                 cfg.tr_ms, skip_t=cfg.bold_skip_trs)
@@ -201,7 +201,7 @@ print(f"FC Pearson correlation (sim vs emp): {fc_corr:.4f}")
 combined_init = eqx.combine(ctx.diff_params_init, ctx.static_params)
 sim_result_eeg_init = ctx.simulators.simulator_eeg(combined_init)
 sim_result_bold_init = ctx.simulators.simulator_bold(combined_init)
-sim_bold_2d_init = connectivity.extract_bold_2d(ctx.simulators.bold_monitor(sim_result_bold_init))
+sim_bold_2d_init = connectivity.extract_bold_2d(sim_result_bold_init)
 fig = viz.plot_bold_learning(sim_bold_2d_init, sim_bold_2d, ctx.sc.empirical_bold, ctx.mask_cortical,
                               cfg.tr_ms, skip_t=cfg.bold_skip_trs)
 fig.savefig(out_dir / "bold_learning.png", dpi=150)

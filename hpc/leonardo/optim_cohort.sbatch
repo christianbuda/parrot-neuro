@@ -72,7 +72,10 @@ OPTIM_SKIP_DIAGNOSTICS="${OPTIM_SKIP_DIAGNOSTICS:-0}"
 # is needed (they fix two DIFFERENT OOM sites -- the one-time warm-up solve
 # vs. the actual training gradient step -- neither alone is sufficient).
 OPTIM_T1_WARMUP="${OPTIM_T1_WARMUP:-30000}"
-OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-565}"
+# 1400 (one TR per block), not just sqrt(n_steps) -- the BOLD simulator streams
+# its HRF convolution through this same block scan (train.build_simulators),
+# which requires an exact multiple of the BOLD period in raw steps (tr_ms/dt).
+OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-1400}"
 # Early stopping (train.is_loss_stalled): stop once every actively-optimized
 # loss's trend has stayed flat/increasing for OPTIM_EARLY_STOP_PATIENCE
 # consecutive OPTIM_EARLY_STOP_WINDOW-sized checks. Empty (default) = off,

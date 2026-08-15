@@ -66,15 +66,17 @@ def parse_args() -> argparse.Namespace:
                          "reusing the full t1_bold, which is slow/OOM-prone at a large atlas -- "
                          "does not change how much BOLD signal the loss sees. Pass --t1-warmup=-1 "
                          "to get the old behaviour (reuse t1_bold) instead.")
-    p.add_argument("--solver-block-size", type=int, default=565,
+    p.add_argument("--solver-block-size", type=int, default=1400,
                     help="checkpoint the integration scan in blocks of this many steps -- "
                          "trades ~1.3-1.7x compute for O(n_steps/K + K) instead of O(n_steps) "
-                         "backward-pass GPU memory (exact gradient either way). Defaults to ~565 "
-                         "(K ~ sqrt(n_steps) for the default t1_bold=320000ms at dt=1.0ms, 320k "
-                         "steps) since the unblocked monolithic scan reliably OOMs at atlas=1000 "
-                         "even on an 80G GPU. Pass --solver-block-size=0 for the old unblocked "
-                         "behaviour (e.g. if you shrink atlas/t1_bold enough that OOM isn't a risk "
-                         "and want to skip the ~1.3-1.7x compute overhead).")
+                         "backward-pass GPU memory (exact gradient either way). The BOLD simulator "
+                         "also streams its HRF convolution through this same block scan (see "
+                         "train.build_simulators), so K must be an exact multiple of the BOLD "
+                         "period in raw steps (tr_ms/dt -- 1400 for the defaults), not just close "
+                         "to sqrt(n_steps); 1400 (one TR per block) is the smallest valid choice. "
+                         "Pass --solver-block-size=0 for the old unblocked behaviour (also drops "
+                         "the streaming BOLD monitor's memory win -- only sensible at a much "
+                         "shorter t1_bold/smaller atlas where OOM isn't a risk).")
     p.add_argument("--skip-diagnostics", action="store_true",
                     help="fit + save params/losses only -- skip the plotting section "
                          "(faster; useful for a smoke test)")

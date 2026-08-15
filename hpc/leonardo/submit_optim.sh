@@ -80,10 +80,14 @@ OPTIM_GAMMA_WEIGHT="${OPTIM_GAMMA_WEIGHT:-0}"
 #   t1_warmup:         duration (ms) of the one-time BOLD history warm-up,
 #                       independent of t1_bold -- does NOT shorten the BOLD
 #                       signal your FC/dFC loss actually sees.
-#   solver_block_size: checkpoints the integration scan (K ~ sqrt(n_steps));
-#                       ~1.3-1.7x more compute, exact gradient either way.
+#   solver_block_size: checkpoints the integration scan; ~1.3-1.7x more
+#                       compute, exact gradient either way. Also the BOLD
+#                       simulator's streaming HRF convolution block size (see
+#                       train.build_simulators) -- must be an exact multiple
+#                       of the BOLD period in raw steps (tr_ms/dt), not just
+#                       ~sqrt(n_steps); 1400 (one TR/block) is the default.
 OPTIM_T1_WARMUP="${OPTIM_T1_WARMUP:-30000}"
-OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-565}"
+OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-1400}"
 # Early stopping (train.is_loss_stalled): stop once every actively-optimized
 # loss's trend has stayed flat/increasing for OPTIM_EARLY_STOP_PATIENCE
 # consecutive OPTIM_EARLY_STOP_WINDOW-sized checks. Empty (default) = off,
