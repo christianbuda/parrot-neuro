@@ -1,0 +1,114 @@
+{
+  "subject": {
+    "bids_root": "/srv/nfs-data/sisko/christian/parrot_LEMON",
+    "subject": "010002"
+  },
+  "atlas": 1000,
+  "spacing": "2.0",
+  "leadfield_label": "duneuroCGAL",
+  "fs": 250,
+  "chunk_length": 500,
+  "fmin": 1.0,
+  "fmax": 15.0,
+  "conduction_speed": 3.0,
+  "gamma_weight": 0.0,
+  "gamma_fmin": 15.0,
+  "gamma_fmax": 40.0,
+  "fmri_task": "rest",
+  "bold_bandpass_low": 0.01,
+  "bold_bandpass_high": 0.1,
+  "bold_bandpass_order": 4,
+  "eeg_task": "eyesclosed",
+  "output_dir": "eeg_bold_fit_sweep_res/atlas-1000/40jq4n67/010002_both",
+  "t0": 0.0,
+  "dt": 1.0,
+  "t1_eeg": 2500.0,
+  "t1_bold": 900000.0,
+  "t1_warmup": 30000.0,
+  "eeg_settle_ms": 500.0,
+  "eeg_stride_ms": 4.0,
+  "tr_ms": 1400.0,
+  "bold_downsample_ms": 4.0,
+  "bold_skip_trs": 8,
+  "base_sigma": 0.048,
+  "noise_seed": 69,
+  "solver_block_size": 565,
+  "learnable_params": [
+    {
+      "name": "P",
+      "low": 0.0,
+      "high": 2.0,
+      "location": "dynamics",
+      "init": 0.0
+    },
+    {
+      "name": "c_ee",
+      "low": 6.0,
+      "high": 20.0,
+      "location": "dynamics",
+      "init": 12.0
+    },
+    {
+      "name": "A",
+      "low": 2.0,
+      "high": 5.0,
+      "location": "dynamics",
+      "init": 3.25
+    },
+    {
+      "name": "B",
+      "low": 12.0,
+      "high": 35.0,
+      "location": "dynamics",
+      "init": 22.0
+    },
+    {
+      "name": "a",
+      "low": 0.04,
+      "high": 0.2,
+      "location": "dynamics",
+      "init": 0.1
+    },
+    {
+      "name": "b",
+      "low": 0.02,
+      "high": 0.1,
+      "location": "dynamics",
+      "init": 0.05
+    },
+    {
+      "name": "mu",
+      "low": 0.1,
+      "high": 0.4,
+      "location": "dynamics",
+      "init": 0.22
+    },
+    {
+      "name": "G",
+      "low": 0.0,
+      "high": 5.0,
+      "location": "coupling",
+      "init": 0.1
+    }
+  ],
+  "learning_rate": 0.01,
+  "learning_rate_bold": 0.01,
+  "grad_clip_norm": 1.0,
+  "num_epochs": 300,
+  "bold_every": 2,
+  "print_params_every": 10,
+  "optimize": "both",
+  "early_stop_window": 20,
+  "early_stop_patience": null,
+  "early_stop_min_delta": 0.001,
+  "bold_fc_weight": 0.5,
+  "bold_dfc_weight": 0.5,
+  "dfc_window_trs": 6,
+  "dfc_step_trs": 1,
+  "dfc_kmin": 1,
+  "dfc_n_bins": 25,
+  "dfc_sigma": 0.05,
+  "bold_psd_weight": 0.0,
+  "bold_psd_nperseg_trs": 32,
+  "bold_psd_noverlap_trs": 16
+}
