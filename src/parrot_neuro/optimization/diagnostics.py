@@ -49,18 +49,13 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> dict:
     figures["node_activity"] = out_dir / "node_activity.png"
     fig.savefig(figures["node_activity"], dpi=150)
 
-    sim_bold_2d = connectivity.extract_bold_2d(ctx.simulators.bold_monitor(sim_result_bold))
-    # Free the raw per-ms trajectory (~23GiB at atlas=1000/t1_bold=320s) now that
-    # only the much smaller TR-downsampled sim_bold_2d is needed -- this call is
-    # forward-only (no jax.grad), so solver_block_size doesn't shrink it, and
-    # leaving it referenced through the rest of this function would keep it
-    # resident alongside sim_result_bold_init's own ~23GiB trajectory below.
-    # MUST happen before the first np.asarray()/materializing call below --
-    # jax's async dispatch means sim_result_bold's buffer isn't reclaimable
-    # until its last reference is actually dropped, so a `del` placed after a
-    # forcing call (as an earlier version of this code mistakenly did) is too
-    # late to help that exact call.
-    del sim_result_bold
+    # simulator_bold already streams the HRF convolution (see
+    # train.build_simulators), so sim_result_bold is already the small
+    # [n_bold, n_voi, n_nodes] buffer, not the full raw per-ms trajectory --
+    # no separate bold_monitor(...) call, and no need to `del` it early for
+    # memory (the old ~23GiB-per-call trajectory this used to guard against
+    # doesn't get materialized at all anymore).
+    sim_bold_2d = connectivity.extract_bold_2d(sim_result_bold)
 
     fig = viz.plot_bold_timeseries(sim_bold_2d, ctx.sc.empirical_bold, ctx.mask_cortical,
                                     cfg.tr_ms, skip_t=cfg.bold_skip_trs)
@@ -86,8 +81,7 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> dict:
     combined_init = eqx.combine(ctx.diff_params_init, ctx.static_params)
     sim_result_eeg_init = ctx.simulators.simulator_eeg(combined_init)
     sim_result_bold_init = ctx.simulators.simulator_bold(combined_init)
-    sim_bold_2d_init = connectivity.extract_bold_2d(ctx.simulators.bold_monitor(sim_result_bold_init))
-    del sim_result_bold_init  # same reasoning + ordering as the del above
+    sim_bold_2d_init = connectivity.extract_bold_2d(sim_result_bold_init)
 
     fig = viz.plot_bold_learning(sim_bold_2d_init, sim_bold_2d, ctx.sc.empirical_bold,
                                   ctx.mask_cortical, cfg.tr_ms, skip_t=cfg.bold_skip_trs)
