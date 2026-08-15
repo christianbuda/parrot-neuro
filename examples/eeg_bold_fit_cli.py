@@ -167,14 +167,28 @@ def main() -> None:
     np.save(out_dir / "loss_history_eeg.npy", np.array(result.loss_history_eeg))
     np.save(out_dir / "loss_history_bold.npy", np.array(result.loss_history_bold))
 
+    # relative_final_loss (final/first-logged) puts EEG (~1e-6) and BOLD
+    # (~1e-1) on a comparable ~1.0-scale "fraction of initial loss remaining"
+    # -- same combined-loss definition examples/eeg_bold_fit_sweep.py uses for
+    # its wandb sweep objective, so a single fit here and a sweep trial report
+    # the same number for the same fit.
+    eeg_ratio = train.relative_final_loss(result.loss_history_eeg)
+    bold_ratio = train.relative_final_loss(result.loss_history_bold)
+    combined_ratio = (eeg_ratio or 0.0) + (bold_ratio or 0.0)
+
     optimized = train.extract_learnable_values(result.diff_params, cfg.learnable_params)
     np.savez(out_dir / "optimized_params.npz", **optimized,
-              loss_eeg=np.array(result.loss_history_eeg), loss_bold=np.array(result.loss_history_bold))
+              loss_eeg=np.array(result.loss_history_eeg), loss_bold=np.array(result.loss_history_bold),
+              eeg_loss_ratio=np.nan if eeg_ratio is None else eeg_ratio,
+              bold_loss_ratio=np.nan if bold_ratio is None else bold_ratio,
+              combined_loss_ratio=combined_ratio)
 
     if result.loss_history_eeg:
-        print(f"Final EEG loss:  {result.loss_history_eeg[-1]:.5f}")
+        print(f"Final EEG loss:  {result.loss_history_eeg[-1]:.5f}  (ratio to first: {eeg_ratio:.4f})")
     if result.loss_history_bold:
-        print(f"Final BOLD loss: {result.loss_history_bold[-1]:.5f}")
+        print(f"Final BOLD loss: {result.loss_history_bold[-1]:.5f}  (ratio to first: {bold_ratio:.4f})")
+    if eeg_ratio is not None or bold_ratio is not None:
+        print(f"Combined loss (sum of ratios): {combined_ratio:.4f}")
     for name, values in optimized.items():
         print(f"{name:6s} -- mean {values.mean():.4f}  std {values.std():.4f}")
     print(f"Saved to {out_dir}")

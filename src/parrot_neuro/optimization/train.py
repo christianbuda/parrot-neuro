@@ -375,6 +375,26 @@ class FitResult:
     loss_history_bold: list = field(default_factory=list)
 
 
+def relative_final_loss(history):
+    """``history[-1] / history[0]`` -- a scale-free "fraction of the early
+    loss remaining" (~1.0 at the start, <1 as it improves). ``None`` if
+    ``history`` is empty or its first value is falsy (no valid baseline to
+    divide by, e.g. a loss that started at exactly 0).
+
+    Exists so EEG (normalized-linear PSD MSE, typically ~1e-6) and BOLD
+    (weighted FC+dFC, typically ~1e-1) losses -- which live on completely
+    different absolute scales -- can be combined into one meaningful summary
+    number instead of one silently swamping the other in a raw sum. Used by
+    both ``examples/eeg_bold_fit_cli.py`` (single-subject "combined loss"
+    printout) and ``examples/eeg_bold_fit_sweep.py`` (the wandb sweep's
+    ``aggregate/combined_loss`` objective) so the two report the exact same
+    number for the exact same fit.
+    """
+    if not history or not history[0]:
+        return None
+    return history[-1] / history[0]
+
+
 def is_loss_stalled(history, window, patience, min_delta):
     """True if ``history``'s relative linear trend has stayed >= ``-min_delta``
     (i.e. not meaningfully decreasing) over each of the last ``patience``

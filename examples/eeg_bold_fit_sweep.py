@@ -131,6 +131,8 @@ def main() -> None:
     per_subject_combined = []
     per_subject_eeg = []
     per_subject_bold = []
+    per_subject_eeg_ratio = []
+    per_subject_bold_ratio = []
 
     for subject_id in subjects:
         subject = Subject(args.bids_root, subject_id)
@@ -195,8 +197,18 @@ def main() -> None:
 
         final_eeg = result.loss_history_eeg[-1] if result.loss_history_eeg else None
         final_bold = result.loss_history_bold[-1] if result.loss_history_bold else None
+        # train.relative_final_loss: EEG (~1e-6) and BOLD (~1e-1) losses live on
+        # completely different scales, so summing raw values makes the combined
+        # objective just the BOLD loss with EEG silently contributing ~0 -- see
+        # its docstring. Same helper eeg_bold_fit_cli.py uses, so a single-fit
+        # printout and a sweep trial report the same "combined loss" for the
+        # same fit.
+        eeg_ratio = train.relative_final_loss(result.loss_history_eeg)
+        bold_ratio = train.relative_final_loss(result.loss_history_bold)
         summary = {f"subj_{subject_id}/final_eeg_loss": final_eeg,
-                   f"subj_{subject_id}/final_bold_loss": final_bold}
+                   f"subj_{subject_id}/final_bold_loss": final_bold,
+                   f"subj_{subject_id}/eeg_loss_ratio": eeg_ratio,
+                   f"subj_{subject_id}/bold_loss_ratio": bold_ratio}
 
         if not args.skip_diagnostics:
             if dataset is None:
@@ -210,19 +222,32 @@ def main() -> None:
 
         wandb.log(summary)
 
-        combined = (final_eeg or 0.0) + (final_bold or 0.0)
+        combined = (eeg_ratio or 0.0) + (bold_ratio or 0.0)
         per_subject_combined.append(combined)
         if final_eeg is not None:
             per_subject_eeg.append(final_eeg)
         if final_bold is not None:
             per_subject_bold.append(final_bold)
-        print(f"[{subject_id}] final EEG loss: {final_eeg}  final BOLD loss: {final_bold}  saved to {out_dir}")
+        if eeg_ratio is not None:
+            per_subject_eeg_ratio.append(eeg_ratio)
+        if bold_ratio is not None:
+            per_subject_bold_ratio.append(bold_ratio)
+        print(f"[{subject_id}] final EEG loss: {final_eeg} (ratio {eeg_ratio})  "
+              f"final BOLD loss: {final_bold} (ratio {bold_ratio})  saved to {out_dir}")
 
+    # aggregate/combined_loss (the sweep's minimized metric -- see
+    # sweep_eeg_bold.yaml) is the ratio-based combination; the raw *_loss_mean
+    # values are logged alongside purely for human-readable context, not
+    # optimized directly (see the scale-mismatch note above).
     aggregate = {"aggregate/combined_loss": float(np.mean(per_subject_combined))}
     if per_subject_eeg:
         aggregate["aggregate/eeg_loss_mean"] = float(np.mean(per_subject_eeg))
     if per_subject_bold:
         aggregate["aggregate/bold_loss_mean"] = float(np.mean(per_subject_bold))
+    if per_subject_eeg_ratio:
+        aggregate["aggregate/eeg_loss_ratio_mean"] = float(np.mean(per_subject_eeg_ratio))
+    if per_subject_bold_ratio:
+        aggregate["aggregate/bold_loss_ratio_mean"] = float(np.mean(per_subject_bold_ratio))
     wandb.log(aggregate)
     print(f"Aggregate over {len(subjects)} subjects: {aggregate}")
 
