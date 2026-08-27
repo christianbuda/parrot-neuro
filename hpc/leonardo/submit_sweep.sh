@@ -73,9 +73,20 @@ case "$CMD" in
 
     smoke)
         id="$(sweep_id)"
-        subject="${2:-${SUBJECT:-010002}}"
-        echo "[smoke] ONE foreground trial: subject=$subject epochs=2, no diagnostics -- sanity check only"
-        export SWEEP_SUBJECTS="$subject" SWEEP_NUM_EPOCHS=2 SWEEP_SKIP_DIAGNOSTICS=1
+        if [ -n "${SWEEP_GPUS:-}" ]; then
+            # Parallel mode: keep the SWEEP_SUBJECTS already configured in
+            # config.local.sh (sized to match SWEEP_GPUS) instead of forcing
+            # it down to 1 -- a 1-subject smoke test would never actually
+            # exercise the round-based parallel launch (subprocess-per-GPU,
+            # CUDA_VISIBLE_DEVICES pinning, per-GPU JAX cache, result replay).
+            : "${SWEEP_SUBJECTS:?SWEEP_GPUS is set but SWEEP_SUBJECTS is not -- set both in config.local.sh}"
+            echo "[smoke] PARALLEL foreground trial: gpus=$SWEEP_GPUS subjects=$SWEEP_SUBJECTS epochs=2, no diagnostics"
+            export SWEEP_NUM_EPOCHS=2 SWEEP_SKIP_DIAGNOSTICS=1
+        else
+            subject="${2:-${SUBJECT:-010002}}"
+            echo "[smoke] ONE foreground trial: subject=$subject epochs=2, no diagnostics -- sanity check only"
+            export SWEEP_SUBJECTS="$subject" SWEEP_NUM_EPOCHS=2 SWEEP_SKIP_DIAGNOSTICS=1
+        fi
         "${WANDB_BIN[@]}" agent --count 1 "$id"
         ;;
 
@@ -131,7 +142,11 @@ usage: submit_sweep.sh <command>
 
   create                  register the sweep from sweep_eeg_bold.yaml, save its ID
   smoke [subject]         ONE foreground trial, 2 epochs, no diagnostics --
-                          validates the full agent->dispatch->sbatch->sync round trip
+                          validates the full agent->dispatch->sbatch->sync round trip.
+                          If SWEEP_GPUS is set in config.local.sh, uses the
+                          already-configured (parallel-sized) SWEEP_SUBJECTS
+                          instead of forcing 1 subject, to exercise the
+                          parallel launch too; [subject] only applies otherwise.
   start [N] [COUNT]       N background agents (default 8) x COUNT runs each
                           (default 5) = N*COUNT total trials. Run under tmux/screen.
   status                  squeue + how many agents are still running
