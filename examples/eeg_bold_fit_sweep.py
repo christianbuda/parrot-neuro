@@ -27,11 +27,27 @@ The 7 swept fields (--learning-rate, --learning-rate-bold, --bold-fc-weight,
 default from a SWEEP_* environment variable (set by hpc/leonardo/
 sweep_dispatch.sh -> sweep_train.sbatch) so this script also runs standalone
 with just --subjects/--num-epochs overridden, for local testing.
+
+--gpus (comma-separated device indices, e.g. "0,1,2,3") switches from the
+default sequential single-process loop to a parallel mode: subjects are
+chunked into rounds of len(--gpus), each round's subjects are fit
+SIMULTANEOUSLY as separate eeg_bold_fit_cli.py subprocesses (one pinned to
+each listed GPU via CUDA_VISIBLE_DEVICES), and this process waits for each
+round, then replays the finished workers' saved loss histories/diagnostics
+into wandb (it can't stream live -- the fit ran in another process). Choosing
+a subject count that's an exact multiple of len(--gpus) (e.g. 4 subjects on 4
+GPUs, one round) uses every reserved GPU for the whole trial with no idle
+time; a remainder subject count leaves some GPUs idle during the last round
+(harmless correctness-wise, just billed-but-idle capacity on a cluster that
+charges for reserved-not-just-used resources -- see hpc/leonardo/README.md).
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -45,6 +61,19 @@ def _env_int(name: str, default: int) -> int:
     return int(val) if val not in (None, "") else default
 
 
+def _ratio(history):
+    """Same definition as train.relative_final_loss -- duplicated (not
+    imported) so the --gpus parallel orchestrator never has to import
+    parrot_neuro.optimization.train (which imports jax at module load time).
+    The orchestrator manages subprocesses/wandb only; it must not itself
+    initialize a CUDA context that could collide with a worker subprocess's
+    assigned GPU. Keep in sync with train.relative_final_loss if that changes.
+    """
+    if not history or not history[0]:
+        return None
+    return history[-1] / history[0]
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -56,9 +85,11 @@ def parse_args() -> argparse.Namespace:
                     required=os.environ.get("SWEEP_SUBJECTS") is None,
                     help="comma-separated participant labels, with or without 'sub-' prefix "
                          "(e.g. 010002,010003,010004,010005,010006) -- every subject is fit "
-                         "sequentially, in ONE wandb run, with the SAME sampled hyperparameters")
+                         "with the SAME sampled hyperparameters, in ONE wandb run")
     p.add_argument("--output-root", default=os.environ.get("SWEEP_OUTPUT_ROOT", "eeg_bold_fit_sweep_res"),
-                    help="results land under <output-root>/atlas-<atlas>/<wandb-run-id>/<subject>_<optimize>")
+                    help="results land under <output-root>/atlas-<atlas>/<wandb-run-id>/<subject>_<optimize> "
+                         "(sequential mode) or <output-root>/<wandb-run-id>/atlas-<atlas>/<subject>_<optimize> "
+                         "(--gpus parallel mode, via eeg_bold_fit_cli.py's own atlas-suffixing)")
     p.add_argument("--atlas", type=int, default=1000, choices=(100, 1000))
     p.add_argument("--spacing", default="2.0", help="dipole spacing in mm (string)")
     p.add_argument("--leadfield-label", default="duneuroCGAL")
@@ -76,6 +107,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gamma-weight", type=float, default=0.0)
     p.add_argument("--skip-diagnostics", action="store_true",
                     help="fit + save params/losses only -- skip plots (faster smoke test)")
+    p.add_argument("--gpus", default=None,
+                    help="comma-separated GPU device indices (e.g. '0,1,2,3') -- switches to "
+                         "parallel mode: subjects are chunked into rounds of this many, each "
+                         "round's subjects fit SIMULTANEOUSLY as separate eeg_bold_fit_cli.py "
+                         "subprocesses, one pinned per listed GPU. Default (unset) = sequential, "
+                         "single-process, one subject at a time -- see module docstring.")
 
     # --- swept hyperparameters -- default from the SWEEP_* env vars sweep_train.sbatch sets,
     # so a sweep trial needs no CLI overrides at all; still overridable for manual testing. ---
@@ -94,45 +131,74 @@ def parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
+def _log_subject_summary(wandb, subject_id, loss_eeg, loss_bold, metrics, figures):
+    """Log one subject's final metrics/ratios/diagnostics to wandb -- the
+    part identical between the sequential (in-process) and --gpus (read back
+    from a finished subprocess) paths. Returns (eeg_ratio, bold_ratio,
+    final_eeg, final_bold) for the caller's aggregate/combined_loss tally.
+    """
+    final_eeg = loss_eeg[-1] if len(loss_eeg) else None
+    final_bold = loss_bold[-1] if len(loss_bold) else None
+    # EEG (~1e-6) and BOLD (~1e-1) losses live on completely different scales
+    # -- see train.relative_final_loss's docstring -- so the ratio to each
+    # subject's own early loss, not the raw value, is what feeds the combined
+    # objective below.
+    eeg_ratio = _ratio(loss_eeg)
+    bold_ratio = _ratio(loss_bold)
+    summary = {f"subj_{subject_id}/final_eeg_loss": final_eeg,
+               f"subj_{subject_id}/final_bold_loss": final_bold,
+               f"subj_{subject_id}/eeg_loss_ratio": eeg_ratio,
+               f"subj_{subject_id}/bold_loss_ratio": bold_ratio}
+    for name, value in metrics.items():
+        summary[f"subj_{subject_id}/{name}"] = float(value)
+    for name, path in figures.items():
+        summary[f"subj_{subject_id}/plots/{name}"] = wandb.Image(str(path))
+    wandb.log(summary)
+    print(f"[{subject_id}] final EEG loss: {final_eeg} (ratio {eeg_ratio})  "
+          f"final BOLD loss: {final_bold} (ratio {bold_ratio})")
+    return eeg_ratio, bold_ratio, final_eeg, final_bold
 
-    # config.apply_jax_env() must run before any jax import -- it sets
-    # CUDA/JAX env vars that only take effect pre-import.
+
+def _log_aggregate(wandb, per_subject_combined, per_subject_eeg, per_subject_bold,
+                    per_subject_eeg_ratio, per_subject_bold_ratio, n_subjects):
+    import numpy as np
+    # aggregate/combined_loss (the sweep's minimized metric -- see
+    # sweep_eeg_bold.yaml) is the ratio-based combination; the raw *_loss_mean
+    # values are logged alongside purely for human-readable context, not
+    # optimized directly (see _log_subject_summary's scale-mismatch note).
+    aggregate = {"aggregate/combined_loss": float(np.mean(per_subject_combined))}
+    if per_subject_eeg:
+        aggregate["aggregate/eeg_loss_mean"] = float(np.mean(per_subject_eeg))
+    if per_subject_bold:
+        aggregate["aggregate/bold_loss_mean"] = float(np.mean(per_subject_bold))
+    if per_subject_eeg_ratio:
+        aggregate["aggregate/eeg_loss_ratio_mean"] = float(np.mean(per_subject_eeg_ratio))
+    if per_subject_bold_ratio:
+        aggregate["aggregate/bold_loss_ratio_mean"] = float(np.mean(per_subject_bold_ratio))
+    wandb.log(aggregate)
+    print(f"Aggregate over {n_subjects} subjects: {aggregate}")
+
+
+def _run_sequential(wandb, run, args, subjects):
+    """One subject at a time, in THIS process -- needs jax, so it's imported
+    here rather than at module level (the --gpus path never needs it; see
+    _run_parallel)."""
     from parrot_neuro.optimization import config
-    config.apply_jax_env()
+    config.apply_jax_env()  # must run before any jax import
 
     import jax
     jax.config.update("jax_enable_x64", True)
 
     import matplotlib
-    matplotlib.use("Agg")  # headless: no DISPLAY on compute nodes
+    matplotlib.use("Agg")
 
     import numpy as np
-    import wandb
 
     from parrot_neuro import Subject
-    from parrot_neuro.optimization import data, diagnostics, pipeline, train
+    from parrot_neuro.optimization import data, diagnostics, pipeline
 
-    # WANDB_RUN_ID/WANDB_MODE come from the SLURM job env (set by
-    # sweep_dispatch.sh -> sweep_train.sbatch) when this is a real sweep
-    # trial; both are unset for a normal standalone/manual run, in which case
-    # wandb.init just creates a fresh online run as usual.
-    run_id = os.environ.get("WANDB_RUN_ID")
-    run = wandb.init(
-        project=args.wandb_project, entity=args.wandb_entity,
-        id=run_id, resume="allow" if run_id else None,
-        config=vars(args),
-    )
-
-    subjects = [s.strip() for s in args.subjects.split(",") if s.strip()]
-    print(f"Sweep trial {run.id}: fitting {len(subjects)} subjects: {subjects}")
-
-    per_subject_combined = []
-    per_subject_eeg = []
-    per_subject_bold = []
-    per_subject_eeg_ratio = []
-    per_subject_bold_ratio = []
+    per_subject_combined, per_subject_eeg, per_subject_bold = [], [], []
+    per_subject_eeg_ratio, per_subject_bold_ratio = [], []
 
     for subject_id in subjects:
         subject = Subject(args.bids_root, subject_id)
@@ -191,39 +257,23 @@ def main() -> None:
         np.save(out_dir / "loss_history_eeg.npy", np.array(result.loss_history_eeg))
         np.save(out_dir / "loss_history_bold.npy", np.array(result.loss_history_bold))
 
+        from parrot_neuro.optimization import train
         optimized = train.extract_learnable_values(result.diff_params, cfg.learnable_params)
         np.savez(out_dir / "optimized_params.npz", **optimized,
                   loss_eeg=np.array(result.loss_history_eeg), loss_bold=np.array(result.loss_history_bold))
 
-        final_eeg = result.loss_history_eeg[-1] if result.loss_history_eeg else None
-        final_bold = result.loss_history_bold[-1] if result.loss_history_bold else None
-        # train.relative_final_loss: EEG (~1e-6) and BOLD (~1e-1) losses live on
-        # completely different scales, so summing raw values makes the combined
-        # objective just the BOLD loss with EEG silently contributing ~0 -- see
-        # its docstring. Same helper eeg_bold_fit_cli.py uses, so a single-fit
-        # printout and a sweep trial report the same "combined loss" for the
-        # same fit.
-        eeg_ratio = train.relative_final_loss(result.loss_history_eeg)
-        bold_ratio = train.relative_final_loss(result.loss_history_bold)
-        summary = {f"subj_{subject_id}/final_eeg_loss": final_eeg,
-                   f"subj_{subject_id}/final_bold_loss": final_bold,
-                   f"subj_{subject_id}/eeg_loss_ratio": eeg_ratio,
-                   f"subj_{subject_id}/bold_loss_ratio": bold_ratio}
-
+        metrics, figures = {}, {}
         if not args.skip_diagnostics:
             if dataset is None:
                 dataset = data.load_subject_eeg(subject, cfg.eeg_task, cfg.chunk_length)
                 print(f"[{subject_id}] loaded EEG for visualization only (not a fit target)")
             diag = diagnostics.run_and_save(ctx, result.diff_params, result.static_params, dataset, out_dir)
-            for name, value in diag["metrics"].items():
-                summary[f"subj_{subject_id}/{name}"] = float(value)
-            for name, path in diag["figures"].items():
-                summary[f"subj_{subject_id}/plots/{name}"] = wandb.Image(str(path))
+            metrics, figures = diag["metrics"], diag["figures"]
 
-        wandb.log(summary)
+        eeg_ratio, bold_ratio, final_eeg, final_bold = _log_subject_summary(
+            wandb, subject_id, result.loss_history_eeg, result.loss_history_bold, metrics, figures)
 
-        combined = (eeg_ratio or 0.0) + (bold_ratio or 0.0)
-        per_subject_combined.append(combined)
+        per_subject_combined.append((eeg_ratio or 0.0) + (bold_ratio or 0.0))
         if final_eeg is not None:
             per_subject_eeg.append(final_eeg)
         if final_bold is not None:
@@ -232,25 +282,161 @@ def main() -> None:
             per_subject_eeg_ratio.append(eeg_ratio)
         if bold_ratio is not None:
             per_subject_bold_ratio.append(bold_ratio)
-        print(f"[{subject_id}] final EEG loss: {final_eeg} (ratio {eeg_ratio})  "
-              f"final BOLD loss: {final_bold} (ratio {bold_ratio})  saved to {out_dir}")
+        print(f"[{subject_id}] saved to {out_dir}")
 
-    # aggregate/combined_loss (the sweep's minimized metric -- see
-    # sweep_eeg_bold.yaml) is the ratio-based combination; the raw *_loss_mean
-    # values are logged alongside purely for human-readable context, not
-    # optimized directly (see the scale-mismatch note above).
-    aggregate = {"aggregate/combined_loss": float(np.mean(per_subject_combined))}
-    if per_subject_eeg:
-        aggregate["aggregate/eeg_loss_mean"] = float(np.mean(per_subject_eeg))
-    if per_subject_bold:
-        aggregate["aggregate/bold_loss_mean"] = float(np.mean(per_subject_bold))
-    if per_subject_eeg_ratio:
-        aggregate["aggregate/eeg_loss_ratio_mean"] = float(np.mean(per_subject_eeg_ratio))
-    if per_subject_bold_ratio:
-        aggregate["aggregate/bold_loss_ratio_mean"] = float(np.mean(per_subject_bold_ratio))
-    wandb.log(aggregate)
-    print(f"Aggregate over {len(subjects)} subjects: {aggregate}")
+    return per_subject_combined, per_subject_eeg, per_subject_bold, per_subject_eeg_ratio, per_subject_bold_ratio
 
+
+def _worker_argv(worker_script, args, subject_id, worker_output_root):
+    argv = [
+        sys.executable, str(worker_script),
+        "--bids-root", args.bids_root,
+        "--subject", subject_id,
+        "--output-root", worker_output_root,
+        "--atlas", str(args.atlas),
+        "--spacing", args.spacing,
+        "--leadfield-label", args.leadfield_label,
+        "--optimize", args.optimize,
+        "--num-epochs", str(args.num_epochs),
+        "--bold-every", str(args.bold_every),
+        "--eeg-task", args.eeg_task,
+        "--fmri-task", args.fmri_task,
+        "--noise-seed", str(args.noise_seed),
+        "--t1-warmup", str(args.t1_warmup),
+        "--solver-block-size", str(args.solver_block_size),
+        "--gamma-weight", str(args.gamma_weight),
+        "--learning-rate", str(args.learning_rate),
+        "--learning-rate-bold", str(args.learning_rate_bold),
+        "--bold-fc-weight", str(args.bold_fc_weight),
+        "--bold-dfc-weight", str(args.bold_dfc_weight),
+        "--bold-psd-weight", str(args.bold_psd_weight),
+        "--dfc-window-trs", str(args.dfc_window_trs),
+        "--dfc-step-trs", str(args.dfc_step_trs),
+    ]
+    if args.skip_diagnostics:
+        argv.append("--skip-diagnostics")
+    return argv
+
+
+def _load_worker_result(out_dir: Path):
+    import numpy as np
+    loss_eeg = np.load(out_dir / "loss_history_eeg.npy").tolist()
+    loss_bold = np.load(out_dir / "loss_history_bold.npy").tolist()
+    metrics_path = out_dir / "diagnostics_metrics.json"
+    metrics = json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
+    figures = {p.stem: p for p in sorted(out_dir.glob("*.png"))}
+    return loss_eeg, loss_bold, metrics, figures
+
+
+def _log_subject_epochs(wandb, subject_id, loss_eeg, loss_bold, bold_every):
+    """Replay a finished subject's per-epoch loss curve into wandb -- the fit
+    ran in a separate process, so unlike _run_sequential's live on_epoch
+    callback, this happens all at once after the subprocess exits. Each point
+    is tagged with its true epoch index (subj_<id>/epoch); view with that as
+    a custom x-axis in the wandb UI, not the default Step (which will show
+    all EEG points before all BOLD points, not chronologically interleaved --
+    harmless for the plotted curve itself, just an odd Step ordering).
+    """
+    for i, v in enumerate(loss_eeg):
+        wandb.log({f"subj_{subject_id}/epoch": i, f"subj_{subject_id}/eeg_loss": v})
+    for i, v in enumerate(loss_bold):
+        wandb.log({f"subj_{subject_id}/epoch": (i + 1) * bold_every - 1, f"subj_{subject_id}/bold_loss": v})
+
+
+def _run_parallel(wandb, run, args, subjects):
+    """len(--gpus) subjects at a time, each as its own eeg_bold_fit_cli.py
+    subprocess pinned to one GPU -- see module docstring. Deliberately never
+    imports jax/parrot_neuro.optimization.train: this process only manages
+    subprocesses, reads their saved .npy/.json output back, and logs to
+    wandb -- it must not itself claim a CUDA context that could collide with
+    a worker's assigned GPU.
+    """
+    from parrot_neuro import Subject  # jax-free (core BIDS API, not optimization)
+
+    gpus = [g.strip() for g in args.gpus.split(",") if g.strip()]
+    worker_script = Path(__file__).resolve().parent / "eeg_bold_fit_cli.py"
+    worker_output_root = os.path.join(args.output_root, run.id)
+
+    per_subject_combined, per_subject_eeg, per_subject_bold = [], [], []
+    per_subject_eeg_ratio, per_subject_bold_ratio = [], []
+
+    rounds = [subjects[i:i + len(gpus)] for i in range(0, len(subjects), len(gpus))]
+    print(f"Parallel mode: {len(subjects)} subjects over {len(gpus)} GPUs {gpus} "
+          f"-> {len(rounds)} round(s): {rounds}")
+
+    for round_idx, round_subjects in enumerate(rounds):
+        procs = []
+        for subject_id, gpu_id in zip(round_subjects, gpus):
+            env = os.environ.copy()
+            env["CUDA_VISIBLE_DEVICES"] = gpu_id
+            # One subdir per GPU, not one shared cache for the whole job --
+            # concurrent workers hitting the SAME jax compilation cache dir
+            # risk lock contention / a corrupt shared entry (same hazard
+            # optim_cohort.sbatch already avoids for job arrays, one dir per
+            # subject there; here it's one dir per GPU since a single worker
+            # process owns each GPU for the whole round).
+            base_cache = env.get("PARROT_JAX_CACHE_DIR", os.path.expanduser("~/.cache/jax"))
+            env["PARROT_JAX_CACHE_DIR"] = os.path.join(base_cache, f"gpu-{gpu_id}")
+            argv = _worker_argv(worker_script, args, subject_id, worker_output_root)
+            print(f"[round {round_idx}] launching {subject_id} on GPU {gpu_id}")
+            procs.append((subject_id, gpu_id, subprocess.Popen(argv, env=env)))
+
+        failed = []
+        for subject_id, gpu_id, proc in procs:
+            rc = proc.wait()
+            print(f"[round {round_idx}] {subject_id} (GPU {gpu_id}) finished rc={rc}")
+            if rc != 0:
+                failed.append((subject_id, rc))
+        if failed:
+            raise RuntimeError(f"round {round_idx}: subject(s) failed: {failed}")
+
+        for subject_id, _gpu_id, _proc in procs:
+            subject = Subject(args.bids_root, subject_id)
+            out_dir = Path(worker_output_root) / f"atlas-{args.atlas}" / f"{subject.subject}_{args.optimize}"
+            loss_eeg, loss_bold, metrics, figures = _load_worker_result(out_dir)
+            _log_subject_epochs(wandb, subject_id, loss_eeg, loss_bold, args.bold_every)
+            eeg_ratio, bold_ratio, final_eeg, final_bold = _log_subject_summary(
+                wandb, subject_id, loss_eeg, loss_bold, metrics, figures)
+
+            per_subject_combined.append((eeg_ratio or 0.0) + (bold_ratio or 0.0))
+            if final_eeg is not None:
+                per_subject_eeg.append(final_eeg)
+            if final_bold is not None:
+                per_subject_bold.append(final_bold)
+            if eeg_ratio is not None:
+                per_subject_eeg_ratio.append(eeg_ratio)
+            if bold_ratio is not None:
+                per_subject_bold_ratio.append(bold_ratio)
+
+    return per_subject_combined, per_subject_eeg, per_subject_bold, per_subject_eeg_ratio, per_subject_bold_ratio
+
+
+def main() -> None:
+    args = parse_args()
+
+    import wandb
+
+    # WANDB_RUN_ID/WANDB_MODE come from the SLURM job env (set by
+    # sweep_dispatch.sh -> sweep_train.sbatch) when this is a real sweep
+    # trial; both are unset for a normal standalone/manual run, in which case
+    # wandb.init just creates a fresh online run as usual.
+    run_id = os.environ.get("WANDB_RUN_ID")
+    run = wandb.init(
+        project=args.wandb_project, entity=args.wandb_entity,
+        id=run_id, resume="allow" if run_id else None,
+        config=vars(args),
+    )
+
+    subjects = [s.strip() for s in args.subjects.split(",") if s.strip()]
+    print(f"Sweep trial {run.id}: fitting {len(subjects)} subjects: {subjects}"
+          + (f" (parallel, gpus={args.gpus})" if args.gpus else " (sequential)"))
+
+    if args.gpus:
+        results = _run_parallel(wandb, run, args, subjects)
+    else:
+        results = _run_sequential(wandb, run, args, subjects)
+
+    _log_aggregate(wandb, *results, n_subjects=len(subjects))
     wandb.finish()
 
 

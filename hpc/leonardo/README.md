@@ -403,12 +403,55 @@ bash hpc/leonardo/submit_sweep.sh status      # squeue + how many agents are sti
 bash hpc/leonardo/submit_sweep.sh stop        # kill the background agents
 ```
 
+### Parallel (whole-node) mode
+
+Sequential mode fits `SWEEP_SUBJECTS` one GPU/subject at a time — safe, but
+capped by `boost_qos_lprod`'s 32-GPU-per-Project-Account ceiling (shared with
+everyone else on the account) and needing its 4-day QoS just to fit the
+walltime. `eeg_bold_fit_sweep.py --gpus 0,1,2,3` (set via `SWEEP_GPUS` in
+`config.local.sh`) fits that many subjects **simultaneously** instead, as
+separate `eeg_bold_fit_cli.py` subprocesses, one pinned per GPU — see the
+module's own docstring for the mechanism (round-chunking, per-GPU JAX cache
+isolation, wandb result replay since a subprocess can't log live).
+
+**Measured on this project (2026-08):** one subject's full 300-epoch fit
+takes **~6.6h** (`submit_optim.sh pilot`, subject 010002). That changes the
+whole cost/QoS picture:
+
+| Mode | Trial time (5 subjects) | Core-hours/trial | QoS |
+|---|---|---|---|
+| Sequential (1 GPU) | ~33.2h | `33.2h × 8 ≈ 266` | `boost_qos_lprod` (4-day; 33.2h exceeds `normal`'s 24h) |
+| Parallel, 4 subjects/4 GPUs (1 round, **zero idle GPU-time**) | ~6.6h | `6.6h × 32 ≈ 212` (same total as sequential — no waste) | `normal` (24h, no documented account-wide GPU cap) |
+| Parallel, 5 subjects/4 GPUs (2 rounds — 3 GPUs idle in round 2) | ~13.3h | `13.3h × 32 ≈ 425` (~60% more than sequential) | `normal`, comfortably |
+
+CINECA bills `T(hours) × N(nodes) × R(max reserved fraction) × C(32 cores/node)`
+— not for actual FLOPs, for what you *reserve* the whole job. Requesting all 4
+GPUs pins `R=1.0` (the whole node) for the full trial duration; any round
+where fewer than 4 of those 4 reserved GPUs are actually working still bills
+as if all 4 were. **Match `SWEEP_SUBJECTS`' count to `len(SWEEP_GPUS)`** (e.g.
+exactly 4 subjects for a 4-GPU node) to get the 2.5-5x wall-clock speedup
+*and* escape the `lprod` ceiling with **zero** extra core-hour cost — a
+remainder (5 subjects on 4 GPUs) still works correctly, just pays for the
+idle GPUs during the odd last round.
+
+`sweep_dispatch.sh` derives `--gres=gpu:<count>` from `SWEEP_GPUS`, defaults
+`SWEEP_QOS` to `normal` automatically once it's set (still overridable), caps
+`SWEEP_TIME`'s default at `20:00:00` (under `normal`'s 24h hard limit — widen
+it, still `<24h`, if your subject count needs more rounds), and scales
+`SWEEP_CPUS`/`SWEEP_MEM` by GPU count (8 cores/64G per GPU, matching the
+per-subject sequential defaults — free from a billing perspective once `R`
+is already 1.0 from the GPU request alone). Test locally first
+(`pixi run python examples/eeg_bold_fit_sweep.py --gpus 0,1,2,3 ...`, no
+SLURM needed) before trusting it on Leonardo — a `submit_sweep.sh smoke` with
+`SWEEP_GPUS` set is still the right first Leonardo validation step.
+
 ### Notes / gotchas (sweep)
-- **A trial fits `SWEEP_SUBJECTS` sequentially at full epoch count** — several
-  times a single-subject `submit_optim.sh` fit's walltime. `sweep_dispatch.sh`
-  defaults its QoS to `boost_qos_lprod` (4-day wall), not `normal` (24h), for
-  exactly this reason — still, measure with `smoke`/a short manual run before
-  trusting `SWEEP_TIME`'s default.
+- **A sequential trial fits `SWEEP_SUBJECTS` one at a time at full epoch
+  count** — several times a single-subject `submit_optim.sh` fit's walltime.
+  `sweep_dispatch.sh` defaults its QoS to `boost_qos_lprod` (4-day wall), not
+  `normal` (24h), for exactly this reason when `SWEEP_GPUS` is unset — still,
+  measure with `smoke`/a short manual run before trusting `SWEEP_TIME`'s
+  default. See "Parallel (whole-node) mode" above for the alternative.
 - **`start`'s background `wandb agent` processes live on the login node for
   as long as trials keep dispatching** (hours to days) — run `start` inside
   `tmux`/`screen`, not a plain interactive shell that dies on logout.

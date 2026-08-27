@@ -98,15 +98,34 @@ WANDB_API_KEY="${WANDB_API_KEY:-<YOUR_WANDB_API_KEY>}"   # https://wandb.ai/auth
 # WANDB_PROJECT="parrot-eeg-bold-sweep"
 # WANDB_ENTITY="<your-wandb-entity-or-team>"              # unset = your default entity
 # Fixed list of subjects EVERY trial fits (one wandb run per trial, one sampled
-# hyperparameter set, all subjects fit sequentially within it).
+# hyperparameter set). Sequential mode (SWEEP_GPUS unset) fits these one at a
+# time; parallel mode (SWEEP_GPUS set, below) fits len(SWEEP_GPUS) at once.
 # SWEEP_SUBJECTS="010002,010003,010004,010005,010006"
 # SWEEP_OUTPUT_ROOT="$WORKDIR/parrot/eeg_bold_fit_sweep_res"
 # Non-swept fit hyperparameters (fixed across the whole sweep) -- mirrors the
 # OPTIM_* defaults above; only the 7 fields in sweep_eeg_bold.yaml vary per trial.
 # SWEEP_ATLAS=1000 ; SWEEP_OPTIMIZE=both ; SWEEP_NUM_EPOCHS=300 ; SWEEP_BOLD_EVERY=2
-# Per-trial SLURM resources -- UNMEASURED; run `submit_sweep.sh smoke` first and
-# size these from the observed walltime (5 subjects sequentially, so expect
-# several times a single-subject optim fit's walltime -- see submit_optim.sh's
-# own pilot-first discipline above).
+#
+# --- Parallel (whole-node) mode -- see README.md's "Hyperparameter sweep" ->
+# "Parallel (whole-node) mode" for the full measured-numbers rationale. Unset
+# (default) = sequential, one GPU/subject at a time, boost_qos_lprod (4-day).
+# Set to eeg_bold_fit_sweep.py's --gpus value (e.g. all 4 of a Booster node)
+# to fit that many subjects SIMULTANEOUSLY per round instead -- MATCH
+# SWEEP_SUBJECTS' count to len(SWEEP_GPUS) (e.g. 4 subjects on 4 GPUs) for
+# zero idle-GPU billing; a remainder subject count leaves some GPUs idle-but-
+# reserved during the last round (correctness is unaffected either way).
+# Measured on this project (2026-08): ~6.6h for one subject's full 300-epoch
+# fit -> a clean 4-subjects/4-GPUs trial finishes in ~6.6h, comfortably under
+# `normal`'s 24h QoS (sweep_dispatch.sh switches SWEEP_QOS's default to
+# "normal" automatically once SWEEP_GPUS is set) -- which has no documented
+# account-wide GPU cap, unlike boost_qos_lprod's shared 32 (see README.md's
+# billing-formula note on why more CPUs/mem here is free once GPUs=4 anyway).
+# SWEEP_GPUS="0,1,2,3"
+#
+# Per-trial SLURM resources -- UNMEASURED for YOUR actual SWEEP_SUBJECTS list;
+# run `submit_sweep.sh smoke` first and size these from the observed walltime.
+# Defaults already scale with SWEEP_GPUS (8 cores/64G per GPU, 20h wall if
+# SWEEP_GPUS is set to stay under `normal`'s 24h cap, else 2 days under
+# boost_qos_lprod) -- override only if your measured walltime needs more room.
 # SWEEP_CPUS=8 ; SWEEP_MEM=64G ; SWEEP_TIME=2-00:00:00
-# SWEEP_QOS="boost_qos_lprod"   # 4-day wall -- NOT "normal" (24h), a trial can exceed it
+# SWEEP_QOS="boost_qos_lprod"   # 4-day wall -- NOT "normal" (24h), a sequential trial can exceed it

@@ -18,6 +18,7 @@ eeg_bold_fit_new.py directly -- this file is the batch entry point.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 
@@ -40,6 +41,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bold-dfc-weight", type=float, default=0.5,
                     help="weight of the dynamic-FC (FCD) term in the combined BOLD loss -- 0 drops "
                          "it (fc-only fit, and also disables the FCD diagnostic plots).")
+    p.add_argument("--dfc-window-trs", type=int, default=6,
+                    help="dFC sliding-window length in TRs (see config.BoldFitConfig.dfc_window_trs)")
+    p.add_argument("--dfc-step-trs", type=int, default=1,
+                    help="dFC sliding-window stride in TRs (see config.BoldFitConfig.dfc_step_trs)")
     p.add_argument("--num-epochs", type=int, default=300)
     p.add_argument("--bold-every", type=int, default=2)
     p.add_argument("--eeg-task", default="eyesclosed", help="subject.load.eeg(...) recording to fit")
@@ -135,6 +140,8 @@ def main() -> None:
         optimize=args.optimize,
         bold_fc_weight=args.bold_fc_weight,
         bold_dfc_weight=args.bold_dfc_weight,
+        dfc_window_trs=args.dfc_window_trs,
+        dfc_step_trs=args.dfc_step_trs,
         eeg_task=args.eeg_task,
         fmri_task=args.fmri_task,
         learning_rate=args.learning_rate,
@@ -203,7 +210,14 @@ def main() -> None:
         dataset = data.load_subject_eeg(subject, cfg.eeg_task, cfg.chunk_length)
         print(f"Loaded {subject.subj} EEG for visualization only (still not used as a fit target)")
 
-    diagnostics.run_and_save(ctx, result.diff_params, result.static_params, dataset, out_dir)
+    diag = diagnostics.run_and_save(ctx, result.diff_params, result.static_params, dataset, out_dir)
+    # Saved (not just printed) so a caller that ran this as a subprocess --
+    # e.g. eeg_bold_fit_sweep.py's --gpus parallel-worker mode -- can read the
+    # metrics back after this process exits, without this script needing to
+    # know anything about wandb itself.
+    (out_dir / "diagnostics_metrics.json").write_text(
+        json.dumps({k: float(v) for k, v in diag["metrics"].items()}, indent=2)
+    )
 
 
 if __name__ == "__main__":

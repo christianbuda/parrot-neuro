@@ -92,6 +92,9 @@ ARGS=(
 [ -n "${SWEEP_DFC_WINDOW_TRS:-}" ] && ARGS+=( --dfc-window-trs "$SWEEP_DFC_WINDOW_TRS" )
 [ -n "${SWEEP_DFC_STEP_TRS:-}" ] && ARGS+=( --dfc-step-trs "$SWEEP_DFC_STEP_TRS" )
 [ "$SWEEP_SKIP_DIAGNOSTICS" = 1 ] && ARGS+=( --skip-diagnostics )
+# Parallel (whole-node) mode -- see sweep_dispatch.sh's SWEEP_GPUS handling
+# for the matching --gres=gpu:<count>/QoS/walltime it computes to go with this.
+[ -n "${SWEEP_GPUS:-}" ] && ARGS+=( --gpus "$SWEEP_GPUS" )
 
 SECONDS=0
 set +e
