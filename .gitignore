@@ -85,8 +85,12 @@ template_data/hartmut/assets/
 templateflow_cache/
 hpc/leonardo/config.local.sh
 
-# W&B sweep operator state (submit_sweep.sh) -- run-specific, not portable across machines
+# W&B sweep operator state (submit_sweep.sh) -- run-specific, not portable across machines.
+# Namespaced (SWEEP_NAME=<tag>) variants use a .<tag> suffix / -<tag> suffix -- glob them too.
 hpc/leonardo/.sweep_id
+hpc/leonardo/.sweep_id.*
 hpc/leonardo/.sweep_agent_pids
+hpc/leonardo/.sweep_agent_pids.*
 hpc/leonardo/sweep_logs/
+hpc/leonardo/sweep_logs-*/
 wandb/
