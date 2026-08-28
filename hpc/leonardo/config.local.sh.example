@@ -100,11 +100,25 @@ WANDB_API_KEY="${WANDB_API_KEY:-<YOUR_WANDB_API_KEY>}"   # https://wandb.ai/auth
 # Fixed list of subjects EVERY trial fits (one wandb run per trial, one sampled
 # hyperparameter set). Sequential mode (SWEEP_GPUS unset) fits these one at a
 # time; parallel mode (SWEEP_GPUS set, below) fits len(SWEEP_GPUS) at once.
-# SWEEP_SUBJECTS="010002,010003,010004,010005,010006"
+# ${VAR:-default} form, not plain VAR=value -- `smoke` (sequential mode only;
+# parallel mode deliberately keeps this list as-is) exports a single-subject
+# SWEEP_SUBJECTS override for its quick sanity check, and a plain assignment
+# here would silently overwrite that back to the full list on every dispatch
+# (same footgun as SWEEP_NUM_EPOCHS above -- sweep_dispatch.sh sources this
+# file AFTER inheriting the override, so a plain `=` always wins).
+# SWEEP_SUBJECTS="${SWEEP_SUBJECTS:-010002,010003,010004,010005,010006}"
 # SWEEP_OUTPUT_ROOT="$WORKDIR/parrot/eeg_bold_fit_sweep_res"
 # Non-swept fit hyperparameters (fixed across the whole sweep) -- mirrors the
 # OPTIM_* defaults above; only the 7 fields in sweep_eeg_bold.yaml vary per trial.
-# SWEEP_ATLAS=1000 ; SWEEP_OPTIMIZE=both ; SWEEP_NUM_EPOCHS=300 ; SWEEP_BOLD_EVERY=2
+# MUST use the ${VAR:-default} form, not a plain VAR=value, for every one of
+# these -- sweep_dispatch.sh (a SEPARATE process from submit_sweep.sh) sources
+# this file AFTER inheriting env vars from its parent, so a plain assignment
+# here unconditionally overwrites any caller-time override (e.g. `smoke`'s
+# `export SWEEP_NUM_EPOCHS=2`) back to whatever's written here, silently. A
+# plain SWEEP_NUM_EPOCHS=300 is exactly what makes `smoke` run the full 300
+# epochs instead of the intended quick 2-epoch sanity check.
+# SWEEP_ATLAS="${SWEEP_ATLAS:-1000}" ; SWEEP_OPTIMIZE="${SWEEP_OPTIMIZE:-both}"
+# SWEEP_NUM_EPOCHS="${SWEEP_NUM_EPOCHS:-300}" ; SWEEP_BOLD_EVERY="${SWEEP_BOLD_EVERY:-2}"
 #
 # --- Parallel (whole-node) mode -- see README.md's "Hyperparameter sweep" ->
 # "Parallel (whole-node) mode" for the full measured-numbers rationale. Unset
