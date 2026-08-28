@@ -15,8 +15,20 @@
 #                                         #   --wait->offline-train->sync round trip
 #   ./submit_sweep.sh start [N] [COUNT]   # N background agents (default 8), COUNT runs
 #                                         #   each (default 5) -> N*COUNT total trials
+#   ./submit_sweep.sh list                # show every known sweep (name + ID) in this checkout
 #   ./submit_sweep.sh status              # squeue + how many agents are still running
 #   ./submit_sweep.sh stop                # kill this sweep's background agents
+#
+# Running a SECOND, independent search alongside one that's already going:
+# prefix every command with SWEEP_NAME=<tag> (and optionally SWEEP_YAML=<path>
+# for a genuinely different search space) -- this namespaces the sweep-ID/
+# agent-PID/log files so the two never share state or interfere with each
+# other. wandb supports concurrent sweeps natively; the only thing this
+# script CAN'T partition for you is the Leonardo account's real GPU/node/
+# core-hour budget, which both searches still draw from together.
+#   SWEEP_NAME=explore2 ./submit_sweep.sh create
+#   SWEEP_NAME=explore2 ./submit_sweep.sh smoke
+#   SWEEP_NAME=explore2 ./submit_sweep.sh start 8 5
 ###############################################################################
 set -euo pipefail
 
@@ -32,9 +44,29 @@ WANDB_PROJECT="${WANDB_PROJECT:-parrot-eeg-bold-sweep}"
 export WANDB_API_KEY WANDB_PROJECT
 [ -n "${WANDB_ENTITY:-}" ] && export WANDB_ENTITY
 
-SWEEP_ID_FILE="$SCRIPT_DIR/.sweep_id"
-AGENT_PID_FILE="$SCRIPT_DIR/.sweep_agent_pids"
-AGENT_LOG_DIR="${SWEEP_AGENT_LOG_DIR:-$SCRIPT_DIR/sweep_logs}"
+# SWEEP_NAME (unset by default) namespaces the sweep-ID/agent-PID/log files so
+# a NEW search can be created and run without touching an already-running
+# one's state -- e.g. SWEEP_NAME=explore2 ./submit_sweep.sh create. Unset
+# (the default) keeps the exact original filenames, so any already-running
+# sweep (created before this existed, or run without SWEEP_NAME) is completely
+# untouched by a namespaced invocation, and vice versa. Two sweeps this way
+# CAN run concurrently -- wandb supports that natively -- the only shared,
+# non-namespaced resource is the Leonardo account's real GPU/node/core-hour
+# budget, which this script has no way to partition for you.
+SWEEP_NAME="${SWEEP_NAME:-}"
+if [ -n "$SWEEP_NAME" ]; then
+    SWEEP_ID_FILE="$SCRIPT_DIR/.sweep_id.$SWEEP_NAME"
+    AGENT_PID_FILE="$SCRIPT_DIR/.sweep_agent_pids.$SWEEP_NAME"
+    AGENT_LOG_DIR="${SWEEP_AGENT_LOG_DIR:-$SCRIPT_DIR/sweep_logs-$SWEEP_NAME}"
+else
+    SWEEP_ID_FILE="$SCRIPT_DIR/.sweep_id"
+    AGENT_PID_FILE="$SCRIPT_DIR/.sweep_agent_pids"
+    AGENT_LOG_DIR="${SWEEP_AGENT_LOG_DIR:-$SCRIPT_DIR/sweep_logs}"
+fi
+# SWEEP_YAML lets a namespaced sweep use a genuinely different search space
+# (not just a fresh Bayesian search over the same one) -- defaults to the
+# usual file, so plain `create` behaves exactly as before.
+SWEEP_YAML="${SWEEP_YAML:-$SCRIPT_DIR/sweep_eeg_bold.yaml}"
 
 # Array, not a string -- "pixi run wandb" is 3 words, and quoting a string
 # variable containing spaces makes bash look for one file with that literal
@@ -58,7 +90,7 @@ case "$CMD" in
     create)
         [ -f "$SWEEP_ID_FILE" ] && { echo "ERROR: $SWEEP_ID_FILE already exists (sweep $(cat "$SWEEP_ID_FILE")) -- rm it to register a new one" >&2; exit 1; }
         entity_flag=(); [ -n "${WANDB_ENTITY:-}" ] && entity_flag=( --entity "$WANDB_ENTITY" )
-        out="$("${WANDB_BIN[@]}" sweep --project "$WANDB_PROJECT" "${entity_flag[@]}" "$SCRIPT_DIR/sweep_eeg_bold.yaml" 2>&1 | tee /dev/stderr)"
+        out="$("${WANDB_BIN[@]}" sweep --project "$WANDB_PROJECT" "${entity_flag[@]}" "$SWEEP_YAML" 2>&1 | tee /dev/stderr)"
         # Save the FULLY-QUALIFIED "entity/project/sweep_id" path (from wandb's own
         # "Run sweep agent with: wandb agent entity/project/id" line), not just the
         # bare ID -- `wandb agent <bare_id>` has to resolve a default entity via the
@@ -109,6 +141,19 @@ case "$CMD" in
         done
         ;;
 
+    list)
+        echo "--- known sweeps (this checkout) ---"
+        found=0
+        for f in "$SCRIPT_DIR"/.sweep_id "$SCRIPT_DIR"/.sweep_id.*; do
+            [ -f "$f" ] || continue
+            found=1
+            name="default"
+            case "$f" in *.sweep_id.*) name="${f##*.sweep_id.}" ;; esac
+            echo "  name=$name  id=$(cat "$f")  file=$f"
+        done
+        [ "$found" = 1 ] || echo "  (none -- run 'create', optionally with SWEEP_NAME=<name> set, first)"
+        ;;
+
     status)
         echo "--- SLURM (this user's parrot-sweep jobs) ---"
         squeue --me -o '%.10i %.9P %.20j %.8T %.10M %.6D %R' 2>/dev/null | { head -1; grep parrot-sweep || echo "  (none)"; }
@@ -149,8 +194,17 @@ usage: submit_sweep.sh <command>
                           parallel launch too; [subject] only applies otherwise.
   start [N] [COUNT]       N background agents (default 8) x COUNT runs each
                           (default 5) = N*COUNT total trials. Run under tmux/screen.
+  list                    show every known sweep (name + ID) in this checkout
   status                  squeue + how many agents are still running
   stop                     kill this sweep's background agents
+
+Prefix any command with SWEEP_NAME=<tag> to create/run a SECOND, independent
+search without touching an already-running one's state (sweep-ID/agent-PID/
+log files are namespaced per name; unset = the original, unnamed files).
+Add SWEEP_YAML=<path> alongside SWEEP_NAME=<tag> on 'create' for a genuinely
+different search space, not just a fresh Bayesian search over the same one.
+Both searches still share the same Leonardo account GPU/node/core-hour
+budget -- this script has no way to partition that for you.
 
 Config (account/paths/WANDB_*/SWEEP_* resources) is read from
 hpc/leonardo/config.local.sh.
