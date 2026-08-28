@@ -40,6 +40,11 @@ GPUs, one round) uses every reserved GPU for the whole trial with no idle
 time; a remainder subject count leaves some GPUs idle during the last round
 (harmless correctness-wise, just billed-but-idle capacity on a cluster that
 charges for reserved-not-just-used resources -- see hpc/leonardo/README.md).
+
+Each worker's stdout/stderr goes to its own file under
+<output-root>/<wandb-run-id>/worker_logs/<subject>.log (not interleaved into
+this process's own output) -- tail that file for a subject that seems stuck,
+rather than guessing from 4 processes' output mixed into one stream.
 """
 from __future__ import annotations
 
@@ -356,6 +361,8 @@ def _run_parallel(wandb, run, args, subjects):
     gpus = [g.strip() for g in args.gpus.split(",") if g.strip()]
     worker_script = Path(__file__).resolve().parent / "eeg_bold_fit_cli.py"
     worker_output_root = os.path.join(args.output_root, run.id)
+    log_dir = Path(worker_output_root) / "worker_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     per_subject_combined, per_subject_eeg, per_subject_bold = [], [], []
     per_subject_eeg_ratio, per_subject_bold_ratio = [], []
@@ -378,19 +385,32 @@ def _run_parallel(wandb, run, args, subjects):
             base_cache = env.get("PARROT_JAX_CACHE_DIR", os.path.expanduser("~/.cache/jax"))
             env["PARROT_JAX_CACHE_DIR"] = os.path.join(base_cache, f"gpu-{gpu_id}")
             argv = _worker_argv(worker_script, args, subject_id, worker_output_root)
-            print(f"[round {round_idx}] launching {subject_id} on GPU {gpu_id}")
-            procs.append((subject_id, gpu_id, subprocess.Popen(argv, env=env)))
+            log_path = log_dir / f"{subject_id}.log"
+            log_file = open(log_path, "w")
+            print(f"[round {round_idx}] launching {subject_id} on GPU {gpu_id} -> {log_path}")
+            # stdin=DEVNULL: these workers never need input, and 4 processes
+            # all inheriting the SAME live terminal/job stdin is a known way
+            # to get an unpredictable hang if anything anywhere ever probes
+            # or reads it. stdout/stderr to a per-subject file, not inherited
+            # -- 4 processes interleaving raw output into one shared stream
+            # is nearly unreadable anyway, and this makes "which subject is
+            # actually stuck" a one-command check (tail -f) instead of a
+            # guess from interleaved noise.
+            proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
+                                     stdout=log_file, stderr=subprocess.STDOUT)
+            procs.append((subject_id, gpu_id, proc, log_file))
 
         failed = []
-        for subject_id, gpu_id, proc in procs:
+        for subject_id, gpu_id, proc, log_file in procs:
             rc = proc.wait()
+            log_file.close()
             print(f"[round {round_idx}] {subject_id} (GPU {gpu_id}) finished rc={rc}")
             if rc != 0:
                 failed.append((subject_id, rc))
         if failed:
-            raise RuntimeError(f"round {round_idx}: subject(s) failed: {failed}")
+            raise RuntimeError(f"round {round_idx}: subject(s) failed: {failed} -- see {log_dir}/<subject>.log")
 
-        for subject_id, _gpu_id, _proc in procs:
+        for subject_id, _gpu_id, _proc, _log_file in procs:
             subject = Subject(args.bids_root, subject_id)
             out_dir = Path(worker_output_root) / f"atlas-{args.atlas}" / f"{subject.subject}_{args.optimize}"
             loss_eeg, loss_bold, metrics, figures = _load_worker_result(out_dir)
