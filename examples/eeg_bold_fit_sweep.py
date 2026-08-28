@@ -294,7 +294,14 @@ def _run_sequential(wandb, run, args, subjects):
 
 def _worker_argv(worker_script, args, subject_id, worker_output_root):
     argv = [
-        sys.executable, str(worker_script),
+        # -u: unbuffered stdout -- without it, Python fully buffers stdout
+        # once it's not a TTY (true here regardless of the orchestrator's own
+        # stdout handling: it always ends up redirected to a file, either the
+        # SLURM job's .out or this worker's own log), so prints can sit
+        # invisible in the buffer for a long time. That looks EXACTLY like a
+        # hang from the outside -- same class of gotcha sweep_train.sbatch's
+        # own `python -u` already guards against for the orchestrator itself.
+        sys.executable, "-u", str(worker_script),
         "--bids-root", args.bids_root,
         "--subject", subject_id,
         "--output-root", worker_output_root,
