@@ -454,7 +454,22 @@ SLURM needed) before trusting it on Leonardo — a `submit_sweep.sh smoke` with
   default. See "Parallel (whole-node) mode" above for the alternative.
 - **`start`'s background `wandb agent` processes live on the login node for
   as long as trials keep dispatching** (hours to days) — run `start` inside
-  `tmux`/`screen`, not a plain interactive shell that dies on logout.
+  `tmux`/`screen`, not a plain interactive shell that dies on logout. Leonardo
+  has multiple login nodes behind one round-robin alias (`login.leonardo.
+  cineca.it`), so a *later* SSH connection can land you on a different node
+  than the one your session is running on — reattach to the specific node via
+  its `-ext` hostname (e.g. `ssh <user>@login07-ext.leonardo.cineca.it`; only
+  `login01/02/05/07` are documented with `-ext` names), not the round-robin
+  alias, or `tmux ls` will correctly-but-confusingly report no sessions.
+- **A login-node session dying mid-sweep can strand finished trials unsynced.**
+  `sweep_dispatch.sh` only runs `wandb sync` *after* `sbatch --wait` returns —
+  if the login-node process gets killed while still waiting (session loss,
+  not something you did wrong), the compute job keeps running to completion
+  independently (SLURM jobs don't depend on the submitting process), but
+  nothing is left alive to sync its result afterward. The data isn't lost,
+  just sitting unsynced in `$WORKDIR/parrot/wandb_offline/`. Recover with:
+  `bash hpc/leonardo/sync_orphaned_runs.sh` — safe to run over everything,
+  not just the orphaned ones (`wandb sync` is idempotent).
 - **Bayesian search only sees a trial once it's synced.** If a trial's
   compute job OOMs or crashes, `sweep_dispatch.sh` still attempts a sync (of
   whatever got logged before the crash) and propagates the failing exit
@@ -465,6 +480,19 @@ SLURM needed) before trusting it on Leonardo — a `submit_sweep.sh smoke` with
   `dfc_step_trs`) are defined in `sweep_eeg_bold.yaml`; everything else
   (`atlas`, `num_epochs`, `optimize`, etc.) is fixed across the whole sweep
   via `SWEEP_*` env vars, same as `OPTIM_*` for `submit_optim.sh`.
+- **`start N ...` launching far fewer than N agents that actually run** — if
+  `wandb` isn't directly on `PATH` (the normal case, needing `pixi run`),
+  wrapping every one of N nearly-simultaneous agent launches in its own `pixi
+  run` re-initializes `pixi`'s internal thread pool (`rayon`) N times within
+  the same second or two. On a login node with a modest `RLIMIT_NPROC`, that
+  can make `pixi` itself panic and crash for a chunk of them (`failed to
+  initialize global rayon pool: ... Resource temporarily unavailable`) —
+  *before* `wandb agent` ever starts, so `status` later shows only a fraction
+  of N ever having run. `submit_sweep.sh` activates the pixi env **once**
+  (`pixi shell-hook`, evaluated into the current shell) instead of per-agent,
+  and staggers launches by 0.2s each as extra margin — if you still see this,
+  the login node's `RLIMIT_NPROC` may be lower than 128+ concurrent process
+  startups can fit in, and reducing `start`'s `N` is the practical fix.
 
 ## Notes / gotchas
 - **`signal: killed` while building a `.sif`** = the login node OOM/arbiter-killed it. Login

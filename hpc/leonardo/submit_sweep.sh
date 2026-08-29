@@ -68,16 +68,30 @@ fi
 # usual file, so plain `create` behaves exactly as before.
 SWEEP_YAML="${SWEEP_YAML:-$SCRIPT_DIR/sweep_eeg_bold.yaml}"
 
-# Array, not a string -- "pixi run wandb" is 3 words, and quoting a string
-# variable containing spaces makes bash look for one file with that literal
-# name (exactly the "No such file or directory" bug this used to hit).
-if command -v wandb >/dev/null 2>&1; then
-    WANDB_BIN=(wandb)
-else
+# Activate the pixi env ONCE in this shell (eval its activation hook) instead
+# of wrapping every `wandb` call in `pixi run` -- critically, `start` launches
+# up to N agents in a tight loop, and `pixi run wandb agent ...` re-initializes
+# pixi's own internal thread pool (rayon) on EVERY invocation. Dozens of those
+# starting within the same second or two can blow through the login node's
+# RLIMIT_NPROC, causing `pixi` itself to panic ("failed to initialize global
+# rayon pool: ... Resource temporarily unavailable") and crash BEFORE `wandb
+# agent` ever starts -- an agent that dies at that exact line looks, from the
+# outside, exactly like "start requested N agents but far fewer ever actually
+# ran," which is exactly the failure this was designed around (same fix
+# already applied to sync_orphaned_runs.sh for the equivalent per-run overhead
+# there). One shell-hook eval, then every `wandb` call below is direct.
+REPO="${REPO:-$HOME/parrot-neuro}"
+if ! command -v wandb >/dev/null 2>&1; then
     PIXI="$(command -v pixi || true)"
     [ -z "$PIXI" ] && [ -x "$HOME/.pixi/bin/pixi" ] && PIXI="$HOME/.pixi/bin/pixi"
     [ -n "$PIXI" ] || { echo "ERROR: neither 'wandb' nor 'pixi' found on PATH"; exit 1; }
-    WANDB_BIN=("$PIXI" run wandb)
+    # set +u around the hook: its activation script (bash-completion files it
+    # sources, e.g. hwloc's) isn't `set -u`-safe -- references $ZSH_VERSION
+    # unconditionally, an unbound-variable error under our own -u.
+    set +u
+    eval "$(cd "$REPO" && "$PIXI" shell-hook)"
+    set -u
+    command -v wandb >/dev/null 2>&1 || { echo "ERROR: wandb still not on PATH after pixi shell-hook"; exit 1; }
 fi
 
 sweep_id() {
@@ -90,7 +104,7 @@ case "$CMD" in
     create)
         [ -f "$SWEEP_ID_FILE" ] && { echo "ERROR: $SWEEP_ID_FILE already exists (sweep $(cat "$SWEEP_ID_FILE")) -- rm it to register a new one" >&2; exit 1; }
         entity_flag=(); [ -n "${WANDB_ENTITY:-}" ] && entity_flag=( --entity "$WANDB_ENTITY" )
-        out="$("${WANDB_BIN[@]}" sweep --project "$WANDB_PROJECT" "${entity_flag[@]}" "$SWEEP_YAML" 2>&1 | tee /dev/stderr)"
+        out="$(wandb sweep --project "$WANDB_PROJECT" "${entity_flag[@]}" "$SWEEP_YAML" 2>&1 | tee /dev/stderr)"
         # Save the FULLY-QUALIFIED "entity/project/sweep_id" path (from wandb's own
         # "Run sweep agent with: wandb agent entity/project/id" line), not just the
         # bare ID -- `wandb agent <bare_id>` has to resolve a default entity via the
@@ -119,7 +133,7 @@ case "$CMD" in
             echo "[smoke] ONE foreground trial: subject=$subject epochs=2, no diagnostics -- sanity check only"
             export SWEEP_SUBJECTS="$subject" SWEEP_NUM_EPOCHS=2 SWEEP_SKIP_DIAGNOSTICS=1
         fi
-        "${WANDB_BIN[@]}" agent --count 1 "$id"
+        wandb agent --count 1 "$id"
         ;;
 
     start)
@@ -133,11 +147,20 @@ case "$CMD" in
         echo "        not a plain shell that dies on logout."
         for i in $(seq 1 "$n_agents"); do
             log="$AGENT_LOG_DIR/agent-$i.log"
-            nohup "${WANDB_BIN[@]}" agent --count "$runs_per_agent" "$id" > "$log" 2>&1 < /dev/null &
+            nohup wandb agent --count "$runs_per_agent" "$id" > "$log" 2>&1 < /dev/null &
             pid=$!
             disown "$pid" 2>/dev/null || true
             echo "$pid" >> "$AGENT_PID_FILE"
             echo "  agent $i: pid=$pid log=$log"
+            # Small stagger, not a bare burst of N -- each `wandb agent` startup
+            # (Python import, wandb's own background service process) briefly
+            # touches enough threads/processes that launching dozens within the
+            # same second risks the login node's RLIMIT_NPROC ceiling, same
+            # class of failure `pixi run` per-agent used to cause outright
+            # (see the note above WANDB_BIN's resolution). 0.2s x 128 = ~26s
+            # total to reach full concurrency -- negligible against hours-long
+            # trials, cheap insurance against a startup burst.
+            sleep 0.2
         done
         ;;
 

@@ -53,6 +53,17 @@ if ! command -v wandb >/dev/null 2>&1; then
     command -v wandb >/dev/null 2>&1 || { echo "ERROR: wandb still not on PATH after pixi shell-hook"; exit 1; }
 fi
 
+# `wandb`'s import chain pulls in numpy transitively (via pydantic's docstring
+# introspection, not anything sync actually needs numpy FOR) -- numpy's
+# OpenBLAS backend then tries to auto-detect the node's full core count and
+# spin up a matching thread pool (128 on a Booster node) on every single
+# invocation. With however many other processes you already have running
+# (background sweep agents, active job processes, etc.), that can exhaust
+# RLIMIT_NPROC and fail outright. Sync needs zero linear algebra, so just
+# stop OpenBLAS from trying -- no downside, this loop never touches numpy for
+# real work.
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1
+
 n=0
 failed=0
 for run_dir in "$WORKDIR"/parrot/wandb_offline/*/wandb/offline-run-*; do
