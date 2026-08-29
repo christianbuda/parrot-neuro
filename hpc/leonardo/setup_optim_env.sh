@@ -47,6 +47,11 @@ echo "[pixi] resolving + installing environment from pixi.toml (needs internet -
 pixi install
 
 echo "[pixi] sanity-checking imports (CPU-only here; GPU devices are only visible inside a GPU job) ..."
+# Login nodes cap per-user thread/process counts well below the node's full
+# core count; OpenBLAS otherwise sizes its threadpool to nproc (128 here) and
+# pthread_create() starts failing partway through. This is just an import
+# check, so force single-threaded BLAS for it.
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
 pixi run python -c "
 import jax, tvboptim, optax, equinox
 print('jax', jax.__version__, '-- import OK')
