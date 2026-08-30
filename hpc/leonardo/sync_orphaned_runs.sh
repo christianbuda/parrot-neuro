@@ -66,16 +66,37 @@ export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_TH
 
 n=0
 failed=0
+corrupt=0
 for run_dir in "$WORKDIR"/parrot/wandb_offline/*/wandb/offline-run-*; do
     [ -d "$run_dir" ] || continue
     n=$((n + 1))
     echo "=== [$n] syncing $run_dir ==="
-    wandb sync "$run_dir" || { echo "  FAILED: $run_dir" >&2; failed=$((failed + 1)); }
+    # `wandb sync` exits 0 even when the local transaction log is
+    # truncated (the training job got SIGKILL'd -- OOM/walltime/scancel/
+    # node failure -- before the wandb writer flushed+closed cleanly): it
+    # just uploads whatever was readable up to the break and prints
+    # "ERROR ... transactionlog: error getting next record: EOF" as a
+    # non-fatal warning. Checking only $? (as this used to) miscounts
+    # these partial-data runs as full successes -- grep the output too.
+    output="$(wandb sync "$run_dir" 2>&1)"
+    rc=$?
+    printf '%s\n' "$output"
+    if [ "$rc" -ne 0 ]; then
+        echo "  FAILED (exit $rc): $run_dir" >&2
+        failed=$((failed + 1))
+    elif printf '%s\n' "$output" | grep -q 'transactionlog: error getting next record'; then
+        echo "  PARTIAL (truncated local log -- run likely killed mid-training, some data missing on wandb): $run_dir" >&2
+        corrupt=$((corrupt + 1))
+    fi
 done
 
 if [ "$n" -eq 0 ]; then
     echo "No offline run directories found under $WORKDIR/parrot/wandb_offline/"
 else
-    echo "Done: $((n - failed))/$n synced successfully."
-    [ "$failed" -eq 0 ] || { echo "$failed failed -- see output above." >&2; exit 1; }
+    echo "Done: $((n - failed - corrupt))/$n fully synced, $corrupt partial (truncated log), $failed hard failures."
+    if [ "$failed" -ne 0 ] || [ "$corrupt" -ne 0 ]; then
+        echo "See PARTIAL/FAILED lines above. A PARTIAL run's SLURM job was probably killed mid-training --" >&2
+        echo "cross-check its run ID (the offline-run-*-<id> directory name) against 'sacct -u \$USER --name=parrot-sweep --format=JobID,State,ExitCode' for OOM/TIMEOUT/CANCELLED." >&2
+        exit 1
+    fi
 fi
