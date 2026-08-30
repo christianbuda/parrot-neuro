@@ -105,6 +105,55 @@ echo "[sweep_dispatch] trial run_id=$WANDB_RUN_ID sweep_id=$WANDB_SWEEP_ID"
 echo "[sweep_dispatch] learning_rate=${SWEEP_LEARNING_RATE:-?} bold_fc_weight=${SWEEP_BOLD_FC_WEIGHT:-?} bold_dfc_weight=${SWEEP_BOLD_DFC_WEIGHT:-?} dfc_window_trs=${SWEEP_DFC_WINDOW_TRS:-?}"
 echo "[sweep_dispatch] dispatching to compute node: qos=$SWEEP_QOS time=$SWEEP_TIME mem=$SWEEP_MEM cpus=$SWEEP_CPUS gpus=$SWEEP_GPU_COUNT"
 
+# EXPERIMENTAL (2026-08-30, see hpc/leonardo/README.md's "duplicate run_id"
+# gotcha): the training job's own wandb.init() doesn't happen until deep
+# inside the offline sbatch job, hours from now, and even then it never
+# touches the network (WANDB_MODE=offline) -- so the wandb SWEEP CONTROLLER
+# never learns this run_id/config was claimed until the final `wandb sync`.
+# In the meantime, any other idle agent that asks the server for "next run"
+# can be handed this SAME still-apparently-unclaimed run_id/config again,
+# duplicating hours of real GPU compute (confirmed via sacct + agent log
+# cross-referencing -- see the README section for the full writeup).
+#
+# Fix attempt: claim the run with the server RIGHT NOW, from the login node
+# (which has real internet, unlike the compute node), by creating it online
+# and immediately finishing it with zero data logged. This is a real,
+# empty run -- not a no-op -- so the sweep controller should stop treating
+# this run_id as available to hand out again. `eeg_bold_fit_sweep.py`
+# already calls wandb.init(id=run_id, resume="allow", ...) whenever
+# WANDB_RUN_ID is set (see its main()), so the real offline run later
+# RESUMES this same run_id and appends its actual data/history to it --
+# resuming a run that already exists (even one already marked "finished")
+# is the normal, supported wandb resume path, not a special case.
+# Single-threaded BLAS for the same reason as the sync call below (wandb's
+# import chain pulls in numpy). Non-fatal: if the claim ping itself fails
+# (network hiccup, wandb API error), log it and dispatch anyway -- worst
+# case we're back to the pre-existing duplicate-run-id risk, not worse.
+echo "[sweep_dispatch] claiming run_id=$WANDB_RUN_ID online before offline dispatch"
+set +e
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+    python - <<'PY'
+import os
+import sys
+
+try:
+    import wandb
+    wandb.init(
+        project=os.environ.get("WANDB_PROJECT", "parrot-eeg-bold-sweep"),
+        entity=os.environ.get("WANDB_ENTITY"),
+        id=os.environ["WANDB_RUN_ID"],
+        resume="allow",
+        mode="online",
+    )
+    wandb.finish()
+    print("[sweep_dispatch] claim ok")
+except Exception as exc:  # noqa: BLE001 -- best-effort, must never block dispatch
+    print(f"[sweep_dispatch] WARNING: claim ping failed ({exc!r}) -- dispatching anyway", file=sys.stderr)
+PY
+claim_rc=$?
+set -e
+[ "$claim_rc" -eq 0 ] || echo "[sweep_dispatch] WARNING: claim step exited $claim_rc -- dispatching anyway" >&2
+
 set +e
 sbatch --wait --account="$ACCT" --job-name=parrot-sweep \
     --partition="$BOOST_PART" --qos="$SWEEP_QOS" --gres=gpu:"$SWEEP_GPU_COUNT" \

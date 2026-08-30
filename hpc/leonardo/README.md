@@ -515,6 +515,41 @@ SLURM needed) before trusting it on Leonardo — a `submit_sweep.sh smoke` with
   `sync_orphaned_runs.sh` already had) to avoid this; a trial whose sync
   still fails logs a `WARNING` and is picked up by `sync_orphaned_runs.sh`
   on your next run of it.
+- **The same run_id gets dispatched more than once** (confirmed 2026-08-30 on
+  the `parallel-2` sweep: `grep -h "trial run_id=" sweep_logs-parallel-2/agent-*.log`
+  showed several run_ids repeated 2-3x *across different agents*, real
+  GPU-hours wastefully redone for the identical hyperparameters) — a known,
+  unresolved upstream wandb limitation for offline+SLURM sweeps (see
+  [community.wandb.ai/t/.../5791](https://community.wandb.ai/t/the-sweep-agent-keeps-the-same-hyperparameters-and-run-id-in-offline-mode/5791)),
+  not a bug in this repo's scripts. Mechanism: `wandb.init()` for the real
+  training run doesn't happen until deep inside the offline `sbatch` job,
+  hours later, and even then never touches the network (`WANDB_MODE=offline`)
+  — so the sweep *controller* never learns a run_id/config was claimed until
+  the eventual `wandb sync`. Any other idle agent asking for "next run" in
+  that window can be handed the same still-apparently-unclaimed run_id.
+  Two mitigations, can use either or both:
+  - **Reduce `N`** to roughly your actually-sustainable concurrent-trial
+    count (QoS/GPU budget, not wishful thinking) — fewer idle agents polling
+    means fewer chances to collide with an in-flight-but-server-invisible
+    run. Prefer a higher `COUNT` over a higher `N` to hit your total trial
+    target.
+  - **The online "claim" ping** (`sweep_dispatch.sh`, added 2026-08-30,
+    marked EXPERIMENTAL in its own comment): right after receiving a
+    run_id, while still on the login node (real internet), it creates that
+    run online (`wandb.init(id=..., resume="allow", mode="online")`) and
+    immediately `wandb.finish()`s it with zero data logged, before ever
+    calling `sbatch`. This should make the run_id look "claimed" (a real,
+    if empty, run object now exists) rather than merely "proposed", so the
+    controller shouldn't hand it out again. The real training run resumes
+    it later (`eeg_bold_fit_sweep.py`'s `wandb.init(id=run_id,
+    resume="allow", ...)` already does this whenever `WANDB_RUN_ID` is
+    set) and appends its actual data — resuming a run that already exists,
+    even one already marked "finished", is the normal supported wandb
+    resume path. Non-fatal by design: a failed claim ping just logs a
+    `WARNING` and dispatch proceeds anyway. **Verify it's actually helping**
+    the same way the original problem was found — after a batch of trials,
+    `grep -h "trial run_id=" sweep_logs*/agent-*.log | sort | uniq -c | sort -rn`
+    should show far fewer (ideally zero) counts >1.
 
 ## Notes / gotchas
 - **`signal: killed` while building a `.sif`** = the login node OOM/arbiter-killed it. Login
