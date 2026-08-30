@@ -480,19 +480,41 @@ SLURM needed) before trusting it on Leonardo — a `submit_sweep.sh smoke` with
   `dfc_step_trs`) are defined in `sweep_eeg_bold.yaml`; everything else
   (`atlas`, `num_epochs`, `optimize`, etc.) is fixed across the whole sweep
   via `SWEEP_*` env vars, same as `OPTIM_*` for `submit_optim.sh`.
-- **`start N ...` launching far fewer than N agents that actually run** — if
-  `wandb` isn't directly on `PATH` (the normal case, needing `pixi run`),
-  wrapping every one of N nearly-simultaneous agent launches in its own `pixi
-  run` re-initializes `pixi`'s internal thread pool (`rayon`) N times within
-  the same second or two. On a login node with a modest `RLIMIT_NPROC`, that
-  can make `pixi` itself panic and crash for a chunk of them (`failed to
-  initialize global rayon pool: ... Resource temporarily unavailable`) —
-  *before* `wandb agent` ever starts, so `status` later shows only a fraction
-  of N ever having run. `submit_sweep.sh` activates the pixi env **once**
-  (`pixi shell-hook`, evaluated into the current shell) instead of per-agent,
-  and staggers launches by 0.2s each as extra margin — if you still see this,
-  the login node's `RLIMIT_NPROC` may be lower than 128+ concurrent process
-  startups can fit in, and reducing `start`'s `N` is the practical fix.
+- **`start N ...` launching far fewer than N agents that actually run** — two
+  independent causes, both a login-node `RLIMIT_NPROC` squeeze:
+  1. If `wandb` isn't directly on `PATH` (the normal case, needing `pixi
+     run`), wrapping every one of N nearly-simultaneous agent launches in its
+     own `pixi run` re-initializes `pixi`'s internal thread pool (`rayon`) N
+     times within the same second or two, which can make `pixi` itself panic
+     (`failed to initialize global rayon pool: ... Resource temporarily
+     unavailable`) *before* `wandb agent` ever starts. `submit_sweep.sh`
+     activates the pixi env **once** (`pixi shell-hook`, evaluated into the
+     current shell) instead of per-agent, which avoids this entirely.
+  2. **A different source of the same ceiling, confirmed 2026-08-30 at
+     N=24**: each `wandb agent` process spins up its own internal asyncio
+     "service" thread immediately on startup, independent of `pixi`. Even
+     with (1) fixed, a burst of N of these within a few seconds can still
+     exhaust `RLIMIT_NPROC` — a few agents die with `RuntimeError: can't
+     start new thread` or a bare `SIGSEGV`, and never produce a single run.
+     `submit_sweep.sh` staggers launches by 2s each (was 0.2s, which wasn't
+     enough) as margin against this — ~4.3 min total launch time for N=128,
+     negligible against hours-long trials. If you still lose agents at
+     launch with this stagger, widen it further or reduce `N`.
+  Check `sweep_logs*/agent-<i>.log` for an agent that shows zero
+  `Starting Run` lines — `grep -c "Starting Run" sweep_logs*/agent-*.log` —
+  to tell which of the two hit.
+- **A trial's `wandb sync` segfaulting** (`Segmentation fault (core dumped)
+  wandb sync ...`) even though `training job rc=0` — the exact same
+  `RLIMIT_NPROC` pressure, but at the *end* of a trial instead of agent
+  launch: `wandb sync`'s import chain pulls in numpy, whose OpenBLAS backend
+  sizes its threadpool to the login node's full core count (128) on every
+  invocation, and in parallel (`SWEEP_GPUS`) mode a whole batch of agents
+  tends to finish around the same wall-clock time, so many of them call sync
+  within moments of each other. `sweep_dispatch.sh` forces single-threaded
+  BLAS for its own sync call (`OPENBLAS_NUM_THREADS=1` etc., same fix as
+  `sync_orphaned_runs.sh` already had) to avoid this; a trial whose sync
+  still fails logs a `WARNING` and is picked up by `sync_orphaned_runs.sh`
+  on your next run of it.
 
 ## Notes / gotchas
 - **`signal: killed` while building a `.sif`** = the login node OOM/arbiter-killed it. Login

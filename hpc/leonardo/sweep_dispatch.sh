@@ -119,7 +119,27 @@ echo "[sweep_dispatch] training job rc=$rc; syncing $OFFLINE_ROOT -> wandb"
 # for it rather than hardcoding the timestamp.
 run_dir=$(compgen -G "$OFFLINE_ROOT/wandb/offline-run-*-$WANDB_RUN_ID" | head -n1 || true)
 if [ -n "$run_dir" ]; then
-    wandb sync --id "$WANDB_RUN_ID" "$run_dir"
+    # `wandb sync`'s import chain pulls in numpy transitively -- OpenBLAS then
+    # sizes its threadpool to the login node's full core count (128) on every
+    # invocation. In parallel (SWEEP_GPUS) mode especially, every agent's
+    # trial takes about the same wall time, so a whole batch of agents tends
+    # to finish and call this within moments of each other -- dozens of
+    # simultaneous 128-thread spin-ups blow through the login node's shared
+    # RLIMIT_NPROC and this segfaults outright (not just the soft "EOF"
+    # warning `wandb sync` prints on a merely-truncated log -- an actual
+    # SIGSEGV, losing the sync entirely), silently dropping that trial's data.
+    # Sync needs zero linear algebra, so force single-threaded BLAS -- same
+    # fix already applied to sync_orphaned_runs.sh for the equivalent
+    # overhead there. Guarded with set +e/-e (not the top-level set -e) so a
+    # sync failure here is logged but still lets the trial's OWN rc (from
+    # training, not sync) reach `exit $rc` below -- sync_orphaned_runs.sh
+    # picks up anything that still fails to sync.
+    set +e
+    OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+        wandb sync --id "$WANDB_RUN_ID" "$run_dir"
+    sync_rc=$?
+    set -e
+    [ "$sync_rc" -eq 0 ] || echo "[sweep_dispatch] WARNING: wandb sync exited $sync_rc for $run_dir -- sync_orphaned_runs.sh will retry it" >&2
 else
     echo "[sweep_dispatch] WARNING: no offline run dir found under $OFFLINE_ROOT/wandb -- nothing to sync (training likely failed before wandb.init)" >&2
 fi

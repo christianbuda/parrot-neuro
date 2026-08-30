@@ -152,15 +152,19 @@ case "$CMD" in
             disown "$pid" 2>/dev/null || true
             echo "$pid" >> "$AGENT_PID_FILE"
             echo "  agent $i: pid=$pid log=$log"
-            # Small stagger, not a bare burst of N -- each `wandb agent` startup
-            # (Python import, wandb's own background service process) briefly
-            # touches enough threads/processes that launching dozens within the
-            # same second risks the login node's RLIMIT_NPROC ceiling, same
-            # class of failure `pixi run` per-agent used to cause outright
-            # (see the note above WANDB_BIN's resolution). 0.2s x 128 = ~26s
-            # total to reach full concurrency -- negligible against hours-long
-            # trials, cheap insurance against a startup burst.
-            sleep 0.2
+            # Stagger, not a bare burst of N -- each `wandb agent` startup
+            # spins up wandb's own internal asyncio "service" thread (plus
+            # Python import overhead) immediately, and launching dozens within
+            # the same few seconds risks the login node's RLIMIT_NPROC ceiling
+            # -- same class of failure `pixi run` per-agent used to cause
+            # outright (see the note above WANDB_BIN's resolution), but a
+            # DIFFERENT source of it: confirmed 2026-08-30, N=24 with the old
+            # 0.2s stagger still lost 4 agents at launch to "RuntimeError:
+            # can't start new thread" / a bare SIGSEGV, all from wandb's own
+            # thread spin-up, not pixi/rayon. 2s x 128 = ~4.3min total to reach
+            # full concurrency -- negligible against hours-long trials, and
+            # gives each agent's thread pool room to settle before the next.
+            sleep 2
         done
         ;;
 
