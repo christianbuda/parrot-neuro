@@ -35,6 +35,27 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--spacing", default="2.0", help="dipole spacing in mm (string)")
     p.add_argument("--leadfield-label", default="duneuroCGAL")
     p.add_argument("--optimize", default="both", choices=("eeg", "bold", "both"))
+    p.add_argument("--schedule", default="alternating", choices=("alternating", "phased", "joint"),
+                    help="only meaningful when --optimize both. 'alternating' (default) is the "
+                         "original interleaved fit (1 EEG step/epoch, 1 BOLD step every "
+                         "--bold-every epochs). 'phased' runs --bold-phase-epochs of BOLD-only "
+                         "steps then --eeg-phase-epochs of EEG-only steps, on one continuously-"
+                         "updated set of params (--num-epochs/--bold-every unused). 'joint' fits "
+                         "ONE combined loss (--joint-eeg-weight*EEG-PSD + --joint-bold-weight*"
+                         "BOLD-FC/dFC) from a single simulator call per --num-epochs epoch, no "
+                         "alternation (--bold-every unused; needs --solver-block-size set).")
+    p.add_argument("--bold-phase-epochs", type=int, default=200,
+                    help="BOLD-only epochs for --schedule phased.")
+    p.add_argument("--eeg-phase-epochs", type=int, default=200,
+                    help="EEG-only epochs for --schedule phased (runs after --bold-phase-epochs).")
+    p.add_argument("--joint-eeg-weight", type=float, default=1e5,
+                    help="weight on the EEG PSD loss term in --schedule joint's combined loss -- "
+                         "a plain scalar multiplier, not auto-balanced. EEG's normalized-linear "
+                         "PSD MSE is typically ~1e-6 vs BOLD's weighted FC+dFC ~1e-1, so the large "
+                         "default is a rough attempt to counter that scale gap, not a tuned value.")
+    p.add_argument("--joint-bold-weight", type=float, default=1.0,
+                    help="weight on the combined BOLD FC/dFC(+optional PSD) loss term in "
+                         "--schedule joint's combined loss -- see --joint-eeg-weight.")
     p.add_argument("--bold-fc-weight", type=float, default=0.5,
                     help="weight of the static-FC term in the combined BOLD loss -- 0 drops it "
                          "(dfc-only fit).")
@@ -120,8 +141,12 @@ def main() -> None:
 
     subject = Subject(args.bids_root, args.subject)
 
+    # Schedule suffix only when non-default, so plain "alternating" runs keep
+    # today's output_dir naming (no clobbering old results, no cluttering the
+    # common case) while phased/joint experiments land in their own folder.
+    schedule_suffix = "" if args.schedule == "alternating" else f"_{args.schedule}"
     output_root = os.path.join(args.output_root, f"atlas-{args.atlas}")
-    output_dir = os.path.join(output_root, f"{subject.subject}_{args.optimize}")
+    output_dir = os.path.join(output_root, f"{subject.subject}_{args.optimize}{schedule_suffix}")
     os.makedirs(output_dir, exist_ok=True)
 
     # Sentinels for "give me the old, unblocked/full-t1_bold-warmup behaviour"
@@ -138,6 +163,11 @@ def main() -> None:
         num_epochs=args.num_epochs,
         bold_every=args.bold_every,
         optimize=args.optimize,
+        schedule=args.schedule,
+        bold_phase_epochs=args.bold_phase_epochs,
+        eeg_phase_epochs=args.eeg_phase_epochs,
+        joint_eeg_weight=args.joint_eeg_weight,
+        joint_bold_weight=args.joint_bold_weight,
         bold_fc_weight=args.bold_fc_weight,
         bold_dfc_weight=args.bold_dfc_weight,
         dfc_window_trs=args.dfc_window_trs,

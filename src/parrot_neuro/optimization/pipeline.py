@@ -39,15 +39,20 @@ from .network import build_network
 from .train import (
     FitResult,
     Simulators,
+    build_joint_simulator,
     build_simulators,
     compute_target_psd,
     learnable_partition,
     make_bold_loss_fn,
     make_eeg_loss_fn,
+    make_joint_loss_fn,
+    make_joint_update_step,
     make_optimizer,
     make_update_steps,
     print_learnable_params,
     run_alternating_fit,
+    run_joint_fit,
+    run_phased_fit,
 )
 
 
@@ -210,16 +215,32 @@ def build_context(cfg: config.BoldFitConfig, dataset=None) -> ExperimentContext:
 
 
 def fit(ctx: ExperimentContext, on_epoch=None) -> FitResult:
-    """Run the alternating EEG+BOLD training loop against ``ctx``.
+    """Run the EEG+BOLD training loop against ``ctx``, dispatching on
+    ``ctx.cfg.schedule`` (see ``config.BoldFitConfig.schedule``):
+
+    - ``"alternating"`` (default): ``train.run_alternating_fit`` -- unchanged
+      original behaviour, interleaving separate EEG/BOLD steps.
+    - ``"phased"``: ``train.run_phased_fit`` -- BOLD-only epochs then
+      EEG-only epochs, still built from the same two per-loss update steps.
+    - ``"joint"``: ``_fit_joint`` -- a single combined loss from ONE
+      simulator call per epoch (see ``train.build_joint_simulator``); does
+      not use ``eeg_loss_fn``/``bold_loss_fn``/``eeg_update_step``/
+      ``bold_update_step`` below at all.
 
     ``ctx.dataset`` (hence ``eeg_loss_fn``) may be ``None`` -- build_context
     already enforced that this is only possible when ``optimize == "bold"``,
     so ``run_alternating_fit`` simply never calls it in that case (see its
     ``optimize`` gating); it's built here only when there's actually a target.
+    (``schedule`` in ``("phased", "joint")`` requires ``optimize == "both"``,
+    per ``BoldFitConfig.__post_init__``, so ``ctx.dataset`` is never ``None``
+    on those paths.)
 
-    ``on_epoch`` is passed straight through to ``train.run_alternating_fit``
-    -- see its docstring (per-epoch metric-streaming hook, e.g. for wandb).
+    ``on_epoch`` is passed straight through to the chosen ``train.run_*_fit``
+    -- see their docstrings (per-epoch metric-streaming hook, e.g. for wandb).
     """
+    if ctx.cfg.schedule == "joint":
+        return _fit_joint(ctx, on_epoch=on_epoch)
+
     eeg_loss_fn = None
     if ctx.dataset is not None:
         eeg_loss_fn = make_eeg_loss_fn(
@@ -251,6 +272,21 @@ def fit(ctx: ExperimentContext, on_epoch=None) -> FitResult:
     )
 
     channel_indices = ctx.dataset.channel_indices if ctx.dataset is not None else None
+
+    if ctx.cfg.schedule == "phased":
+        return run_phased_fit(
+            ctx.diff_params_init, ctx.static_params, eeg_update_step, bold_update_step,
+            ctx.eeg_optimizer, ctx.bold_optimizer, ctx.target_psd, channel_indices,
+            ctx.leadfield, ctx.smoothing_blocks, ctx.dipole_labels,
+            bold_phase_epochs=ctx.cfg.bold_phase_epochs, eeg_phase_epochs=ctx.cfg.eeg_phase_epochs,
+            print_every=ctx.cfg.print_params_every,
+            print_fn=partial(print_learnable_params, learnable_params=ctx.cfg.learnable_params),
+            early_stop_window=ctx.cfg.early_stop_window,
+            early_stop_patience=ctx.cfg.early_stop_patience,
+            early_stop_min_delta=ctx.cfg.early_stop_min_delta,
+            on_epoch=on_epoch,
+        )
+
     return run_alternating_fit(
         ctx.diff_params_init, ctx.static_params, eeg_update_step, bold_update_step,
         ctx.eeg_optimizer, ctx.bold_optimizer, ctx.target_psd, channel_indices,
@@ -259,6 +295,58 @@ def fit(ctx: ExperimentContext, on_epoch=None) -> FitResult:
         print_every=ctx.cfg.print_params_every,
         print_fn=partial(print_learnable_params, learnable_params=ctx.cfg.learnable_params),
         optimize=ctx.cfg.optimize,
+        early_stop_window=ctx.cfg.early_stop_window,
+        early_stop_patience=ctx.cfg.early_stop_patience,
+        early_stop_min_delta=ctx.cfg.early_stop_min_delta,
+        on_epoch=on_epoch,
+    )
+
+
+def _fit_joint(ctx: ExperimentContext, on_epoch=None) -> FitResult:
+    """The "joint" schedule: a single combined loss from ONE simulator call
+    per epoch, instead of two separate per-loss simulators/steps.
+
+    Reuses ``ctx.network``/``ctx.solver``/``ctx.simulators.bold_monitor``
+    (already warmed up by ``build_context``'s ``build_simulators`` call) and
+    ``ctx.diff_params_init``/``ctx.static_params`` directly -- see
+    ``train.build_joint_simulator``'s docstring for why that reuse is exact,
+    not approximate. ``ctx.simulators.simulator_eeg``/``simulator_bold``
+    themselves are untouched and still used for diagnostics afterward.
+    """
+    centers = jnp.linspace(-1.0, 1.0, ctx.cfg.dfc_n_bins)
+    target_psd_band = _target_bold_psd_band(ctx) if ctx.cfg.bold_psd_weight > 0 else None
+
+    simulator_joint = build_joint_simulator(
+        ctx.network, ctx.solver, ctx.simulators.bold_monitor,
+        ctx.cfg.t0, ctx.cfg.dt, ctx.cfg.t1_bold,
+        ctx.cfg.eeg_settle_ms, ctx.cfg.eeg_stride_ms, ctx.cfg.chunk_length,
+    )
+    joint_loss_fn = make_joint_loss_fn(
+        simulator_joint, ctx.mask_cortical, ctx.idx_min, ctx.idx_max, ctx.cfg.dt,
+        target_fc_vec=_target_fc_vec(ctx), target_dfc_hist=_target_dfc_hist(ctx, centers),
+        skip_t=ctx.cfg.bold_skip_trs, tr_ms=ctx.cfg.tr_ms,
+        dfc_window_trs=ctx.cfg.dfc_window_trs, dfc_step_trs=ctx.cfg.dfc_step_trs,
+        dfc_centers=centers, dfc_k_min=ctx.cfg.dfc_kmin, dfc_sigma=ctx.cfg.dfc_sigma,
+        fc_weight=ctx.cfg.bold_fc_weight, dfc_weight=ctx.cfg.bold_dfc_weight,
+        bandpass_low=ctx.cfg.bold_bandpass_low, bandpass_high=ctx.cfg.bold_bandpass_high,
+        bandpass_order=ctx.cfg.bold_bandpass_order,
+        psd_weight=ctx.cfg.bold_psd_weight, target_psd_band=target_psd_band,
+        psd_nperseg=ctx.cfg.bold_psd_nperseg_trs, psd_noverlap=ctx.cfg.bold_psd_noverlap_trs,
+        settle_ms=ctx.cfg.eeg_settle_ms, stride_ms=ctx.cfg.eeg_stride_ms,
+        gamma_weight=ctx.cfg.gamma_weight, gamma_idx_min=ctx.gamma_idx_min, gamma_idx_max=ctx.gamma_idx_max,
+        joint_eeg_weight=ctx.cfg.joint_eeg_weight, joint_bold_weight=ctx.cfg.joint_bold_weight,
+    )
+
+    joint_optimizer = make_optimizer(ctx.cfg.learning_rate, ctx.cfg.grad_clip_norm)
+    joint_update_step = make_joint_update_step(joint_loss_fn, joint_optimizer)
+
+    channel_indices = ctx.dataset.channel_indices
+    return run_joint_fit(
+        ctx.diff_params_init, ctx.static_params, joint_update_step, joint_optimizer,
+        ctx.target_psd, channel_indices, ctx.leadfield, ctx.smoothing_blocks, ctx.dipole_labels,
+        num_epochs=ctx.cfg.num_epochs,
+        print_every=ctx.cfg.print_params_every,
+        print_fn=partial(print_learnable_params, learnable_params=ctx.cfg.learnable_params),
         early_stop_window=ctx.cfg.early_stop_window,
         early_stop_patience=ctx.cfg.early_stop_patience,
         early_stop_min_delta=ctx.cfg.early_stop_min_delta,

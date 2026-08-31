@@ -99,6 +99,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--spacing", default="2.0", help="dipole spacing in mm (string)")
     p.add_argument("--leadfield-label", default="duneuroCGAL")
     p.add_argument("--optimize", default="both", choices=("eeg", "bold", "both"))
+    p.add_argument("--schedule", default="alternating", choices=("alternating", "phased", "joint"),
+                    help="see eeg_bold_fit_cli.py --schedule -- same three strategies, applied "
+                         "identically to every subject in this sweep trial.")
+    p.add_argument("--bold-phase-epochs", type=int, default=200,
+                    help="see eeg_bold_fit_cli.py --bold-phase-epochs (--schedule phased only)")
+    p.add_argument("--eeg-phase-epochs", type=int, default=200,
+                    help="see eeg_bold_fit_cli.py --eeg-phase-epochs (--schedule phased only)")
+    p.add_argument("--joint-eeg-weight", type=float, default=1e5,
+                    help="see eeg_bold_fit_cli.py --joint-eeg-weight (--schedule joint only)")
+    p.add_argument("--joint-bold-weight", type=float, default=1.0,
+                    help="see eeg_bold_fit_cli.py --joint-bold-weight (--schedule joint only)")
     p.add_argument("--num-epochs", type=int, default=_env_int("SWEEP_NUM_EPOCHS", 300))
     p.add_argument("--bold-every", type=int, default=2)
     p.add_argument("--eeg-task", default="eyesclosed")
@@ -208,8 +219,13 @@ def _run_sequential(wandb, run, args, subjects):
     for subject_id in subjects:
         subject = Subject(args.bids_root, subject_id)
 
+        # Schedule suffix only when non-default -- mirrors eeg_bold_fit_cli.py's
+        # own output_dir naming exactly, so _run_parallel's post-hoc out_dir
+        # reconstruction (which has no in-process cfg to read it back from)
+        # stays in sync with whichever path actually wrote the results.
+        schedule_suffix = "" if args.schedule == "alternating" else f"_{args.schedule}"
         output_root = os.path.join(args.output_root, f"atlas-{args.atlas}", run.id)
-        output_dir = os.path.join(output_root, f"{subject.subject}_{args.optimize}")
+        output_dir = os.path.join(output_root, f"{subject.subject}_{args.optimize}{schedule_suffix}")
         os.makedirs(output_dir, exist_ok=True)
 
         solver_block_size = None if args.solver_block_size == 0 else args.solver_block_size
@@ -224,6 +240,11 @@ def _run_sequential(wandb, run, args, subjects):
             num_epochs=args.num_epochs,
             bold_every=args.bold_every,
             optimize=args.optimize,
+            schedule=args.schedule,
+            bold_phase_epochs=args.bold_phase_epochs,
+            eeg_phase_epochs=args.eeg_phase_epochs,
+            joint_eeg_weight=args.joint_eeg_weight,
+            joint_bold_weight=args.joint_bold_weight,
             bold_fc_weight=args.bold_fc_weight,
             bold_dfc_weight=args.bold_dfc_weight,
             bold_psd_weight=args.bold_psd_weight,
@@ -309,6 +330,11 @@ def _worker_argv(worker_script, args, subject_id, worker_output_root):
         "--spacing", args.spacing,
         "--leadfield-label", args.leadfield_label,
         "--optimize", args.optimize,
+        "--schedule", args.schedule,
+        "--bold-phase-epochs", str(args.bold_phase_epochs),
+        "--eeg-phase-epochs", str(args.eeg_phase_epochs),
+        "--joint-eeg-weight", str(args.joint_eeg_weight),
+        "--joint-bold-weight", str(args.joint_bold_weight),
         "--num-epochs", str(args.num_epochs),
         "--bold-every", str(args.bold_every),
         "--eeg-task", args.eeg_task,
@@ -417,9 +443,15 @@ def _run_parallel(wandb, run, args, subjects):
         if failed:
             raise RuntimeError(f"round {round_idx}: subject(s) failed: {failed} -- see {log_dir}/<subject>.log")
 
+        # Matches eeg_bold_fit_cli.py's own output_dir naming (see
+        # _run_sequential's identical schedule_suffix comment) -- this process
+        # never sees the worker's in-process cfg, so it must reconstruct the
+        # exact same path the subprocess wrote to.
+        schedule_suffix = "" if args.schedule == "alternating" else f"_{args.schedule}"
         for subject_id, _gpu_id, _proc, _log_file in procs:
             subject = Subject(args.bids_root, subject_id)
-            out_dir = Path(worker_output_root) / f"atlas-{args.atlas}" / f"{subject.subject}_{args.optimize}"
+            out_dir = (Path(worker_output_root) / f"atlas-{args.atlas}"
+                       / f"{subject.subject}_{args.optimize}{schedule_suffix}")
             loss_eeg, loss_bold, metrics, figures = _load_worker_result(out_dir)
             _log_subject_epochs(wandb, subject_id, loss_eeg, loss_bold, args.bold_every)
             eeg_ratio, bold_ratio, final_eeg, final_bold = _log_subject_summary(

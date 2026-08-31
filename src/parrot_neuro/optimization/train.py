@@ -144,6 +144,103 @@ def build_simulators(
     return Simulators(simulator_eeg, simulator_bold, bold_monitor, params)
 
 
+def streaming_hrf_bold_with_eeg_window(monitor, dt, eeg_window_end_step, block_size):
+    """Combined block-scan reducer for the "joint" schedule (see
+    ``build_joint_simulator`` / ``pipeline._fit_joint``): the same BOLD
+    HRF-streaming fold as ``streaming_hrf_bold``, plus a raw (unconvolved)
+    state window over the run's first ``eeg_window_end_step`` steps --
+    matching ``simulator_eeg``'s whole horizon exactly (see
+    ``build_joint_simulator``'s docstring), just captured from inside this
+    long run instead of a second, separate short simulator.
+
+    Only the ``ceil(eeg_window_end_step / block_size)`` blocks needed to
+    cover that window are stacked -- a small, fixed number of blocks near the
+    start of the run, not the whole ``t1_bold`` trajectory (the same "stream,
+    don't materialize" property ``streaming_hrf_bold`` already has for the
+    BOLD side). Every one of those blocks is a full ``block_size`` long
+    because ``t1_bold/dt`` and ``block_size`` are already required (by
+    ``streaming_hrf_bold``'s own block-alignment assert) to both be exact
+    multiples of the BOLD period in steps, and ``eeg_window_end_step`` sits
+    well before the run's single short tail block (if any).
+    """
+    bold_init, bold_update, bold_finalize = streaming_hrf_bold(monitor, dt)
+    n_keep_blocks = -(-eeg_window_end_step // block_size)  # ceil division
+    keep_steps = n_keep_blocks * block_size
+
+    def init(template, n_steps):
+        bold_acc0 = bold_init(template, n_steps)
+        n_vois, n_nodes = template.shape
+        raw0 = jnp.zeros((keep_steps, n_vois, n_nodes))
+        return (bold_acc0, raw0, jnp.array(0))
+
+    def update(acc, block):
+        bold_acc, raw, block_idx = acc
+        new_bold_acc = bold_update(bold_acc, block)
+
+        block_len = block.shape[0]
+        write = block_idx < n_keep_blocks
+        # Clamp the write offset when not writing so dynamic_update_slice's
+        # start index always stays in-bounds -- the write itself is then
+        # discarded by lax.cond's false branch, so the clamped value is never
+        # actually used, but it must still be a valid index to trace.
+        start = jnp.where(write, block_idx, n_keep_blocks - 1) * block_len
+        new_raw = jax.lax.cond(
+            write,
+            lambda r: jax.lax.dynamic_update_slice(r, block, (start,) + (0,) * (r.ndim - 1)),
+            lambda r: r,
+            raw,
+        )
+        return (new_bold_acc, new_raw, block_idx + 1)
+
+    def finalize(acc):
+        bold_acc, raw, _block_idx = acc
+        bold_buffer = bold_finalize(bold_acc)
+        return bold_buffer, raw[:eeg_window_end_step]
+
+    return (init, update, finalize)
+
+
+def build_joint_simulator(network, solver, bold_monitor, t0, dt, t1_bold,
+                           eeg_settle_ms, eeg_stride_ms, chunk_length):
+    """Single ``t1_bold``-horizon simulator for the "joint" schedule (see
+    ``config.BoldFitConfig.schedule`` / ``pipeline._fit_joint``): its
+    ``reduce=`` both HRF-streams the BOLD signal (same as
+    ``build_simulators``'s ``simulator_bold``) and stacks a raw state window
+    near the start of the run covering ``[eeg_settle_ms, eeg_settle_ms +
+    chunk_length * eeg_stride_ms)`` -- the exact same segment length and
+    definition ``simulator_eeg``'s ``t1_eeg``-horizon run gives
+    ``make_eeg_loss_fn`` (see ``config.BoldFitConfig.__post_init__``'s check
+    tying ``t1_eeg`` to ``eeg_settle_ms``/``eeg_stride_ms``/``chunk_length``),
+    just sourced from inside this long run instead of a second, separate
+    short simulator.
+
+    ``network``/``solver``/``bold_monitor`` must already come from a
+    ``build_simulators(...)`` call at the same ``(t0, dt, t1_bold)`` --
+    reuses that call's warmed-up network history and ``bold_monitor``'s
+    warm-start ring directly, no extra warm-up solve needed. Callers should
+    reuse THAT call's ``diff_params_init``/``static_params`` too:
+    ``prepare()``'s returned config depends only on ``(network, solver, t0,
+    t1, dt)``, not on ``reduce=``, so it is structurally and numerically
+    identical to ``simulator_bold``'s own config -- no second
+    ``learnable_partition()`` call needed.
+
+    Requires ``solver.block_size`` to be set (the reduce path rides on the
+    block scan, same requirement as ``streaming_hrf_bold`` itself).
+    """
+    if solver.block_size is None:
+        raise ValueError(
+            "build_joint_simulator requires solver.block_size to be set -- the joint "
+            "schedule's combined reduce rides on the block scan, same as the existing "
+            "BOLD streaming path. See config.BoldFitConfig.solver_block_size."
+        )
+    eeg_window_end_step = int(round((eeg_settle_ms + chunk_length * eeg_stride_ms) / dt))
+    reduce = streaming_hrf_bold_with_eeg_window(
+        bold_monitor, dt, eeg_window_end_step, solver.block_size
+    )
+    simulator_joint, _ = prepare(network, solver, t0=t0, t1=t1_bold, dt=dt, reduce=reduce)
+    return simulator_joint
+
+
 def learnable_partition(params, learnable_params: tuple[LearnableParam, ...] = DEFAULT_LEARNABLE_PARAMS):
     """Split ``params`` into (diff_params, static_params), learnable-only.
 
@@ -178,6 +275,42 @@ def compute_target_psd(dataset):
     return jnp.array(np.stack(list(map(compute_psd, dataset._chunks))).mean(axis=0))
 
 
+def _eeg_psd_loss(source_ys, mask_col, idx_min, idx_max, target_psd, channel_indices,
+                   leadfield, smoothing_blocks, dipole_labels, settle, stride,
+                   gamma_weight, gamma_idx_min, gamma_idx_max, eps):
+    """Linear-PSD MSE between ``source_ys[settle::stride, 1/2]`` (JR pyramidal
+    y1 - y2, zeroed on subcortical nodes) projected to scalp and
+    ``target_psd``. The numeric core shared by ``make_eeg_loss_fn`` (which
+    feeds it ``simulator_eeg``'s own short-horizon ``.ys``) and
+    ``make_joint_loss_fn`` (which feeds it a raw window sliced out of the
+    long ``simulator_bold``-horizon joint run instead -- see
+    ``build_joint_simulator``) so both compute the *exact* same loss for the
+    *exact* same segment length/definition, only the source array differs.
+    """
+    source_activity = (
+        source_ys[settle::stride, 1].T - source_ys[settle::stride, 2].T
+    ) * mask_col
+
+    simulated_eeg = project_to_scalp(
+        source_activity, channel_indices, leadfield, smoothing_blocks, dipole_labels
+    )
+
+    sim_psd = smooth_ts(compute_psd(simulated_eeg))
+    target_psd = smooth_ts(target_psd)
+
+    norm_sim = sim_psd / (jnp.sum(sim_psd[:, idx_min:idx_max], keepdims=True) + eps)
+    norm_target = target_psd / (jnp.sum(target_psd[:, idx_min:idx_max], keepdims=True) + eps)
+
+    loss = jnp.mean((norm_sim[:, idx_min:idx_max] - norm_target[:, idx_min:idx_max]) ** 2)
+
+    if gamma_weight > 0:
+        log_sim = jnp.log(sim_psd[:, gamma_idx_min:gamma_idx_max] + eps)
+        log_target = jnp.log(target_psd[:, gamma_idx_min:gamma_idx_max] + eps)
+        loss = loss + gamma_weight * jnp.mean((log_sim - log_target) ** 2)
+
+    return loss
+
+
 def make_eeg_loss_fn(simulator_eeg, mask_cortical, idx_min, idx_max, dt,
                       settle_ms=500.0, stride_ms=4.0,
                       gamma_weight=0.0, gamma_idx_min=None, gamma_idx_max=None, eps=1e-8):
@@ -205,32 +338,45 @@ def make_eeg_loss_fn(simulator_eeg, mask_cortical, idx_min, idx_max, dt,
                      leadfield, smoothing_blocks, dipole_labels):
         combined = eqx.combine(current_diff, current_static)
         sim_result = simulator_eeg(combined)
-
-        # JR pyramidal output (y1 - y2), zeroed on subcortical nodes.
-        source_activity = (
-            sim_result.ys[settle::stride, 1].T - sim_result.ys[settle::stride, 2].T
-        ) * mask_col
-
-        simulated_eeg = project_to_scalp(
-            source_activity, channel_indices, leadfield, smoothing_blocks, dipole_labels
+        return _eeg_psd_loss(
+            sim_result.ys, mask_col, idx_min, idx_max, target_psd, channel_indices,
+            leadfield, smoothing_blocks, dipole_labels, settle, stride,
+            gamma_weight, gamma_idx_min, gamma_idx_max, eps,
         )
 
-        sim_psd = smooth_ts(compute_psd(simulated_eeg))
-        target_psd = smooth_ts(target_psd)
-
-        norm_sim = sim_psd / (jnp.sum(sim_psd[:, idx_min:idx_max], keepdims=True) + 1e-8)
-        norm_target = target_psd / (jnp.sum(target_psd[:, idx_min:idx_max], keepdims=True) + 1e-8)
-
-        loss = jnp.mean((norm_sim[:, idx_min:idx_max] - norm_target[:, idx_min:idx_max]) ** 2)
-
-        if gamma_weight > 0:
-            log_sim = jnp.log(sim_psd[:, gamma_idx_min:gamma_idx_max] + eps)
-            log_target = jnp.log(target_psd[:, gamma_idx_min:gamma_idx_max] + eps)
-            loss = loss + gamma_weight * jnp.mean((log_sim - log_target) ** 2)
-
-        return loss
-
     return eeg_loss_fn
+
+
+def _bold_fc_dfc_loss(Xs, target_fc_vec, target_dfc_hist, tr_ms,
+                       dfc_window_trs, dfc_step_trs, dfc_centers, dfc_k_min, dfc_sigma,
+                       fc_weight, dfc_weight,
+                       bandpass_low, bandpass_high, bandpass_order, eps,
+                       psd_weight, target_psd_band, psd_nperseg, psd_noverlap):
+    """``fc_weight * FC-vector MSE + dfc_weight * dFC/FCD Wasserstein distance``
+    (plus an optional ``psd_weight`` spectral-shape term) on an already
+    ``skip_t``-trimmed BOLD signal ``Xs`` [n_bold, n_nodes], from ONE filtered
+    trajectory (``Xs_filt``). The numeric core shared by ``make_bold_loss_fn``
+    (which feeds it its own ``simulator_bold`` call's output) and
+    ``make_joint_loss_fn`` (which feeds it the BOLD half of the joint
+    simulator's output instead) so both compute the exact same BOLD loss.
+    """
+    Xs_filt = filter_sim_bold(Xs, tr_ms, low=bandpass_low, high=bandpass_high, order=bandpass_order)
+
+    fc_sim = fc_vector(Xs_filt, skip_t=0, eps=eps)
+    fc_loss = jnp.mean((fc_sim - target_fc_vec) ** 2)
+
+    dfc_hist_sim = dfc_histogram(Xs_filt, dfc_window_trs, dfc_step_trs, dfc_centers,
+                                  skip_t=0, k_min=dfc_k_min, sigma=dfc_sigma, eps=eps)
+    dfc_loss = wasserstein_1d_from_hist(dfc_hist_sim, target_dfc_hist)
+
+    loss = fc_weight * fc_loss + dfc_weight * dfc_loss
+
+    if psd_weight > 0:
+        sim_psd_band = bold_psd_band(Xs_filt, tr_ms, psd_nperseg, psd_noverlap, skip_t=0,
+                                      low=bandpass_low, high=bandpass_high, eps=eps)
+        loss = loss + psd_weight * jnp.mean((sim_psd_band - target_psd_band) ** 2)
+
+    return loss
 
 
 def make_bold_loss_fn(simulator_bold, target_fc_vec, target_dfc_hist, skip_t, tr_ms,
@@ -284,23 +430,12 @@ def make_bold_loss_fn(simulator_bold, target_fc_vec, target_dfc_hist, skip_t, tr
         ok = jnp.all(jnp.isfinite(Xs))
 
         def good(_):
-            Xs_filt = filter_sim_bold(Xs, tr_ms, low=bandpass_low, high=bandpass_high, order=bandpass_order)
-
-            fc_sim = fc_vector(Xs_filt, skip_t=0, eps=eps)
-            fc_loss = jnp.mean((fc_sim - target_fc_vec) ** 2)
-
-            dfc_hist_sim = dfc_histogram(Xs_filt, dfc_window_trs, dfc_step_trs, dfc_centers,
-                                          skip_t=0, k_min=dfc_k_min, sigma=dfc_sigma, eps=eps)
-            dfc_loss = wasserstein_1d_from_hist(dfc_hist_sim, target_dfc_hist)
-
-            loss = fc_weight * fc_loss + dfc_weight * dfc_loss
-
-            if psd_weight > 0:
-                sim_psd_band = bold_psd_band(Xs_filt, tr_ms, psd_nperseg, psd_noverlap, skip_t=0,
-                                              low=bandpass_low, high=bandpass_high, eps=eps)
-                loss = loss + psd_weight * jnp.mean((sim_psd_band - target_psd_band) ** 2)
-
-            return loss
+            return _bold_fc_dfc_loss(
+                Xs, target_fc_vec, target_dfc_hist, tr_ms,
+                dfc_window_trs, dfc_step_trs, dfc_centers, dfc_k_min, dfc_sigma,
+                fc_weight, dfc_weight, bandpass_low, bandpass_high, bandpass_order, eps,
+                psd_weight, target_psd_band, psd_nperseg, psd_noverlap,
+            )
 
         def bad(_):
             return jnp.array(bad_loss, dtype=jnp.float64)
@@ -338,6 +473,101 @@ def make_update_steps(eeg_loss_fn, bold_loss_fn, eeg_optimizer, bold_optimizer):
         return new_diff, new_opt_state, loss
 
     return eeg_update_step, bold_update_step
+
+
+def make_joint_loss_fn(simulator_joint, mask_cortical, idx_min, idx_max, dt,
+                        target_fc_vec, target_dfc_hist, skip_t, tr_ms,
+                        dfc_window_trs, dfc_step_trs, dfc_centers, dfc_k_min, dfc_sigma,
+                        fc_weight, dfc_weight,
+                        bandpass_low=BOLD_BANDPASS_LOW, bandpass_high=BOLD_BANDPASS_HIGH,
+                        bandpass_order=BOLD_BANDPASS_ORDER, eps=1e-8, bad_loss=1e3,
+                        psd_weight=0.0, target_psd_band=None, psd_nperseg=32, psd_noverlap=16,
+                        settle_ms=500.0, stride_ms=4.0,
+                        gamma_weight=0.0, gamma_idx_min=None, gamma_idx_max=None,
+                        joint_eeg_weight=1.0, joint_bold_weight=1.0):
+    """Single combined EEG-PSD + BOLD-FC/dFC loss over ONE simulator call
+    (``simulator_joint``, from ``build_joint_simulator``) -- the "joint"
+    schedule's loss, as opposed to the alternating/phased schedules' two
+    separate per-loss steps.
+
+    ``simulator_joint(combined)`` returns ``(bold_buffer, raw_eeg_window)``:
+    ``bold_buffer`` feeds ``_bold_fc_dfc_loss`` exactly like
+    ``make_bold_loss_fn``'s own ``simulator_bold`` output does;
+    ``raw_eeg_window`` feeds ``_eeg_psd_loss`` exactly like
+    ``make_eeg_loss_fn``'s own ``simulator_eeg`` output does (same segment
+    length/definition -- see ``build_joint_simulator``). The two are summed
+    as ``joint_eeg_weight * eeg_loss + joint_bold_weight * bold_loss`` --
+    plain scalar weights, not auto-balanced, because the two losses live on
+    very different scales (EEG's normalized-linear PSD MSE ~1e-6, BOLD's
+    weighted FC+dFC ~1e-1); pick weights that roughly counter that gap.
+
+    Returns ``(loss, (eeg_loss, bold_loss))`` (``has_aux``-style) so
+    ``run_joint_fit`` can log both raw, unweighted components every epoch
+    into the same ``loss_history_eeg``/``loss_history_bold`` fields the
+    other two schedules populate -- one combined-loss printout
+    (``train.relative_final_loss``) works the same across all three.
+    """
+    settle = int(settle_ms / dt)
+    stride = int(stride_ms / dt)
+    mask_col = jnp.atleast_2d(jnp.asarray(mask_cortical)).T
+    if gamma_weight > 0 and (gamma_idx_min is None or gamma_idx_max is None):
+        raise ValueError("gamma_idx_min/gamma_idx_max must be given when gamma_weight > 0")
+    if psd_weight > 0 and target_psd_band is None:
+        raise ValueError("target_psd_band must be given when psd_weight > 0")
+
+    @eqx.filter_jit
+    def joint_loss_fn(current_diff, current_static, target_psd, channel_indices,
+                       leadfield, smoothing_blocks, dipole_labels):
+        combined = eqx.combine(current_diff, current_static)
+        bold_buffer, raw_window = simulator_joint(combined)
+
+        eeg_loss = _eeg_psd_loss(
+            raw_window, mask_col, idx_min, idx_max, target_psd, channel_indices,
+            leadfield, smoothing_blocks, dipole_labels, settle, stride,
+            gamma_weight, gamma_idx_min, gamma_idx_max, eps,
+        )
+
+        Xs = bold_buffer[:, 0, :][skip_t:, :]
+        ok = jnp.all(jnp.isfinite(Xs))
+
+        def good(_):
+            return _bold_fc_dfc_loss(
+                Xs, target_fc_vec, target_dfc_hist, tr_ms,
+                dfc_window_trs, dfc_step_trs, dfc_centers, dfc_k_min, dfc_sigma,
+                fc_weight, dfc_weight, bandpass_low, bandpass_high, bandpass_order, eps,
+                psd_weight, target_psd_band, psd_nperseg, psd_noverlap,
+            )
+
+        def bad(_):
+            return jnp.array(bad_loss, dtype=jnp.float64)
+
+        bold_loss = jax.lax.cond(ok, good, bad, operand=None)
+
+        loss = joint_eeg_weight * eeg_loss + joint_bold_weight * bold_loss
+        return loss, (eeg_loss, bold_loss)
+
+    return joint_loss_fn
+
+
+def make_joint_update_step(joint_loss_fn, joint_optimizer):
+    """Single gradient-step closure for the "joint" schedule -- one optimizer,
+    one combined loss, mirroring ``make_update_steps``'s two per-loss steps
+    but fused into one."""
+
+    @eqx.filter_jit
+    def joint_update_step(current_diff, current_static, current_opt_state,
+                           target_psd, channel_indices, leadfield, smoothing_blocks, dipole_labels):
+        (loss, (eeg_loss, bold_loss)), grads = jax.value_and_grad(
+            joint_loss_fn, argnums=0, has_aux=True
+        )(
+            current_diff, current_static, target_psd, channel_indices,
+            leadfield, smoothing_blocks, dipole_labels,
+        )
+        updates, new_opt_state = joint_optimizer.update(grads, current_opt_state, current_diff)
+        new_diff = optax.apply_updates(current_diff, updates)
+        return new_diff, new_opt_state, loss, eeg_loss, bold_loss
+
+    return joint_update_step
 
 
 def print_learnable_params(diff_params, learnable_params: tuple[LearnableParam, ...] = DEFAULT_LEARNABLE_PARAMS):
@@ -528,6 +758,140 @@ def run_alternating_fit(
             eeg_stalled = (not do_eeg) or is_loss_stalled(
                 loss_history_eeg, early_stop_window, early_stop_patience, early_stop_min_delta)
             bold_stalled = (not do_bold) or is_loss_stalled(
+                loss_history_bold, early_stop_window, early_stop_patience, early_stop_min_delta)
+            if eeg_stalled and bold_stalled:
+                print(f"Early stopping at epoch {epoch + 1}: loss trend stalled "
+                      f"(window={early_stop_window}, patience={early_stop_patience}).")
+                break
+
+    return FitResult(diff_params, static_params, loss_history_eeg, loss_history_bold)
+
+
+def run_phased_fit(
+    diff_params_init,
+    static_params,
+    eeg_update_step,
+    bold_update_step,
+    eeg_optimizer,
+    bold_optimizer,
+    target_psd,
+    channel_indices,
+    leadfield,
+    smoothing_blocks,
+    dipole_labels,
+    bold_phase_epochs=200,
+    eeg_phase_epochs=200,
+    print_every=10,
+    print_fn=print_learnable_params,
+    early_stop_window=20,
+    early_stop_patience=None,
+    early_stop_min_delta=1e-3,
+    on_epoch=None,
+) -> FitResult:
+    """Two-phase fit: ``bold_phase_epochs`` of BOLD-only steps, then
+    ``eeg_phase_epochs`` of EEG-only steps -- as opposed to
+    ``run_alternating_fit``'s interleaved schedule. Both phases share ONE
+    continuously-updated ``diff_params`` (phase 2 starts from phase 1's
+    fitted values); this is literally two back-to-back
+    ``run_alternating_fit`` calls with ``optimize="bold"`` then
+    ``optimize="eeg"``, not new alternation math -- each phase gets its own
+    fresh per-loss Adam state exactly as ``run_alternating_fit`` already
+    builds internally (phase 1 never steps EEG, so there is no phase-1 EEG
+    optimizer state for phase 2 to inherit anyway).
+
+    ``on_epoch``'s epoch index restarts at 0 for phase 2 (phase-local, not a
+    running total across both phases) -- a cosmetic simplification; the
+    printed phase-boundary banner disambiguates which phase a given epoch
+    number belongs to.
+    """
+    print(f"=== Phase 1/2: BOLD-only, {bold_phase_epochs} epochs ===")
+    phase1 = run_alternating_fit(
+        diff_params_init, static_params, eeg_update_step, bold_update_step,
+        eeg_optimizer, bold_optimizer, target_psd, channel_indices, leadfield,
+        smoothing_blocks, dipole_labels,
+        num_epochs=bold_phase_epochs, bold_every=1, print_every=print_every, print_fn=print_fn,
+        optimize="bold",
+        early_stop_window=early_stop_window, early_stop_patience=early_stop_patience,
+        early_stop_min_delta=early_stop_min_delta,
+        on_epoch=on_epoch,
+    )
+
+    print(f"=== Phase 2/2: EEG-only, {eeg_phase_epochs} epochs ===")
+    phase2 = run_alternating_fit(
+        phase1.diff_params, static_params, eeg_update_step, bold_update_step,
+        eeg_optimizer, bold_optimizer, target_psd, channel_indices, leadfield,
+        smoothing_blocks, dipole_labels,
+        num_epochs=eeg_phase_epochs, bold_every=1, print_every=print_every, print_fn=print_fn,
+        optimize="eeg",
+        early_stop_window=early_stop_window, early_stop_patience=early_stop_patience,
+        early_stop_min_delta=early_stop_min_delta,
+        on_epoch=on_epoch,
+    )
+
+    return FitResult(
+        phase2.diff_params, static_params,
+        loss_history_eeg=phase2.loss_history_eeg,
+        loss_history_bold=phase1.loss_history_bold,
+    )
+
+
+def run_joint_fit(
+    diff_params_init,
+    static_params,
+    joint_update_step,
+    joint_optimizer,
+    target_psd,
+    channel_indices,
+    leadfield,
+    smoothing_blocks,
+    dipole_labels,
+    num_epochs=200,
+    print_every=10,
+    print_fn=print_learnable_params,
+    early_stop_window=20,
+    early_stop_patience=None,
+    early_stop_min_delta=1e-3,
+    on_epoch=None,
+) -> FitResult:
+    """Single combined-loss fit for the "joint" schedule: one gradient step
+    per epoch against ``joint_eeg_weight * eeg_loss + joint_bold_weight *
+    bold_loss`` (see ``make_joint_loss_fn``) -- both terms every epoch, no
+    ``bold_every``-style skipping (a joint loss needs both every step).
+
+    Both raw (unweighted) loss components are still logged into
+    ``loss_history_eeg``/``loss_history_bold`` every epoch, so downstream
+    reporting (``relative_final_loss``, the CLI's combined-ratio printout)
+    works the same across all three schedules.
+    """
+    diff_params = diff_params_init
+    opt_state = joint_optimizer.init(diff_params)
+
+    loss_history_eeg, loss_history_bold = [], []
+
+    for epoch in range(num_epochs):
+        diff_params, opt_state, loss, loss_eeg, loss_bold = joint_update_step(
+            diff_params, static_params, opt_state,
+            target_psd, channel_indices, leadfield, smoothing_blocks, dipole_labels,
+        )
+        opt_state = jax.lax.stop_gradient(opt_state)
+        loss_eeg = float(loss_eeg)
+        loss_bold = float(loss_bold)
+        loss_history_eeg.append(loss_eeg)
+        loss_history_bold.append(loss_bold)
+
+        print(f"Epoch {epoch + 1:04d} | joint: {float(loss):.5f} | "
+              f"EEG: {loss_eeg:.5f} | BOLD FC: {loss_bold:.5f}")
+
+        if on_epoch is not None:
+            on_epoch(epoch, loss_eeg, loss_bold, True)
+
+        if print_fn is not None and (epoch + 1) % print_every == 0:
+            print_fn(diff_params)
+
+        if early_stop_patience is not None:
+            eeg_stalled = is_loss_stalled(
+                loss_history_eeg, early_stop_window, early_stop_patience, early_stop_min_delta)
+            bold_stalled = is_loss_stalled(
                 loss_history_bold, early_stop_window, early_stop_patience, early_stop_min_delta)
             if eeg_stalled and bold_stalled:
                 print(f"Early stopping at epoch {epoch + 1}: loss trend stalled "

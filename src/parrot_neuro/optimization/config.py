@@ -254,6 +254,26 @@ class BoldFitConfig:
     # step and its loss history stays empty).
     optimize: str = "both"  # "eeg" | "bold" | "both"
 
+    # --- schedule (only meaningful when optimize == "both") ---
+    # "alternating" (default): train.run_alternating_fit -- 1 EEG step every
+    # epoch, 1 BOLD step every bold_every epochs, num_epochs total, interleaved.
+    # "phased": train.run_phased_fit -- bold_phase_epochs of BOLD-only steps,
+    # then eeg_phase_epochs of EEG-only steps, on one continuously-updated
+    # diff_params (num_epochs/bold_every are unused).
+    # "joint": train.run_joint_fit -- ONE combined loss (joint_eeg_weight *
+    # EEG-PSD + joint_bold_weight * BOLD-FC/dFC) from a single simulator call
+    # per epoch (train.build_joint_simulator), num_epochs total (bold_every is
+    # unused -- both terms every epoch, no skipping).
+    schedule: str = "alternating"  # "alternating" | "phased" | "joint"
+    bold_phase_epochs: int = 200
+    eeg_phase_epochs: int = 200
+    # Plain scalar weights combining EEG PSD loss (~1e-6) and BOLD FC/dFC loss
+    # (~1e-1) into schedule="joint"'s single loss -- not auto-balanced, so the
+    # large default gap in joint_eeg_weight vs joint_bold_weight is a rough,
+    # order-of-magnitude attempt to counter that scale gap, not a tuned value.
+    joint_eeg_weight: float = 1e5
+    joint_bold_weight: float = 1.0
+
     # --- early stopping (see train.is_loss_stalled) ---
     # None (default) = old behaviour, always run all num_epochs. Set an int to
     # stop once every actively-optimized loss's relative trend over the last
@@ -306,7 +326,22 @@ class BoldFitConfig:
     def __post_init__(self):
         if self.optimize not in ("eeg", "bold", "both"):
             raise ValueError(f"optimize must be 'eeg', 'bold', or 'both', got {self.optimize!r}")
-        for name in ("bold_fc_weight", "bold_dfc_weight", "bold_psd_weight", "gamma_weight"):
+        if self.schedule not in ("alternating", "phased", "joint"):
+            raise ValueError(
+                f"schedule must be 'alternating', 'phased', or 'joint', got {self.schedule!r}"
+            )
+        if self.schedule != "alternating" and self.optimize != "both":
+            raise ValueError(
+                f"schedule={self.schedule!r} needs optimize='both' (phased/joint both fit EEG "
+                f"and BOLD together, just on a different schedule) -- got optimize={self.optimize!r}."
+            )
+        if self.schedule == "joint" and self.solver_block_size is None:
+            raise ValueError(
+                "schedule='joint' requires solver_block_size to be set -- its combined reduce "
+                "rides on the block scan, same requirement as the existing BOLD streaming path."
+            )
+        for name in ("bold_fc_weight", "bold_dfc_weight", "bold_psd_weight", "gamma_weight",
+                     "bold_phase_epochs", "eeg_phase_epochs", "joint_eeg_weight", "joint_bold_weight"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be >= 0, got {getattr(self, name)!r}")
 
