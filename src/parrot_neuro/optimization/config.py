@@ -261,9 +261,13 @@ class BoldFitConfig:
     # then eeg_phase_epochs of EEG-only steps, on one continuously-updated
     # diff_params (num_epochs/bold_every are unused).
     # "joint": train.run_joint_fit -- ONE combined loss (joint_eeg_weight *
-    # EEG-PSD + joint_bold_weight * BOLD-FC/dFC) from a single simulator call
-    # per epoch (train.build_joint_simulator), num_epochs total (bold_every is
-    # unused -- both terms every epoch, no skipping).
+    # EEG-PSD + joint_bold_weight * BOLD-FC/dFC), from the SAME two
+    # simulators the other schedules use, but ONE gradient step per epoch
+    # instead of two separate ones (see train.make_joint_loss_fn's docstring
+    # for why it deliberately does NOT fuse them into one simulator call --
+    # an earlier version tried that and blew up backward-pass memory).
+    # num_epochs total (bold_every is unused -- both terms every epoch, no
+    # skipping).
     schedule: str = "alternating"  # "alternating" | "phased" | "joint"
     bold_phase_epochs: int = 200
     eeg_phase_epochs: int = 200
@@ -334,11 +338,6 @@ class BoldFitConfig:
             raise ValueError(
                 f"schedule={self.schedule!r} needs optimize='both' (phased/joint both fit EEG "
                 f"and BOLD together, just on a different schedule) -- got optimize={self.optimize!r}."
-            )
-        if self.schedule == "joint" and self.solver_block_size is None:
-            raise ValueError(
-                "schedule='joint' requires solver_block_size to be set -- its combined reduce "
-                "rides on the block scan, same requirement as the existing BOLD streaming path."
             )
         for name in ("bold_fc_weight", "bold_dfc_weight", "bold_psd_weight", "gamma_weight",
                      "bold_phase_epochs", "eeg_phase_epochs", "joint_eeg_weight", "joint_bold_weight"):

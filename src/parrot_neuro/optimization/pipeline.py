@@ -39,7 +39,6 @@ from .network import build_network
 from .train import (
     FitResult,
     Simulators,
-    build_joint_simulator,
     build_simulators,
     compute_target_psd,
     learnable_partition,
@@ -222,9 +221,11 @@ def fit(ctx: ExperimentContext, on_epoch=None) -> FitResult:
       original behaviour, interleaving separate EEG/BOLD steps.
     - ``"phased"``: ``train.run_phased_fit`` -- BOLD-only epochs then
       EEG-only epochs, still built from the same two per-loss update steps.
-    - ``"joint"``: ``_fit_joint`` -- a single combined loss from ONE
-      simulator call per epoch (see ``train.build_joint_simulator``); does
-      not use ``eeg_loss_fn``/``bold_loss_fn``/``eeg_update_step``/
+    - ``"joint"``: ``_fit_joint`` -- one combined loss/gradient step per
+      epoch over the SAME ``ctx.simulators.simulator_eeg``/``simulator_bold``
+      (see ``train.make_joint_loss_fn``'s docstring for why it deliberately
+      does NOT try to fuse them into one simulator call); does not use
+      ``eeg_loss_fn``/``bold_loss_fn``/``eeg_update_step``/
       ``bold_update_step`` below at all.
 
     ``ctx.dataset`` (hence ``eeg_loss_fn``) may be ``None`` -- build_context
@@ -303,26 +304,19 @@ def fit(ctx: ExperimentContext, on_epoch=None) -> FitResult:
 
 
 def _fit_joint(ctx: ExperimentContext, on_epoch=None) -> FitResult:
-    """The "joint" schedule: a single combined loss from ONE simulator call
-    per epoch, instead of two separate per-loss simulators/steps.
-
-    Reuses ``ctx.network``/``ctx.solver``/``ctx.simulators.bold_monitor``
-    (already warmed up by ``build_context``'s ``build_simulators`` call) and
-    ``ctx.diff_params_init``/``ctx.static_params`` directly -- see
-    ``train.build_joint_simulator``'s docstring for why that reuse is exact,
-    not approximate. ``ctx.simulators.simulator_eeg``/``simulator_bold``
-    themselves are untouched and still used for diagnostics afterward.
+    """The "joint" schedule: one combined loss/gradient step per epoch, over
+    the SAME ``ctx.simulators.simulator_eeg``/``simulator_bold`` build_context
+    already built (also used for diagnostics afterward) -- see
+    ``train.make_joint_loss_fn``'s docstring for why this calls both
+    simulators separately rather than trying to fuse them into one (an
+    earlier version did that and blew up backward-pass memory).
     """
     centers = jnp.linspace(-1.0, 1.0, ctx.cfg.dfc_n_bins)
     target_psd_band = _target_bold_psd_band(ctx) if ctx.cfg.bold_psd_weight > 0 else None
 
-    simulator_joint = build_joint_simulator(
-        ctx.network, ctx.solver, ctx.simulators.bold_monitor,
-        ctx.cfg.t0, ctx.cfg.dt, ctx.cfg.t1_bold,
-        ctx.cfg.eeg_settle_ms, ctx.cfg.eeg_stride_ms, ctx.cfg.chunk_length,
-    )
     joint_loss_fn = make_joint_loss_fn(
-        simulator_joint, ctx.mask_cortical, ctx.idx_min, ctx.idx_max, ctx.cfg.dt,
+        ctx.simulators.simulator_eeg, ctx.simulators.simulator_bold,
+        ctx.mask_cortical, ctx.idx_min, ctx.idx_max, ctx.cfg.dt,
         target_fc_vec=_target_fc_vec(ctx), target_dfc_hist=_target_dfc_hist(ctx, centers),
         skip_t=ctx.cfg.bold_skip_trs, tr_ms=ctx.cfg.tr_ms,
         dfc_window_trs=ctx.cfg.dfc_window_trs, dfc_step_trs=ctx.cfg.dfc_step_trs,

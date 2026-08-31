@@ -42,8 +42,8 @@ def parse_args() -> argparse.Namespace:
                          "steps then --eeg-phase-epochs of EEG-only steps, on one continuously-"
                          "updated set of params (--num-epochs/--bold-every unused). 'joint' fits "
                          "ONE combined loss (--joint-eeg-weight*EEG-PSD + --joint-bold-weight*"
-                         "BOLD-FC/dFC) from a single simulator call per --num-epochs epoch, no "
-                         "alternation (--bold-every unused; needs --solver-block-size set).")
+                         "BOLD-FC/dFC) per --num-epochs epoch, over the same two simulators the "
+                         "other schedules use, no alternation (--bold-every unused).")
     p.add_argument("--bold-phase-epochs", type=int, default=200,
                     help="BOLD-only epochs for --schedule phased.")
     p.add_argument("--eeg-phase-epochs", type=int, default=200,
