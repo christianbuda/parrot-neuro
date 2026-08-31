@@ -87,9 +87,21 @@ def get_electric_signals(
     assert float(spacing) in subject.dipole_spacings(), f"input spacing of {spacing} not found"
     dipoles_path = subject.path.dipole_dir(float(spacing))
 
-    all_blocks = [
-        item for item in (dipoles_path / "surfaces").iterdir() if item.is_dir()
-    ] + [dipoles_path / "volumetric"]
+    # The smoothing matrices are consumed as a block-diagonal operator over the
+    # *aggregated* dipole axis (see ``block_diag_matmul``), so their order must be
+    # the order the blocks occupy in the aggregated arrays. That is NOT the
+    # directory listing order: ``place_dipoles.py`` aggregates as
+    # ``[volumetric] + surfaces`` (so volumetric comes first), and ``iterdir()``
+    # is filesystem-arbitrary on top of that -- it is not even stable across
+    # subjects. Each block's ``dipole_traceback.npy`` is its boolean mask within
+    # the aggregated array, so the first True is the block's offset; sorting on it
+    # recovers the true order.
+    all_blocks = [item for item in (dipoles_path / "surfaces").iterdir() if item.is_dir()]
+    all_blocks.append(dipoles_path / "volumetric")
+    block_offsets = {
+        b: int(np.flatnonzero(np.load(b / "dipole_traceback.npy"))[0]) for b in all_blocks
+    }
+    all_blocks.sort(key=block_offsets.get)
 
     print(f"Loading leadfield and dipoles from {dipoles_path}...")
     dipoles = subject.load.dipoles(float(spacing))
@@ -105,10 +117,20 @@ def get_electric_signals(
     for val in np.unique(dipole_labels):
         orient_atlas[val] = np.unique(orient_type[dipole_labels == val])[0]
 
-    dipole_volume = np.concatenate([np.load(block / 'dipole_volume.npy') for block in all_blocks])
+    # The aggregated volume array, not a re-concatenation of the per-block files:
+    # with the blocks in aggregated order the two agree, and using the aggregated
+    # one makes the column scaling below correct by construction.
+    dipole_volume = dipoles.volume
 
     sigma = float(spacing) * 1.5
     weights_matrices = [np.load(block / 'distance_matrix.npy') for block in all_blocks]
+    # The blocks must tile [0, N_dip) back to back in this order, else the
+    # block-diagonal operator is misaligned with the leadfield and the projection
+    # is silently wrong. Cheap to check, so check it rather than trust it.
+    expected = np.cumsum([0] + [len(m) for m in weights_matrices[:-1]])
+    assert [block_offsets[b] for b in all_blocks] == list(expected) and (
+        sum(len(m) for m in weights_matrices) == len(dipole_volume)
+    ), "dipole smoothing blocks do not tile the aggregated dipole axis"
     idx = 0
     for mat in weights_matrices:
         np.square(mat, out=mat)
