@@ -939,6 +939,8 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         mkdir -p "$HIPPUNFOLD_CACHE"
         CE_BINDS=( "$BIDS_DIR:/bids:ro" "$HIPPUNFOLD_TMP:/output" "$HIPPUNFOLD_CACHE:/hippunfold_cache" )
         CE_ENVS=( "HIPPUNFOLD_CACHE_DIR=/hippunfold_cache" )
+        # docker sets HOME=/ for an unregistered --user uid; snakemake's source cache needs it writable.
+        CE_HOME=1
         container_exec "$IMG_HIPPUNFOLD" \
             /bids /output participant \
             --participant_label "$SUBJECT" \
