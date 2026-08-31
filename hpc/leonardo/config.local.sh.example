@@ -119,6 +119,12 @@ WANDB_API_KEY="${WANDB_API_KEY:-<YOUR_WANDB_API_KEY>}"   # https://wandb.ai/auth
 # epochs instead of the intended quick 2-epoch sanity check.
 # SWEEP_ATLAS="${SWEEP_ATLAS:-1000}" ; SWEEP_OPTIMIZE="${SWEEP_OPTIMIZE:-both}"
 # SWEEP_NUM_EPOCHS="${SWEEP_NUM_EPOCHS:-300}" ; SWEEP_BOLD_EVERY="${SWEEP_BOLD_EVERY:-2}"
+# schedule: "alternating" (default) | "phased" | "joint" -- see
+# eeg_bold_fit_cli.py --schedule. bold/eeg_phase_epochs only matter for
+# "phased"; joint_*_weight only matter for "joint".
+# SWEEP_SCHEDULE="${SWEEP_SCHEDULE:-alternating}"
+# SWEEP_BOLD_PHASE_EPOCHS="${SWEEP_BOLD_PHASE_EPOCHS:-200}" ; SWEEP_EEG_PHASE_EPOCHS="${SWEEP_EEG_PHASE_EPOCHS:-200}"
+# SWEEP_JOINT_EEG_WEIGHT="${SWEEP_JOINT_EEG_WEIGHT:-1e5}" ; SWEEP_JOINT_BOLD_WEIGHT="${SWEEP_JOINT_BOLD_WEIGHT:-1.0}"
 #
 # --- Parallel (whole-node) mode -- see README.md's "Hyperparameter sweep" ->
 # "Parallel (whole-node) mode" for the full measured-numbers rationale. Unset

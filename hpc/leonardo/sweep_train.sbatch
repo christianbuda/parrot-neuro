@@ -39,6 +39,15 @@ SWEEP_ATLAS="${SWEEP_ATLAS:-1000}"
 SWEEP_SPACING="${SWEEP_SPACING:-2.0}"
 SWEEP_LEADFIELD_LABEL="${SWEEP_LEADFIELD_LABEL:-duneuroCGAL}"
 SWEEP_OPTIMIZE="${SWEEP_OPTIMIZE:-both}"
+# schedule: "alternating" (default, original interleaved fit) | "phased" |
+# "joint" -- see eeg_bold_fit_cli.py --schedule. bold/eeg_phase_epochs only
+# matter for "phased"; joint_*_weight only matter for "joint" -- harmless to
+# always pass all of them regardless of which schedule is active.
+SWEEP_SCHEDULE="${SWEEP_SCHEDULE:-alternating}"
+SWEEP_BOLD_PHASE_EPOCHS="${SWEEP_BOLD_PHASE_EPOCHS:-200}"
+SWEEP_EEG_PHASE_EPOCHS="${SWEEP_EEG_PHASE_EPOCHS:-200}"
+SWEEP_JOINT_EEG_WEIGHT="${SWEEP_JOINT_EEG_WEIGHT:-1e5}"
+SWEEP_JOINT_BOLD_WEIGHT="${SWEEP_JOINT_BOLD_WEIGHT:-1.0}"
 SWEEP_NUM_EPOCHS="${SWEEP_NUM_EPOCHS:-300}"
 SWEEP_BOLD_EVERY="${SWEEP_BOLD_EVERY:-2}"
 SWEEP_EEG_TASK="${SWEEP_EEG_TASK:-eyesclosed}"
@@ -74,13 +83,16 @@ mkdir -p "$WANDB_DIR"
 cd "$WORKDIR" || { echo "ERROR: cannot cd to WORKDIR=$WORKDIR"; exit 1; }
 
 echo "=== Parrot sweep trial: job ${SLURM_JOB_ID:-?} run_id=$WANDB_RUN_ID on $(hostname), $(date) ==="
-echo "subjects=$SWEEP_SUBJECTS atlas=$SWEEP_ATLAS optimize=$SWEEP_OPTIMIZE epochs=$SWEEP_NUM_EPOCHS"
+echo "subjects=$SWEEP_SUBJECTS atlas=$SWEEP_ATLAS optimize=$SWEEP_OPTIMIZE schedule=$SWEEP_SCHEDULE epochs=$SWEEP_NUM_EPOCHS"
 nvidia-smi -L 2>/dev/null || echo "(no GPU visible -- this stage always needs one)"
 
 ARGS=(
     --bids-root "$BIDS" --subjects "$SWEEP_SUBJECTS" --output-root "$SWEEP_OUTPUT_ROOT"
     --atlas "$SWEEP_ATLAS" --spacing "$SWEEP_SPACING" --leadfield-label "$SWEEP_LEADFIELD_LABEL"
-    --optimize "$SWEEP_OPTIMIZE" --num-epochs "$SWEEP_NUM_EPOCHS" --bold-every "$SWEEP_BOLD_EVERY"
+    --optimize "$SWEEP_OPTIMIZE" --schedule "$SWEEP_SCHEDULE"
+    --bold-phase-epochs "$SWEEP_BOLD_PHASE_EPOCHS" --eeg-phase-epochs "$SWEEP_EEG_PHASE_EPOCHS"
+    --joint-eeg-weight "$SWEEP_JOINT_EEG_WEIGHT" --joint-bold-weight "$SWEEP_JOINT_BOLD_WEIGHT"
+    --num-epochs "$SWEEP_NUM_EPOCHS" --bold-every "$SWEEP_BOLD_EVERY"
     --eeg-task "$SWEEP_EEG_TASK" --fmri-task "$SWEEP_FMRI_TASK"
     --solver-block-size "$SWEEP_SOLVER_BLOCK_SIZE" --t1-warmup "$SWEEP_T1_WARMUP"
 )
