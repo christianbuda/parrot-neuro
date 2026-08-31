@@ -21,3 +21,10 @@ dependencies = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/parrot_neuro"]
+
+[tool.pytest.ini_options]
+# `pythonpath` makes `from fixtures.build_fake_subject import ...` work under any
+# --import-mode, not just the default `prepend` (which only happens to put tests/
+# on sys.path as a side effect of rootdir insertion).
+testpaths = ["tests"]
+pythonpath = ["tests"]
