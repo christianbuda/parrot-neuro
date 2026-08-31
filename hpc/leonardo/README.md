@@ -515,6 +515,22 @@ SLURM needed) before trusting it on Leonardo — a `submit_sweep.sh smoke` with
   `sync_orphaned_runs.sh` already had) to avoid this; a trial whose sync
   still fails logs a `WARNING` and is picked up by `sync_orphaned_runs.sh`
   on your next run of it.
+- **Sustained agent concurrency capped well below what your GPU/QoS budget
+  would allow** (confirmed 2026-08-30: ~13-20 agents on one login node,
+  regardless of the launch-stagger fix above) — `RLIMIT_NPROC` is enforced
+  **per login node**, and Leonardo has (at least) four independent ones
+  (`login01/02/05/07-ext.leonardo.cineca.it`) behind the round-robin
+  `login.leonardo.cineca.it` alias a plain `ssh` lands you on one of.
+  Running everything from one persistent session concentrates all your
+  agents' process load on that single machine's quota. There's no
+  CINECA-native mechanism for a long-lived online sweep agent at all — their
+  own AI-workloads guidance only covers `WANDB_MODE=offline` +
+  `wandb sync`, explicitly calling Sweeps unsupported on Leonardo given
+  compute nodes' no-internet policy — so `hpc/leonardo/start_on_node.sh`
+  (splitting agent batches across login nodes, same sweep_id, independent
+  per-node PID/log bookkeeping via `SWEEP_NAME`) is the practical lever,
+  not a deviation from some better-supported path. See its header comment
+  for usage; each node still needs its own `tmux`/`screen`.
 - **The same run_id gets dispatched more than once** (confirmed 2026-08-30 on
   the `parallel-2` sweep: `grep -h "trial run_id=" sweep_logs-parallel-2/agent-*.log`
   showed several run_ids repeated 2-3x *across different agents*, real
