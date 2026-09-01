@@ -100,12 +100,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--leadfield-label", default="duneuroCGAL")
     p.add_argument("--optimize", default="both", choices=("eeg", "bold", "both"))
     p.add_argument("--schedule", default="alternating", choices=("alternating", "phased", "joint"),
-                    help="see eeg_bold_fit_cli.py --schedule -- same three strategies, applied "
-                         "identically to every subject in this sweep trial.")
-    p.add_argument("--bold-phase-epochs", type=int, default=200,
-                    help="see eeg_bold_fit_cli.py --bold-phase-epochs (--schedule phased only)")
-    p.add_argument("--eeg-phase-epochs", type=int, default=200,
-                    help="see eeg_bold_fit_cli.py --eeg-phase-epochs (--schedule phased only)")
+                    help="see eeg_bold_fit_cli.py --schedule -- same three strategies (phased "
+                         "splits --num-epochs in half), applied identically to every subject in "
+                         "this sweep trial.")
     p.add_argument("--joint-eeg-weight", type=float, default=1e5,
                     help="see eeg_bold_fit_cli.py --joint-eeg-weight (--schedule joint only)")
     p.add_argument("--joint-bold-weight", type=float, default=1.0,
@@ -241,8 +238,6 @@ def _run_sequential(wandb, run, args, subjects):
             bold_every=args.bold_every,
             optimize=args.optimize,
             schedule=args.schedule,
-            bold_phase_epochs=args.bold_phase_epochs,
-            eeg_phase_epochs=args.eeg_phase_epochs,
             joint_eeg_weight=args.joint_eeg_weight,
             joint_bold_weight=args.joint_bold_weight,
             bold_fc_weight=args.bold_fc_weight,
@@ -331,8 +326,6 @@ def _worker_argv(worker_script, args, subject_id, worker_output_root):
         "--leadfield-label", args.leadfield_label,
         "--optimize", args.optimize,
         "--schedule", args.schedule,
-        "--bold-phase-epochs", str(args.bold_phase_epochs),
-        "--eeg-phase-epochs", str(args.eeg_phase_epochs),
         "--joint-eeg-weight", str(args.joint_eeg_weight),
         "--joint-bold-weight", str(args.joint_bold_weight),
         "--num-epochs", str(args.num_epochs),

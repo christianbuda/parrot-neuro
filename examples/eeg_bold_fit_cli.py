@@ -38,16 +38,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--schedule", default="alternating", choices=("alternating", "phased", "joint"),
                     help="only meaningful when --optimize both. 'alternating' (default) is the "
                          "original interleaved fit (1 EEG step/epoch, 1 BOLD step every "
-                         "--bold-every epochs). 'phased' runs --bold-phase-epochs of BOLD-only "
-                         "steps then --eeg-phase-epochs of EEG-only steps, on one continuously-"
-                         "updated set of params (--num-epochs/--bold-every unused). 'joint' fits "
-                         "ONE combined loss (--joint-eeg-weight*EEG-PSD + --joint-bold-weight*"
+                         "--bold-every epochs). 'phased' splits --num-epochs in half: the first "
+                         "half is BOLD-only, the rest (any odd leftover included) is EEG-only, on "
+                         "one continuously-updated set of params (--bold-every unused). 'joint' "
+                         "fits ONE combined loss (--joint-eeg-weight*EEG-PSD + --joint-bold-weight*"
                          "BOLD-FC/dFC) per --num-epochs epoch, over the same two simulators the "
                          "other schedules use, no alternation (--bold-every unused).")
-    p.add_argument("--bold-phase-epochs", type=int, default=200,
-                    help="BOLD-only epochs for --schedule phased.")
-    p.add_argument("--eeg-phase-epochs", type=int, default=200,
-                    help="EEG-only epochs for --schedule phased (runs after --bold-phase-epochs).")
     p.add_argument("--joint-eeg-weight", type=float, default=1e5,
                     help="weight on the EEG PSD loss term in --schedule joint's combined loss -- "
                          "a plain scalar multiplier, not auto-balanced. EEG's normalized-linear "
@@ -164,8 +160,6 @@ def main() -> None:
         bold_every=args.bold_every,
         optimize=args.optimize,
         schedule=args.schedule,
-        bold_phase_epochs=args.bold_phase_epochs,
-        eeg_phase_epochs=args.eeg_phase_epochs,
         joint_eeg_weight=args.joint_eeg_weight,
         joint_bold_weight=args.joint_bold_weight,
         bold_fc_weight=args.bold_fc_weight,

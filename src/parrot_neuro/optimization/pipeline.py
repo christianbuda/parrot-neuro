@@ -275,11 +275,17 @@ def fit(ctx: ExperimentContext, on_epoch=None) -> FitResult:
     channel_indices = ctx.dataset.channel_indices if ctx.dataset is not None else None
 
     if ctx.cfg.schedule == "phased":
+        # Split num_epochs in half -- the same single epoch-count knob every
+        # other schedule already uses (see config.BoldFitConfig.schedule) --
+        # rather than exposing two independent phase-length fields. Any odd
+        # leftover epoch goes to the EEG phase (floor for BOLD, ceil for EEG).
+        bold_phase_epochs = ctx.cfg.num_epochs // 2
+        eeg_phase_epochs = ctx.cfg.num_epochs - bold_phase_epochs
         return run_phased_fit(
             ctx.diff_params_init, ctx.static_params, eeg_update_step, bold_update_step,
             ctx.eeg_optimizer, ctx.bold_optimizer, ctx.target_psd, channel_indices,
             ctx.leadfield, ctx.smoothing_blocks, ctx.dipole_labels,
-            bold_phase_epochs=ctx.cfg.bold_phase_epochs, eeg_phase_epochs=ctx.cfg.eeg_phase_epochs,
+            bold_phase_epochs=bold_phase_epochs, eeg_phase_epochs=eeg_phase_epochs,
             print_every=ctx.cfg.print_params_every,
             print_fn=partial(print_learnable_params, learnable_params=ctx.cfg.learnable_params),
             early_stop_window=ctx.cfg.early_stop_window,

@@ -257,9 +257,10 @@ class BoldFitConfig:
     # --- schedule (only meaningful when optimize == "both") ---
     # "alternating" (default): train.run_alternating_fit -- 1 EEG step every
     # epoch, 1 BOLD step every bold_every epochs, num_epochs total, interleaved.
-    # "phased": train.run_phased_fit -- bold_phase_epochs of BOLD-only steps,
-    # then eeg_phase_epochs of EEG-only steps, on one continuously-updated
-    # diff_params (num_epochs/bold_every are unused).
+    # "phased": train.run_phased_fit -- num_epochs split in half: the first
+    # num_epochs // 2 epochs are BOLD-only, then the remaining num_epochs -
+    # num_epochs // 2 (the odd leftover, if any) are EEG-only, on one
+    # continuously-updated diff_params (bold_every is unused).
     # "joint": train.run_joint_fit -- ONE combined loss (joint_eeg_weight *
     # EEG-PSD + joint_bold_weight * BOLD-FC/dFC), from the SAME two
     # simulators the other schedules use, but ONE gradient step per epoch
@@ -269,8 +270,6 @@ class BoldFitConfig:
     # num_epochs total (bold_every is unused -- both terms every epoch, no
     # skipping).
     schedule: str = "alternating"  # "alternating" | "phased" | "joint"
-    bold_phase_epochs: int = 200
-    eeg_phase_epochs: int = 200
     # Plain scalar weights combining EEG PSD loss (~1e-6) and BOLD FC/dFC loss
     # (~1e-1) into schedule="joint"'s single loss -- not auto-balanced, so the
     # large default gap in joint_eeg_weight vs joint_bold_weight is a rough,
@@ -340,7 +339,7 @@ class BoldFitConfig:
                 f"and BOLD together, just on a different schedule) -- got optimize={self.optimize!r}."
             )
         for name in ("bold_fc_weight", "bold_dfc_weight", "bold_psd_weight", "gamma_weight",
-                     "bold_phase_epochs", "eeg_phase_epochs", "joint_eeg_weight", "joint_bold_weight"):
+                     "joint_eeg_weight", "joint_bold_weight"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be >= 0, got {getattr(self, name)!r}")
 

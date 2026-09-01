@@ -47,6 +47,11 @@ SIF="${SIF:-$WORKDIR/parrot/parrot_sif}"              # .sif cache; prewarm_*.sh
 # of these here, or per-invocation via the same-named env var.
 # OPTIM_ATLAS=1000 ; OPTIM_SPACING=2.0 ; OPTIM_LEADFIELD_LABEL=duneuroCGAL
 # OPTIM_OPTIMIZE=both
+# schedule: "alternating" (default) | "phased" (splits OPTIM_NUM_EPOCHS in
+# half: BOLD-only then EEG-only) | "joint" (one combined loss/step per epoch
+# instead of two separate ones) -- see eeg_bold_fit_cli.py --schedule.
+# OPTIM_SCHEDULE=alternating
+# OPTIM_JOINT_EEG_WEIGHT=1e5 ; OPTIM_JOINT_BOLD_WEIGHT=1.0   # only matter for schedule=joint
 # BOLD loss is a weighted combination of static FC + dFC/FCD (both computed
 # from the same simulated trajectory); either weight at 0 recovers a
 # single-mode fit.
@@ -119,11 +124,10 @@ WANDB_API_KEY="${WANDB_API_KEY:-<YOUR_WANDB_API_KEY>}"   # https://wandb.ai/auth
 # epochs instead of the intended quick 2-epoch sanity check.
 # SWEEP_ATLAS="${SWEEP_ATLAS:-1000}" ; SWEEP_OPTIMIZE="${SWEEP_OPTIMIZE:-both}"
 # SWEEP_NUM_EPOCHS="${SWEEP_NUM_EPOCHS:-300}" ; SWEEP_BOLD_EVERY="${SWEEP_BOLD_EVERY:-2}"
-# schedule: "alternating" (default) | "phased" | "joint" -- see
-# eeg_bold_fit_cli.py --schedule. bold/eeg_phase_epochs only matter for
-# "phased"; joint_*_weight only matter for "joint".
+# schedule: "alternating" (default) | "phased" (splits SWEEP_NUM_EPOCHS in
+# half: BOLD-only then EEG-only) | "joint" -- see eeg_bold_fit_cli.py
+# --schedule. joint_*_weight only matters for "joint".
 # SWEEP_SCHEDULE="${SWEEP_SCHEDULE:-alternating}"
-# SWEEP_BOLD_PHASE_EPOCHS="${SWEEP_BOLD_PHASE_EPOCHS:-200}" ; SWEEP_EEG_PHASE_EPOCHS="${SWEEP_EEG_PHASE_EPOCHS:-200}"
 # SWEEP_JOINT_EEG_WEIGHT="${SWEEP_JOINT_EEG_WEIGHT:-1e5}" ; SWEEP_JOINT_BOLD_WEIGHT="${SWEEP_JOINT_BOLD_WEIGHT:-1.0}"
 #
 # --- Parallel (whole-node) mode -- see README.md's "Hyperparameter sweep" ->

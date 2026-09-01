@@ -43,6 +43,13 @@ OPTIM_ATLAS="${OPTIM_ATLAS:-1000}"
 OPTIM_SPACING="${OPTIM_SPACING:-2.0}"
 OPTIM_LEADFIELD_LABEL="${OPTIM_LEADFIELD_LABEL:-duneuroCGAL}"
 OPTIM_OPTIMIZE="${OPTIM_OPTIMIZE:-both}"
+# schedule: "alternating" (default, original interleaved fit) | "phased"
+# (splits OPTIM_NUM_EPOCHS in half: BOLD-only then EEG-only) | "joint" (one
+# combined EEG+BOLD loss/step per epoch instead of two separate ones) -- see
+# eeg_bold_fit_cli.py --schedule. joint_*_weight only matters for "joint".
+OPTIM_SCHEDULE="${OPTIM_SCHEDULE:-alternating}"
+OPTIM_JOINT_EEG_WEIGHT="${OPTIM_JOINT_EEG_WEIGHT:-1e5}"
+OPTIM_JOINT_BOLD_WEIGHT="${OPTIM_JOINT_BOLD_WEIGHT:-1.0}"
 # BOLD loss is a weighted combination of static FC + dFC/FCD (both computed
 # from the same simulated trajectory -- see train.make_bold_loss_fn); either
 # weight at 0 recovers a single-mode fit.
@@ -121,7 +128,7 @@ export XLA_PYTHON_CLIENT_ALLOCATOR=platform
 cd "$WORKDIR" || { echo "ERROR: cannot cd to WORKDIR=$WORKDIR"; exit 1; }
 
 echo "=== Parrot optim: job ${SLURM_JOB_ID:-?} (array ${SLURM_ARRAY_JOB_ID:--}_${SLURM_ARRAY_TASK_ID:--}) on $(hostname), $(date) ==="
-echo "subject=$SUBJECT  atlas=$OPTIM_ATLAS  optimize=$OPTIM_OPTIMIZE  bold_fc_weight=$OPTIM_BOLD_FC_WEIGHT  bold_dfc_weight=$OPTIM_BOLD_DFC_WEIGHT  epochs=$OPTIM_NUM_EPOCHS  early_stop_patience=${OPTIM_EARLY_STOP_PATIENCE:-off}"
+echo "subject=$SUBJECT  atlas=$OPTIM_ATLAS  optimize=$OPTIM_OPTIMIZE  schedule=$OPTIM_SCHEDULE  bold_fc_weight=$OPTIM_BOLD_FC_WEIGHT  bold_dfc_weight=$OPTIM_BOLD_DFC_WEIGHT  epochs=$OPTIM_NUM_EPOCHS  early_stop_patience=${OPTIM_EARLY_STOP_PATIENCE:-off}"
 nvidia-smi -L 2>/dev/null || echo "(no GPU visible -- this stage always needs one)"
 
 # --- optional GPU-utilisation sampling (submit_optim.sh sets this for `pilot`
@@ -139,7 +146,8 @@ fi
 ARGS=(
     --bids-root "$BIDS" --subject "$SUBJECT" --output-root "$OPTIM_OUTPUT_DIR"
     --atlas "$OPTIM_ATLAS" --spacing "$OPTIM_SPACING" --leadfield-label "$OPTIM_LEADFIELD_LABEL"
-    --optimize "$OPTIM_OPTIMIZE"
+    --optimize "$OPTIM_OPTIMIZE" --schedule "$OPTIM_SCHEDULE"
+    --joint-eeg-weight "$OPTIM_JOINT_EEG_WEIGHT" --joint-bold-weight "$OPTIM_JOINT_BOLD_WEIGHT"
     --bold-fc-weight "$OPTIM_BOLD_FC_WEIGHT" --bold-dfc-weight "$OPTIM_BOLD_DFC_WEIGHT"
     --num-epochs "$OPTIM_NUM_EPOCHS" --bold-every "$OPTIM_BOLD_EVERY"
     --eeg-task "$OPTIM_EEG_TASK" --fmri-task "$OPTIM_FMRI_TASK"
