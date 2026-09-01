@@ -35,6 +35,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--spacing", default="2.0", help="dipole spacing in mm (string)")
     p.add_argument("--leadfield-label", default="duneuroCGAL")
     p.add_argument("--optimize", default="both", choices=("eeg", "bold", "both"))
+    p.add_argument("--bold-model", default="hrf", choices=("hrf", "balloon"),
+                    help="BOLD forward model: 'hrf' (linear HRF-kernel convolution, default) or "
+                         "'balloon' (Friston/Deco Balloon-Windkessel hemodynamic ODE). Both are "
+                         "streamed into the block-checkpointed scan (see --solver-block-size); "
+                         "Balloon's hemodynamic constants use tvboptim's own defaults -- override "
+                         "via config.BoldFitConfig's balloon_* fields directly if needed.")
     p.add_argument("--schedule", default="alternating", choices=("alternating", "phased", "joint"),
                     help="only meaningful when --optimize both. 'alternating' (default) is the "
                          "original interleaved fit (1 EEG step/epoch, 1 BOLD step every "
@@ -92,7 +98,8 @@ def parse_args() -> argparse.Namespace:
                     help="checkpoint the integration scan in blocks of this many steps -- "
                          "trades ~1.3-1.7x compute for O(n_steps/K + K) instead of O(n_steps) "
                          "backward-pass GPU memory (exact gradient either way). The BOLD simulator "
-                         "also streams its HRF convolution through this same block scan (see "
+                         "also streams its BOLD forward model (HRF convolution or Balloon-Windkessel "
+                         "ODE integration, per --bold-model) through this same block scan (see "
                          "train.build_simulators), so K must be an exact multiple of the BOLD "
                          "period in raw steps (tr_ms/dt -- 1400 for the defaults), not just close "
                          "to sqrt(n_steps); 1400 (one TR per block) is the smallest valid choice. "
@@ -160,6 +167,7 @@ def main() -> None:
         bold_every=args.bold_every,
         optimize=args.optimize,
         schedule=args.schedule,
+        bold_model=args.bold_model,
         joint_eeg_weight=args.joint_eeg_weight,
         joint_bold_weight=args.joint_bold_weight,
         bold_fc_weight=args.bold_fc_weight,

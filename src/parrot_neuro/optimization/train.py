@@ -17,8 +17,9 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from tvboptim.experimental.network_dynamics import prepare, solve
-from tvboptim.observations.tvb_monitors import HRFBold, SubSampling, streaming_hrf_bold
+from tvboptim.observations.tvb_monitors import BalloonWindkesselBold, HRFBold, SubSampling, streaming_hrf_bold
 
+from .balloon import streaming_balloon_bold
 from .config import BOLD_BANDPASS_HIGH, BOLD_BANDPASS_LOW, BOLD_BANDPASS_ORDER, DEFAULT_LEARNABLE_PARAMS, LearnableParam
 from .connectivity import bold_psd_band, dfc_histogram, fc_vector, filter_sim_bold, wasserstein_1d_from_hist
 from .forward import project_to_scalp
@@ -40,17 +41,19 @@ class Simulators:
     sharing one parameter pytree, plus the BOLD monitor built on the long
     warm-up's history.
 
-    ``simulator_bold``'s HRF convolution is streamed (folded into
-    ``prepare()``'s ``reduce=`` block scan -- see ``build_simulators``), so
-    calling it already returns the final BOLD buffer, not a raw solution to
-    run ``bold_monitor`` on afterward. ``bold_monitor`` is kept on this
-    dataclass only because ``_process_history``'s warm-start buffer and
-    ``streaming_hrf_bold``'s kernel/period/voi config live on it -- it is
-    never called directly as a function anymore."""
+    ``simulator_bold``'s BOLD forward model -- HRF convolution or
+    Balloon-Windkessel ODE integration, per ``BoldFitConfig.bold_model`` -- is
+    streamed (folded into ``prepare()``'s ``reduce=`` block scan -- see
+    ``build_simulators``), so calling it already returns the final BOLD
+    buffer, not a raw solution to run ``bold_monitor`` on afterward.
+    ``bold_monitor`` is kept on this dataclass only because its config
+    (``HRFBold``'s kernel/period/voi, or ``BalloonWindkesselBold``'s
+    hemodynamic-constant/period/voi) lives on it -- it is never called
+    directly as a function anymore."""
 
     simulator_eeg: Callable
     simulator_bold: Callable
-    bold_monitor: HRFBold
+    bold_monitor: HRFBold | BalloonWindkesselBold
     params: object  # Bunch — feed to learnable_partition() / eqx.combine
 
 
@@ -65,6 +68,14 @@ def build_simulators(
     bold_downsample_ms: float,
     bold_voi: int = 8,
     t1_warmup: float | None = None,
+    bold_model: str = "hrf",
+    balloon_taus: float = 0.65,
+    balloon_tauf: float = 0.41,
+    balloon_tauo: float = 0.98,
+    balloon_alpha: float = 0.32,
+    balloon_Eo: float = 0.4,
+    balloon_vo: float = 0.04,
+    balloon_TE: float = 0.04,
 ) -> Simulators:
     """Warm up ``network`` at both horizons and prepare pure solve functions.
 
@@ -79,24 +90,36 @@ def build_simulators(
     forward-only simulation whose sole purpose is to seed ``network``'s
     initial state (the warm-up's *last* timestep -- see
     ``Network.initial_state``) and a short delay-coupling history buffer,
-    plus give ``HRFBold`` a history tail to convolve against. None of those
-    three consumers reads more than a short recent window regardless of how
-    long the warm-up ran (delay buffers need ``max_delay`` seconds -- tens of
-    ms for physiological conduction delays; ``HRFBold._process_history`` slices
-    exactly the kernel's ``duration`` -- 20s by default -- off the *end*).
+    plus (``bold_model="hrf"`` only) give ``HRFBold`` a history tail to
+    convolve against. None of those consumers reads more than a short recent
+    window regardless of how long the warm-up ran (delay buffers need
+    ``max_delay`` seconds -- tens of ms for physiological conduction delays;
+    ``HRFBold._process_history`` slices exactly the kernel's ``duration`` --
+    20s by default -- off the *end*; ``bold_model="balloon"`` doesn't consume
+    the warm-up trajectory for its BOLD monitor at all -- see below).
     Running the warm-up for the *full* ``t1_bold`` (which can be minutes, by
     design, to give the FC/dFC loss a long BOLD signal) computes and holds a
     proportionally huge trajectory just to throw away all but its tail --
     the dominant GPU-memory cost of this function for a long ``t1_bold``.
     ``t1_warmup`` decouples the two: pass something comfortably longer than
-    both the settling time of your dynamics and the HRF kernel duration (e.g.
-    30s), independent of how long ``t1_bold`` itself is. This does NOT change
-    the length of BOLD signal available to the loss -- ``simulator_bold``
-    (the one actually called during training) still integrates the full
-    ``t1_bold``; only the throwaway pre-roll gets shorter. It does change the
-    *exact* initial state training starts from (a different, still-settled,
-    point along an equally-valid stochastic trajectory -- not a less-settled
-    one), which is why this is opt-in via ``None`` rather than always-on.
+    both the settling time of your dynamics and (for ``bold_model="hrf"``)
+    the HRF kernel duration (e.g. 30s), independent of how long ``t1_bold``
+    itself is. This does NOT change the length of BOLD signal available to
+    the loss -- ``simulator_bold`` (the one actually called during training)
+    still integrates the full ``t1_bold``; only the throwaway pre-roll gets
+    shorter. It does change the *exact* initial state training starts from
+    (a different, still-settled, point along an equally-valid stochastic
+    trajectory -- not a less-settled one), which is why this is opt-in via
+    ``None`` rather than always-on.
+
+    ``bold_model`` selects the BOLD forward model: ``"hrf"`` (default) is the
+    linear HRF-convolution path (``HRFBold``/``streaming_hrf_bold``);
+    ``"balloon"`` is the Balloon-Windkessel hemodynamic ODE
+    (``BalloonWindkesselBold``/``.balloon.streaming_balloon_bold``) -- see
+    ``config.BoldFitConfig``'s ``balloon_*`` fields for its hemodynamic
+    constants (Friston 2000 / Deco 2014 defaults). Both are streamed into the
+    same block-checkpointed scan (see the ``reduce=`` call below), so neither
+    materializes the full raw trajectory regardless of which is chosen.
     """
     print(f"Preparing simulators: EEG t1={t1_eeg:.1f}s, BOLD t1={t1_bold:.1f}s")
     result_eeg = solve(network, solver, t0=t0, t1=t1_eeg, dt=dt)
@@ -110,35 +133,63 @@ def build_simulators(
     result_bold = solve(network, solver, t0=t0, t1=warmup_t1, dt=dt)
     network.update_history(result_bold)
 
-    # SubSampling (pick every downsample_period-th raw sample), NOT HRFBold's
-    # own default (TemporalAverage, mean over each window): streaming_hrf_bold
-    # below requires a uniform-integer-stride downsampler -- its per-block
-    # update() always does a hard-coded "take every Nth sample" slice
-    # regardless of what monitor.downsample actually is, so passing anything
-    # else here would silently desync the streaming path from what this
-    # object's own (now never-called-directly) __call__ would have computed.
-    # A deliberate, small numerical difference from the old TemporalAverage
-    # default -- see build_simulators' docstring.
-    bold_monitor = HRFBold(
-        history=result_bold,
-        period=tr_ms,
-        downsample_period=bold_downsample_ms,
-        voi=bold_voi,
-        downsample=SubSampling(voi=bold_voi, period=bold_downsample_ms),
-    )
-    # reduce=streaming_hrf_bold(...) folds the HRF convolution into the same
-    # block scan solver_block_size checkpoints, block-by-block, instead of
-    # materializing the full raw trajectory and convolving it post-hoc (the
-    # dominant GPU-memory cost of this whole pipeline for a long t1_bold --
-    # see config.BoldFitConfig.solver_block_size). simulator_bold(combined)
+    if bold_model == "hrf":
+        # SubSampling (pick every downsample_period-th raw sample), NOT
+        # HRFBold's own default (TemporalAverage, mean over each window):
+        # streaming_hrf_bold below requires a uniform-integer-stride
+        # downsampler -- its per-block update() always does a hard-coded
+        # "take every Nth sample" slice regardless of what monitor.downsample
+        # actually is, so passing anything else here would silently desync
+        # the streaming path from what this object's own
+        # (now never-called-directly) __call__ would have computed. A
+        # deliberate, small numerical difference from the old TemporalAverage
+        # default -- see build_simulators' docstring.
+        bold_monitor = HRFBold(
+            history=result_bold,
+            period=tr_ms,
+            downsample_period=bold_downsample_ms,
+            voi=bold_voi,
+            downsample=SubSampling(voi=bold_voi, period=bold_downsample_ms),
+        )
+        reduce = streaming_hrf_bold(bold_monitor, dt)
+    elif bold_model == "balloon":
+        # Integrates at the raw simulation dt (dt_bw=dt, downsample=None) --
+        # streaming_balloon_bold requires exactly this; see its docstring.
+        # Unlike HRFBold, no history/warm-start is needed: the ODE's own
+        # settling time is far shorter than this pipeline's BOLD burn-in
+        # (config.BoldFitConfig.bold_skip_trs), so every build starts from
+        # the standard resting initial condition.
+        bold_monitor = BalloonWindkesselBold(
+            period=tr_ms,
+            dt_bw=dt,
+            voi=bold_voi,
+            taus=balloon_taus,
+            tauf=balloon_tauf,
+            tauo=balloon_tauo,
+            alpha=balloon_alpha,
+            Eo=balloon_Eo,
+            vo=balloon_vo,
+            TE=balloon_TE,
+            downsample=None,
+        )
+        reduce = streaming_balloon_bold(bold_monitor, dt)
+    else:
+        raise ValueError(f"bold_model must be 'hrf' or 'balloon', got {bold_model!r}")
+
+    # reduce=... folds the BOLD forward model into the same block scan
+    # solver_block_size checkpoints, block-by-block, instead of materializing
+    # the full raw trajectory and applying it post-hoc (the dominant
+    # GPU-memory cost of this whole pipeline for a long t1_bold -- see
+    # config.BoldFitConfig.solver_block_size). simulator_bold(combined)
     # therefore returns the final [n_bold, n_voi, n_nodes] BOLD buffer
     # directly, not a raw solution -- there is no post-hoc bold_monitor(sol)
     # call anywhere anymore (make_bold_loss_fn, diagnostics.py). Requires
     # solver.block_size to be an exact multiple of the BOLD period in raw
-    # steps (tr_ms/dt); see streaming_hrf_bold's own docstring.
+    # steps (tr_ms/dt); see streaming_hrf_bold's/streaming_balloon_bold's own
+    # docstrings.
     simulator_bold, params = prepare(
         network, solver, t0=t0, t1=t1_bold, dt=dt,
-        reduce=streaming_hrf_bold(bold_monitor, dt),
+        reduce=reduce,
     )
 
     return Simulators(simulator_eeg, simulator_bold, bold_monitor, params)
