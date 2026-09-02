@@ -371,6 +371,38 @@ def fix_intersection(fixed_mesh, moving_mesh, min_dist, step_size,
 
     return trimesh.Trimesh(vertices=test_points, faces=faces, process=False, validate=False)
 
+def report_bem_quality(shells, t1_img):
+    """Report BEM shells that leave the image FOV or are not nested. Detection only.
+
+    Nothing is moved. With no ground truth we cannot know which of two crossing shells
+    is the wrong one, so the decision is left to the human (and to the OpenMEEG stage,
+    which skips the BEM leadfield when the geometry is unusable). The FOV escape is the
+    one objective signal: mri_watershed runs on the padded conform volume, so on a head
+    truncated by the field of view a shell can balloon into space that holds no data.
+    """
+    sh = np.array(t1_img.shape[:3])
+    corners = np.array([[i, j, k, 1] for i in (0, sh[0]-1) for j in (0, sh[1]-1) for k in (0, sh[2]-1)])
+    world = (t1_img.affine @ corners.T).T[:, :3]
+    lo, hi = world.min(0), world.max(0)
+
+    for name, mesh in shells:
+        v = np.asarray(mesh.vertices)
+        out = ((v < lo) | (v > hi)).any(1)
+        if out.any():
+            depth = np.maximum(lo - v, v - hi).max(1)[out].max()
+            print(f"[bem] WARNING: {name} has {int(out.sum())} vertices outside the T1 field of "
+                  f"view (up to {depth:.1f} mm); watershed fitted it where there is no data.")
+
+    for i, (ni, mi) in enumerate(shells):
+        for no, mo in shells[i+1:]:
+            ins = trimesh.proximity.signed_distance(mo, mi.vertices)
+            outv = -trimesh.proximity.signed_distance(mi, mo.vertices)
+            if (ins < 0).any() or (outv < 0).any():
+                print(f"[bem] WARNING: {ni} is not contained in {no}: "
+                      f"{int((ins < 0).sum())} {ni} vertices up to {-ins.min():.2f} mm outside it, "
+                      f"{int((outv < 0).sum())} {no} vertices inside {ni}.")
+
+
 def add_output_dir(*paths):
     if len(paths)==1:
         return os.path.join(output_dir, paths[0])
@@ -485,6 +517,12 @@ if __name__ == "__main__":
     outer_skin = to_trimesh(fix_freesurfer_mesh(nib.freesurfer.read_geometry(add_output_dir(f"{surf_dir}/sub-{subject}/bem/outer_skin.surf"))))
     outer_skin = fix_intersection(outer_skull, outer_skin, min_dist = 3, step_size = 0.1)
     surf_to_ply(outer_skin, add_output_dir(f'surfaces/sub-{subject}/freesurfer_BEM_outer_skin.ply'))
+
+    # brain/inner_skull are written unrepaired above: watershed derives inner_skull by
+    # inflating brain, so containment normally holds for free. It does not when the brain
+    # shell runs out of the FOV, hence this report.
+    report_bem_quality([("brain", brain), ("inner_skull", inner_skull),
+                        ("outer_skull", outer_skull), ("outer_skin", outer_skin)], orig_T1)
     
     # MNE scalp
     scalp = (np.load(add_output_dir(f"{surf_dir}/sub-{subject}/bem/vertices-scalp.npy")), np.load(add_output_dir(f"{surf_dir}/sub-{subject}/bem/faces-scalp.npy")))

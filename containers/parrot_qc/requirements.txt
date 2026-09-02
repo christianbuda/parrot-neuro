@@ -7,6 +7,8 @@ nibabel
 nilearn
 matplotlib
 trimesh
+rtree
+embreex
 meshio
 pyvista
 vtk
