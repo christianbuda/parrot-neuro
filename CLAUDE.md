@@ -99,7 +99,7 @@ parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
 | `bin/dwi_to_t1.sh` | Carry DWI tensor + tractogram from QSIPrep's ACPC space into T1/mesh space, reusing QSIPrep's `from-ACPC_to-anat` transform (ANTs resample + world-frame gradient rotation + `dwi2tensor` refit; `tcktransform`) |
 | `bin/make_connectomes.sh` | Subject connectome via `tck2connectome` (T1 space), run inside the QSIRecon image |
 | `containers/parrot_mri_reconstruction/scripts/prepare_connectivity_atlas.py` | Collapse the Parrot atlas into the connectivity node parcellations |
-| `template_data/connectivity/` | Group-average TVB connectivity (100 & 1000 regions); template fallback when no subject DWI |
+| `template_data/connectivity/` | Legacy group-average TVB connectivity (100 & 1000 regions). **No longer copied by the pipeline** and NOT in subject units (weights ~1e4x smaller, distances ~2-3x shorter, `1e-06` floor, no `weights_invnodevol`). Superseded by the LEMON group connectome; a no-DWI subject now simply has no `connectivity/`. |
 | `containers/parrot_mri_reconstruction/scripts/mni_registration.py` | Subject↔MNI affine (antspyx) bridging the HArtMuT template and the subject for the artifact warp (also feeds the fallback electrode interp) |
 | `containers/parrot_forward_model/place_artifact_dipoles.py` | EEG artifact dipoles: eyes (native, sampled in `Eye_balls`) + muscle (HArtMuT template positions warped via `hartmut_warp.py`); writes `artifactsources.json` |
 | `containers/parrot_forward_model/hartmut_warp.py` | Ray-cast layer-normalized source warp — clean-room port of HArtMuT `project_points.jl` (skull↔scalp depth-fraction preservation) |

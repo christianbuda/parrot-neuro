@@ -26,15 +26,20 @@ per-subject **rigid** registration between LEMON's ``mp2rage_brain`` (BOLD frame
 Parrot's raw T1w (atlas frame) -- same MP2RAGE, so it is near-exact -- and apply it to
 resample each atlas onto the BOLD grid.
 
-Why (almost) no denoising here
-------------------------------
-LEMON's ``native`` output is already analysis-ready for connectivity: voxelwise z-scored,
-low-pass filtered (~0.1 Hz), nuisance/motion confounds already regressed (re-regressing the
-shipped ``confounds.txt`` explains ~3% variance), first 5 dummy volumes dropped (652 vols,
-TR = 1.4 s). So extraction is just a region average. We additionally apply a light
-**high-pass** (default 0.01 Hz) to remove the residual slow drift LEMON left in, yielding
-the conventional 0.01-0.1 Hz resting-state FC band. Pearson correlation of these series
-downstream gives the functional connectome; no confound regression / standardisation needed.
+Why no denoising here
+---------------------
+LEMON's ``native`` output is already analysis-ready for connectivity (Mendes et al. 2019):
+nuisance/motion confounds regressed (aCompCor + GLM; re-regressing the shipped
+``confounds.txt`` explains ~3% variance), **band-pass filtered 0.01-0.1 Hz** -- i.e. already
+the conventional resting-state FC band -- then mean-centered + variance-normalized (z-scored),
+first 5 dummy volumes dropped (652 vols, TR = 1.4 s). So extraction is just a region average;
+no filtering, confound regression, or standardisation is needed here. Pearson correlation of
+these series downstream gives the functional connectome.
+
+An optional ``--highpass`` (default 0 = OFF) applies an ADDITIONAL high-pass. Note LEMON
+already high-passed at 0.01 Hz, so the old 0.01 Hz default merely double-filtered the same
+cutoff (a few-percent extra roll-off at 0.01-0.03 Hz, no drift to remove) -- hence disabled
+by default now. Leave it off unless you deliberately want a stricter high-pass than LEMON's.
 
 Runs INSIDE the parrot_mri_reconstruction image (it has antspyx -- see
 mni_registration.py -- plus numpy/scipy/nibabel; nilearn is NOT required). Launch via
@@ -45,7 +50,7 @@ derivatives/connectivity):
     ./bin/stage.sh lemon_fmri \\
         /srv/.../MRI_MPILMBB_LEMON/MRI_Preprocessed_Derivetives \\
         /srv/nfs-data/sisko/christian/LEONARDO/bids \\
-        [sub-010002 ...] [--force] [--highpass 0.01] [--tr 1.4] [--min-voxels 5]
+        [sub-010002 ...] [--force] [--highpass 0] [--tr 1.4] [--min-voxels 5]
 
 Omit the subject list to import every subject with a ``native`` BOLD in <src_dir>.
 """
@@ -227,6 +232,34 @@ def save_native_to_t1w_transform(fwdtransforms, out_path: Path) -> None:
     ants.write_transform(inv, str(out_path))
 
 
+def fwd_from_saved_transform(xfm_path: Path, workdir: Path):
+    """Reconstruct the atlas->BOLD (T1w->native) warp from a saved native->T1w transform.
+
+    ``save_native_to_t1w_transform`` stored the INVERSE of the registration's forward warp
+    (native->T1w); inverting it back recovers the original ``fwd`` (T1w->native, exact for a
+    rigid), so a rerun can resample atlases onto the BOLD grid *without* paying for the ANTs
+    registration again. Returns a one-element transform list (a temp ``.mat`` in ``workdir``).
+    """
+    import ants
+
+    fwd = ants.invert_ants_transform(ants.read_transform(str(xfm_path)))
+    p = workdir / "reused_fwd.mat"
+    ants.write_transform(fwd, str(p))
+    return [str(p)]
+
+
+def prior_registration_ncc(json_path: Path) -> float:
+    """Within-brain NCC recorded in an existing sidecar (nan if absent/unreadable).
+
+    Only used to carry a reused transform's original QC score into the refreshed sidecar.
+    """
+    try:
+        meta = json.loads(json_path.read_text())
+        return float(meta["registration"]["within_brain_ncc"])
+    except (OSError, KeyError, ValueError, TypeError):
+        return float("nan")
+
+
 def atlas_on_bold_grid(atlas_path: Path, bold_ref, fwdtransforms, workdir: Path,
                        tag: str) -> np.ndarray:
     """Resample an atlas label volume onto the BOLD grid via the rigid transform.
@@ -343,7 +376,7 @@ def backfill_optim_nodes(sub: str, min_voxels: int, force: bool) -> None:
 
 def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
                   variants: tuple[str, ...], force: bool, canonical: Path | None = None,
-                  transforms_only: bool = False) -> None:
+                  transforms_only: bool = False, reuse_transform: bool = False) -> None:
     """Copy the BOLD and write region time series for one subject."""
     import ants
     import nibabel as nib
@@ -398,22 +431,39 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
     # --- 2. recover the BOLD<->atlas frame transform (rigid) -----------------------------
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
-        fwd, ncc, n_reg = register_to_atlas_frame(mp2rage_brain, raw_t1w, canonical)
-        print(f"  rigid registration: within-brain NCC = {ncc:.3f} ({n_reg} attempt(s))")
-        if not np.isfinite(ncc) or ncc < REG_NCC_GATE:
-            print(f"  WARNING registration FAILED (NCC {ncc:.3f} < {REG_NCC_GATE}) -> "
-                  f"SKIPPED (no fMRI folder). Inspect this subject.")
-            return
 
-        # Registration OK -> create the folder, copy the BOLD (verbatim) + confounds record,
-        # and save the native->T1w rigid transform (spatial convenience; the time series use the
-        # atlas resampled into the pristine native BOLD below, so the BOLD is never resampled).
+        # The transform is fixed subject geometry; only the time series change on a rerun. With
+        # --reuse-transform we invert the saved native->T1w back to the atlas->BOLD warp and skip
+        # the expensive ANTs registration entirely (falls back to registering if no xfm exists).
+        if reuse_transform and xfm_path.exists():
+            fwd = fwd_from_saved_transform(xfm_path, workdir)
+            ncc, n_reg = prior_registration_ncc(json_path), 0
+            print(f"  reusing saved transform {xfm_path.name} (prior NCC {ncc:.3f}); "
+                  f"registration skipped")
+        else:
+            fwd, ncc, n_reg = register_to_atlas_frame(mp2rage_brain, raw_t1w, canonical)
+            print(f"  rigid registration: within-brain NCC = {ncc:.3f} ({n_reg} attempt(s))")
+            if not np.isfinite(ncc) or ncc < REG_NCC_GATE:
+                print(f"  WARNING registration FAILED (NCC {ncc:.3f} < {REG_NCC_GATE}) -> "
+                      f"SKIPPED (no fMRI folder). Inspect this subject.")
+                return
+            # Save the native->T1w rigid transform (spatial convenience; the time series use the
+            # atlas resampled into the pristine native BOLD below, so the BOLD is never resampled).
+            out_dir.mkdir(parents=True, exist_ok=True)
+            save_native_to_t1w_transform(fwd, xfm_path)
+
+        # Registration OK -> create the folder and stage the verbatim BOLD + confounds record.
+        # Both are copied verbatim (never change), so skip the rewrite if already present -- this
+        # is what keeps a --force rerun from recopying every subject's 3.5 GB BOLD needlessly.
         out_dir.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(bold_src, bold_dst)
-        if confounds_src.exists():
-            shutil.copyfile(confounds_src, out_dir / f"{sub}_task-{TASK}_confounds.txt")
-        save_native_to_t1w_transform(fwd, xfm_path)
-        print(f"  BOLD copied -> {bold_dst.name}")
+        if not bold_dst.exists():
+            shutil.copyfile(bold_src, bold_dst)
+            print(f"  BOLD copied -> {bold_dst.name}")
+        else:
+            print(f"  BOLD present -> kept {bold_dst.name}")
+        conf_dst = out_dir / f"{sub}_task-{TASK}_confounds.txt"
+        if confounds_src.exists() and not conf_dst.exists():
+            shutil.copyfile(confounds_src, conf_dst)
 
         # BOLD as arrays (float32 to keep the 4D volume ~3.5 GB, not 7) + finite brain mask.
         bold_img = nib.load(str(bold_src))
@@ -471,17 +521,22 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
         "space": ("LEMON fMRI native (structural-coregistered to LEMON's mp2rage_brain). "
                   "NOT Parrot's atlas T1 frame -- atlases were rigidly registered into this "
                   "frame before extraction (see registration.within_brain_ncc)."),
-        "highpass_hz": highpass,
-        "highpass_filter": "Butterworth order-2, zero-phase (scipy filtfilt)",
-        "lowpass_note": "already applied by LEMON preprocessing (~0.1 Hz)",
-        "denoising_note": ("LEMON-preprocessed: motion/nuisance confounds already regressed, "
-                           "voxelwise z-scored, first 5 dummy volumes dropped. No further "
-                           "confound regression applied here."),
+        "temporal_filtering": ("LEMON preprocessing (Mendes et al. 2019) already band-passed "
+                               "0.01-0.1 Hz and mean-centered + variance-normalized. No filtering "
+                               "applied here by default."),
+        "extra_highpass_hz": highpass,  # 0 = off (default); >0 = ADDITIONAL high-pass over LEMON's
+        "extra_highpass_filter": ("Butterworth order-2, zero-phase (scipy filtfilt)"
+                                  if highpass and highpass > 0 else None),
+        "denoising_note": ("LEMON-preprocessed (Mendes et al. 2019): motion/nuisance confounds "
+                           "regressed (aCompCor + GLM), band-pass 0.01-0.1 Hz, mean-centered + "
+                           "variance-normalized, first 5 dummy volumes dropped. No further confound "
+                           "regression, filtering, or standardisation here (unless extra_highpass_hz>0)."),
         "min_voxels": min_voxels,
         "registration": {
             "method": "antspyx Rigid (MI), moving=raw T1w (atlas frame), fixed=mp2rage_brain",
-            "within_brain_ncc": round(ncc, 4),
-            "attempts": n_reg,
+            "within_brain_ncc": round(ncc, 4) if np.isfinite(ncc) else None,
+            "attempts": n_reg,  # 0 == reused a previously saved transform (registration skipped)
+            "reused_saved_transform": n_reg == 0,
         },
         "native_to_t1w_transform": {
             "file": xfm_path.name,
@@ -541,8 +596,10 @@ def main() -> None:
     ap.add_argument("--force", action="store_true", help="overwrite existing outputs")
     ap.add_argument("--tr", type=float, default=1.4,
                     help="repetition time in seconds (default: 1.4; BOLD header TR is unreliable)")
-    ap.add_argument("--highpass", type=float, default=0.01,
-                    help="high-pass cutoff in Hz before saving (default: 0.01; 0 to disable)")
+    ap.add_argument("--highpass", type=float, default=0.0,
+                    help="OPTIONAL extra high-pass cutoff in Hz applied on top of LEMON's own "
+                         "0.01-0.1 Hz band-pass (default: 0 = off; LEMON already high-passed at "
+                         "0.01 Hz, so 0.01 here just double-filters). Set >0 only for a stricter band.")
     ap.add_argument("--min-voxels", type=int, default=5,
                     help="regions with fewer in-brain voxels get a NaN row (default: 5)")
     ap.add_argument("--variants", default="full,conn",
@@ -550,6 +607,11 @@ def main() -> None:
     ap.add_argument("--transforms-only", action="store_true",
                     help="only (re)compute + save the native->T1w rigid transform per subject "
                          "(skip BOLD copy and time-series extraction); for backfilling transforms")
+    ap.add_argument("--reuse-transform", action="store_true",
+                    help="on rerun, reuse each subject's saved native->T1w transform and SKIP the "
+                         "(expensive) ANTs registration -- only re-extracts the time series (e.g. "
+                         "to re-stage with a different --highpass). Use together with --force to "
+                         "overwrite the existing npz; the verbatim BOLD copy is kept in place.")
     ap.add_argument("--optim-nodes-only", action="store_true",
                     help="only (re)write the desc-optim_nodes npz from each subject's existing "
                          "desc-conn nvox (no BOLD/registration/extraction); fast backfill")
@@ -572,12 +634,18 @@ def main() -> None:
     # One canonical rigid init for the whole run (rescues the ~few subjects the from-scratch
     # registration cannot align). Lives in a run-level tempdir that outlives the per-subject ones.
     with tempfile.TemporaryDirectory() as run_tmp:
-        canonical, ref = compute_canonical_init(Path(run_tmp))
-        print(f"canonical registration init: from {ref}" if canonical
-              else "canonical registration init: NONE found (fallback disabled)")
+        # --reuse-transform does no registration at all, so skip the canonical-init scan
+        # (which itself registers ~12 subjects just to seed the bad-basin fallback).
+        if args.reuse_transform:
+            canonical, ref = None, None
+            print("canonical registration init: skipped (--reuse-transform)")
+        else:
+            canonical, ref = compute_canonical_init(Path(run_tmp))
+            print(f"canonical registration init: from {ref}" if canonical
+                  else "canonical registration init: NONE found (fallback disabled)")
         for sub in subjects:
             stage_subject(sub, args.tr, args.highpass, args.min_voxels, variants, args.force,
-                          canonical, args.transforms_only)
+                          canonical, args.transforms_only, args.reuse_transform)
 
     write_dataset_description()
     print("\nDone.")

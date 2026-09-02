@@ -66,12 +66,21 @@ def copy_with_json(src_nii: Path, dst_nii: Path, *, json_edit=None) -> None:
 
 
 def write_dataset_description(
-    dst_root: Path, name: str, *, source_url: str | None = None, bids_version: str = "1.8.0"
+    dst_root: Path,
+    name: str,
+    *,
+    source_url: str | list[str] | None = None,
+    bids_version: str = "1.8.0",
 ) -> None:
-    """Write a minimal BIDS dataset_description.json for the staged dataset."""
+    """Write a minimal BIDS dataset_description.json for the staged dataset.
+
+    ``source_url`` accepts a list when the dataset pools several independent sources
+    (e.g. the template dataset, whose two "subjects" come from different projects).
+    """
     desc: dict = {"Name": name, "BIDSVersion": bids_version, "DatasetType": "raw"}
     if source_url is not None:
-        desc["SourceDatasets"] = [{"URL": source_url}]
+        urls = [source_url] if isinstance(source_url, str) else list(source_url)
+        desc["SourceDatasets"] = [{"URL": u} for u in urls]
     (Path(dst_root) / "dataset_description.json").write_text(json.dumps(desc, indent=2))
 
 

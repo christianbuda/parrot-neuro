@@ -6,14 +6,15 @@ make_atlas.py in subject/T1w space) and collapses it into the connectivity
 parcellation used downstream:
 
   * fine subdivisions (thalamic nuclei, amygdala subnuclei) are merged into the
-    connectivity units expected by the group-average template, and
+    canonical connectivity units, and
   * non-grey / non-cortical structures that should not carry connectivity
     (commissures, fornix, ventricles, optic structures, ...) are routed into
     ``Unknown`` (label 0).
 
 The atlas is then renumbered to contiguous labels ``0..M`` (0 == Unknown), which
-``tck2connectome`` consumes directly. Outputs, written to
-``connectivity/sub-<ID>/`` and matching the template fallback byte-for-byte:
+``tck2connectome`` consumes directly. The label set and index maps are
+template-fixed (identical across subjects). Outputs, written to
+``connectivity/sub-<ID>/``:
 
   * ``atlas{N}_connectivity.nii.gz`` -- renumbered atlas (tck2connectome input)
   * ``labels_{N}.txt``              -- one region name per line, index 0 == Unknown

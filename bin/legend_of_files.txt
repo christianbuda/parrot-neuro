@@ -168,7 +168,7 @@ Here is detailed what each reconstructed folder contains. For convenience, only 
 │       ├── sub-subject_space-ACPC_model-ifod2_streamlines.tck.gz: whole-brain tractogram (10M streamlines, ACPC space).
 │       ├── sub-subject_space-T1_model-ifod2_streamlines.tck.gz: same tractogram carried into T1/mesh space by the dwi2t1 stage (the connectome is built from this).
 │       └── sub-subject_space-ACPC_model-sift2_streamlineweights.csv: SIFT2 per-streamline weights (+ mu factor).
-├── connectivity/: Subject structural connectome (tck2connectome, in T1/mesh space) or, when DWI is absent/too sparse, the group-average template fallback.
+├── connectivity/: Subject structural connectome (tck2connectome, in T1/mesh space). Absent entirely when DWI is missing/too sparse -- no template is copied in; substitute one at simulation time.
 │   └── sub-subject/
 │       ├── atlas*_connectivity.nii.gz: per-resolution node parcellations (Parrot atlas, T1 space).
 │       ├── weights_*.txt: SIFT2-weighted streamline-count connectomes (TVB coupling).

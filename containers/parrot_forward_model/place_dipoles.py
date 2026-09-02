@@ -385,9 +385,26 @@ def get_instruction_files(kind):
         gradient_as_normal = [  {'labels_with_dipoles':['Left-Cortical-nucleus', 'Right-Cortical-nucleus', 'Left-Corticoamygdaloid-transitio', 'Right-Corticoamygdaloid-transitio', 'Left-Anterior-amygdaloid-area-AAA', 'Right-Anterior-amygdaloid-area-AAA', 'Left-Hippocampal-amygdala-transition-HATA', 'Right-Hippocampal-amygdala-transition-HATA', 'Left-Prepiriform-cortex', 'Right-Prepiriform-cortex', 'Left-Periamygdaloid-cortex', 'Right-Periamygdaloid-cortex'],
                                 'all_labels':['Left-Lateral-nucleus', 'Left-Basolateral-nucleus', 'Left-Basal-nucleus', 'Left-Centromedial-nucleus', 'Left-Central-nucleus', 'Left-Medial-nucleus', 'Left-Cortical-nucleus', 'Left-Accessory-Basal-nucleus', 'Left-Corticoamygdaloid-transitio', 'Left-Anterior-amygdaloid-area-AAA', 'Left-Fusion-amygdala-HP-FAH', 'Left-Hippocampal-amygdala-transition-HATA', 'Left-Endopiriform-nucleus', 'Left-Lateral-nucleus-olfactory-tract', 'Left-Paralaminar-nucleus', 'Left-Intercalated-nucleus', 'Left-Prepiriform-cortex', 'Left-Periamygdaloid-cortex', 'Left-Envelope-Amygdala', 'Left-Extranuclear-Amydala', 'Right-Lateral-nucleus', 'Right-Basolateral-nucleus', 'Right-Basal-nucleus', 'Right-Centromedial-nucleus', 'Right-Central-nucleus', 'Right-Medial-nucleus', 'Right-Cortical-nucleus', 'Right-Accessory-Basal-nucleus', 'Right-Corticoamygdaloid-transitio', 'Right-Anterior-amygdaloid-area-AAA', 'Right-Fusion-amygdala-HP-FAH', 'Right-Hippocampal-amygdala-transition-HATA', 'Right-Endopiriform-nucleus', 'Right-Lateral-nucleus-olfactory-tract', 'Right-Paralaminar-nucleus', 'Right-Intercalated-nucleus', 'Right-Prepiriform-cortex', 'Right-Periamygdaloid-cortex', 'Right-Envelope-Amygdala', 'Right-Extranuclear-Amydala']}]
 
-        # Orient along the longest dimension of the voxel cloud: Laminar Thalamus (LGN/MGN) & Reticular
-        principal_axis_left = ['Left-Pallidum', 'Left-LGN', 'Left-MGN', 'Left-R', 'L-C.mammilare']
-        principal_axis_right = ['Right-Pallidum', 'Right-LGN', 'Right-MGN', 'Right-R', 'R-C.mammilare']
+        # Orient along the longest dimension of the voxel cloud. Follows Attal & Schwartz
+        # 2013 (PLoS ONE 8(3):e59856): "For nuclei with an oriented neural architecture
+        # (EGP, RPN and LGN), dipoles are orientated along the principal axis of their
+        # respective surface envelope." So this list is exactly the paper's set.
+        #
+        # MGN and C.mammilare used to be here by analogy to the LGN, but were moved to the
+        # random-orientation group below: measured over 60 LEMON subjects, their principal
+        # axis is not defined. Median PC1 explained variance / PC1:PC2 ratio, with LGN as
+        # the paper-sanctioned benchmark --
+        #     Pallidum 73-75% / 4.0   LGN 68-69% / 3.3   MGN 51% / 1.55   C.mammilare 45% / 1.35
+        # and PC1 falls below 50% in ~40% of subjects for MGN and ~80% for C.mammilare, i.e.
+        # PC1 and PC2 are near-degenerate and the assigned axis (plus the pca[1] > 0 sign
+        # convention meant to make it reproducible) is arbitrary subject-to-subject.
+        #
+        # NOTE Left-R / Right-R (the paper's RPN) are present in the atlas LUT but segment to
+        # ZERO voxels in 60/60 LEMON subjects, so the `len(indices) > 0` guard below makes them
+        # a silent no-op -- the RPN is absent from the model entirely. Left in the list so the
+        # intent stays visible; needs an atlas/segmentation fix, not an orientation one.
+        principal_axis_left = ['Left-Pallidum', 'Left-LGN', 'Left-R']
+        principal_axis_right = ['Right-Pallidum', 'Right-LGN', 'Right-R']
         assert len(principal_axis_left) == len(principal_axis_right)
 
         # random directions: Thalamus (Main), Hypothalamus (Main), Striatum, Deep Amygdala
@@ -399,9 +416,24 @@ def get_instruction_files(kind):
                             'Right-Amygdala_Deep':[3.5, ['Right-Lateral-nucleus', 'Right-Basolateral-nucleus', 'Right-Basal-nucleus', 'Right-Centromedial-nucleus', 'Right-Central-nucleus', 'Right-Medial-nucleus', 'Right-Accessory-Basal-nucleus', 'Right-Endopiriform-nucleus', 'Right-Paralaminar-nucleus', 'Right-Intercalated-nucleus']],
                             'Left-Thalamus':[4, ['Left-AV', 'Left-CL', 'Left-CM', 'Left-CeM', 'Left-L-Sg', 'Left-LD', 'Left-LP', 'Left-MDl', 'Left-MDm', 'Left-MV(Re)', 'Left-PaV', 'Left-Pc', 'Left-Pf', 'Left-Pt', 'Left-PuA', 'Left-PuI', 'Left-PuL', 'Left-PuM', 'Left-PuMl', 'Left-PuMm', 'Left-VA', 'Left-VAmc', 'Left-VLa', 'Left-VLp', 'Left-VM', 'Left-VPL']],
                             'Right-Thalamus':[4, ['Right-AV', 'Right-CL', 'Right-CM', 'Right-CeM', 'Right-L-Sg', 'Right-LD', 'Right-LP', 'Right-MDl', 'Right-MDm', 'Right-MV(Re)', 'Right-PaV', 'Right-Pc', 'Right-Pf', 'Right-Pt', 'Right-PuA', 'Right-PuI', 'Right-PuL', 'Right-PuM', 'Right-PuMl', 'Right-PuMm', 'Right-VA', 'Right-VAmc', 'Right-VLa', 'Right-VLp', 'Right-VM', 'Right-VPL']],
-                            'Left-Hypothalamus':[2.5, ['R-Lat-Hypothalamus', 'R-Med-Hypothalamus', 'R-Ant-Hypothalamus', 'R-Post-Hypothalamus',]],
-                            'Right-Hypothalamus':[2.5, ['L-Lat-Hypothalamus', 'L-Med-Hypothalamus', 'L-Ant-Hypothalamus', 'L-Post-Hypothalamus']],
-                            'Tuberal-Region':[2, ['Tuberal-Region']],}
+                            # NB the L/R keys used to be swapped relative to their label lists.
+                            # Inert (only .values() is iterated, so the keys are never read) and
+                            # fixing it changes no output -- but it was a trap for anyone who
+                            # later keyed off the group name.
+                            'Left-Hypothalamus':[2.5, ['L-Lat-Hypothalamus', 'L-Med-Hypothalamus', 'L-Ant-Hypothalamus', 'L-Post-Hypothalamus']],
+                            'Right-Hypothalamus':[2.5, ['R-Lat-Hypothalamus', 'R-Med-Hypothalamus', 'R-Ant-Hypothalamus', 'R-Post-Hypothalamus',]],
+                            'Tuberal-Region':[2, ['Tuberal-Region']],
+                            # Moved out of principal_axis_* (see the note there): no defined
+                            # principal axis, so an oriented model is not supported by the
+                            # geometry. Radius 2 mm by analogy to Tuberal-Region/hypothalamus,
+                            # the closest structures in size (~100-116 voxels, 11-17 dipoles);
+                            # get_structure_size() shrinks it further anyway for clouds this
+                            # small. Bilateral pairs are separate groups so the two sides get
+                            # independent fields.
+                            'Left-MGN':[2, ['Left-MGN']],
+                            'Right-MGN':[2, ['Right-MGN']],
+                            'L-C.mammilare':[2, ['L-C.mammilare']],
+                            'R-C.mammilare':[2, ['R-C.mammilare']],}
         
         return labels_to_exclude, gradient_as_normal, principal_axis_left, principal_axis_right, random_orientations
     elif kind == 'surfaces':
