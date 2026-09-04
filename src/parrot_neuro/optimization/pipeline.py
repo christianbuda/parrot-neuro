@@ -178,6 +178,10 @@ def build_context(cfg: config.BoldFitConfig, dataset=None) -> ExperimentContext:
     simulators = build_simulators(
         network, solver, cfg.t0, cfg.dt, cfg.t1_eeg, cfg.t1_bold,
         cfg.tr_ms, cfg.bold_downsample_ms, t1_warmup=cfg.t1_warmup,
+        bold_model=cfg.bold_model,
+        balloon_taus=cfg.balloon_taus, balloon_tauf=cfg.balloon_tauf, balloon_tauo=cfg.balloon_tauo,
+        balloon_alpha=cfg.balloon_alpha, balloon_Eo=cfg.balloon_Eo, balloon_vo=cfg.balloon_vo,
+        balloon_TE=cfg.balloon_TE,
     )
 
     diff_params_init, static_params = learnable_partition(simulators.params, cfg.learnable_params)

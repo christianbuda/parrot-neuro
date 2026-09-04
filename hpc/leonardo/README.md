@@ -496,10 +496,17 @@ SLURM needed) before trusting it on Leonardo — a `submit_sweep.sh smoke` with
      with (1) fixed, a burst of N of these within a few seconds can still
      exhaust `RLIMIT_NPROC` — a few agents die with `RuntimeError: can't
      start new thread` or a bare `SIGSEGV`, and never produce a single run.
-     `submit_sweep.sh` staggers launches by 2s each (was 0.2s, which wasn't
-     enough) as margin against this — ~4.3 min total launch time for N=128,
-     negligible against hours-long trials. If you still lose agents at
-     launch with this stagger, widen it further or reduce `N`.
+     `submit_sweep.sh` staggers launches by `SWEEP_AGENT_STAGGER` seconds
+     each (default 2, was a hardcoded 0.2 which wasn't enough) — ~4.3 min
+     total launch time for N=128 at the default, negligible against
+     hours-long trials. If you still lose agents at launch, widen it (e.g.
+     `SWEEP_AGENT_STAGGER=60 ./submit_sweep.sh start 24 5`) or reduce `N`.
+     Widening this further than strictly needed for the launch burst is
+     also a legitimate way to reduce *sustained* login-node load: agents
+     launched close together tend to run similar-length trials and so
+     finish (and hit the `wandb sync` OpenBLAS pressure below) close
+     together too — a bigger stagger spreads both launch AND finish/sync
+     timing across the batch, trading total ramp-up time for a lower peak.
   Check `sweep_logs*/agent-<i>.log` for an agent that shows zero
   `Starting Run` lines — `grep -c "Starting Run" sweep_logs*/agent-*.log` —
   to tell which of the two hit.
