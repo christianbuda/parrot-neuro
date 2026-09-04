@@ -337,7 +337,115 @@ concurrently.
     performance fix — `train.build_simulators` builds the monitor with an
     explicit `downsample=SubSampling(...)` now, not `HRFBold`'s own default.
 
-## Hyperparameter sweep (wandb)
+## Hyperparameter search (Optuna — recommended)
+
+A **locally-coordinated** hyperparameter search over the same 7 fields as
+the wandb sweep below (learning rates, BOLD loss-term weights, dFC window
+size), minimizing the same `aggregate/combined_loss` objective (mean final
+EEG+BOLD loss across `OPTUNA_SUBJECTS`) — same fitting code
+(`_run_sequential`/`_run_parallel`, imported straight from
+`examples/eeg_bold_fit_sweep.py`), same wandb-offline logging/plots, just a
+**different search-coordination mechanism**: Optuna's `JournalStorage`, one
+shared file on NFS, instead of wandb's cloud-hosted Sweeps controller.
+
+**Why this replaced the wandb-agent approach below:** `wandb agent` needs to
+be *continuously online*, polling `api.wandb.ai` for the next config, for as
+long as the search runs — and since compute nodes have no internet, that
+process can only live on a login node, for hours-to-days. Login nodes have a
+per-machine `RLIMIT_NPROC` (process/thread) ceiling nowhere near generous
+enough for that at any real scale — chasing it is what produced the whole
+saga in the wandb section's "Notes / gotchas" below (agents dying at launch,
+`wandb sync` segfaulting, the same run_id silently dispatched to multiple
+agents because the server can't see an offline run in progress, needing to
+split load across Leonardo's 4 login nodes...). Optuna's `study.ask()`/
+`study.tell()` read and write one shared file directly — no server, so
+**no process needs to stay alive anywhere**, and no login node is ever the
+bottleneck:
+
+```
+login node (any of them, or none once submitted)   compute node (Booster GPU, NO egress)
+submit_optuna_sweep.sh start N COUNT
+  │ ONE `sbatch --array=1-(N*COUNT)%N ...` submission, nothing kept running
+  ▼
+SLURM's own scheduler launches/throttles the array
+                                                     optuna_train.sbatch (one array task = one trial)
+                                                       pixi run python -u
+                                                         examples/eeg_bold_fit_optuna.py
+                                                       study = optuna.load_study(storage=<shared file on NFS>)
+                                                       trial = study.ask()          # local, no network
+                                                       ...fit $OPTUNA_SUBJECTS, same as the wandb path...
+                                                       wandb.init(mode="offline")   # LOGGING ONLY, no agent involved
+                                                       study.tell(trial, combined_loss)   # local, no network
+(no live process anywhere) ── periodically ──▶ bash sync_orphaned_runs.sh   (batch-syncs offline wandb runs whenever you feel like it)
+```
+
+### One-time setup
+
+Same pixi env as the optimization stage (`bash hpc/leonardo/setup_optim_env.sh`
+— this now also installs `optuna`, added to `pixi.toml`). `WANDB_API_KEY` in
+`config.local.sh` is still used (logging/plots), but no longer load-bearing
+for the search itself — an invalid key would only break dashboard logging,
+not `study.ask()`/`study.tell()`.
+
+### Usage
+
+```bash
+bash hpc/leonardo/submit_optuna_sweep.sh create           # register the study, once
+bash hpc/leonardo/submit_optuna_sweep.sh smoke             # ONE trial, 1 subject, 2 epochs, foreground --
+                                                            #   validates the whole ask->train->tell round trip
+bash hpc/leonardo/submit_optuna_sweep.sh start 8 5         # 8*5=40 trials, throttled to 8 concurrent,
+                                                            #   as ONE sbatch array submission
+squeue --me                                                # or: bash hpc/leonardo/submit_optuna_sweep.sh status
+bash hpc/leonardo/submit_optuna_sweep.sh list              # every known study + trial-state counts
+bash hpc/leonardo/submit_optuna_sweep.sh stop              # scancel this study's array job
+```
+
+`start [N] [COUNT]` submits `N*COUNT` total trials as one SLURM array job
+throttled (`--array=1-(N*COUNT)%N`) to `N` concurrent — this is the direct
+analogue of the wandb path's "N agents × COUNT runs each", except `N` is now
+purely a SLURM concurrency throttle, not a count of processes a login node
+has to sustain for hours. There is **no equivalent of `SWEEP_AGENT_STAGGER`
+or splitting across login nodes needed** — pick `N` from your real GPU/QoS
+budget (see the wandb section's billing notes, still accurate here), submit
+once, and SLURM's own scheduler does the rest. `OPTUNA_GPUS` (parallel/
+whole-node mode) works exactly like `SWEEP_GPUS` — see `config.local.sh.example`.
+
+### Notes / gotchas (Optuna search)
+
+- **A crashed trial's Optuna state:** `eeg_bold_fit_optuna.py` reports a
+  failure to Optuna (`study.tell(trial, state=TrialState.FAIL)`) before
+  re-raising, so a training crash doesn't leave that trial stuck `RUNNING`
+  forever in the shared study — it's just excluded from the search going
+  forward, same as a `FAILED` SLURM job is excluded from `sacct` successes.
+- **wandb is decoupled from the search** — `stop` (SLURM `scancel`) or a
+  node failure mid-trial can leave that ONE trial `RUNNING` in the study
+  forever (no external liveness check the way a wandb sweep's server has),
+  but this is harmless: Optuna's sampler treats a stale `RUNNING` trial as
+  just not contributing a data point yet, it doesn't block new `ask()`
+  calls. It also means results are **not live** on the wandb dashboard the
+  way the old agent-based sync-after-each-trial was — sync is now something
+  you run periodically/manually (`sync_orphaned_runs.sh`), same script as
+  before, no changes needed there.
+- **The 7 swept fields/distributions are duplicated, not shared, between
+  `sweep_eeg_bold.yaml` (wandb) and `eeg_bold_fit_optuna.py`'s
+  `trial.suggest_*` calls** (a wandb sweep config and Optuna's define-by-run
+  API are structurally different ways of expressing a search space) — if you
+  change one search space, the other doesn't follow automatically; see
+  `eeg_bold_fit_optuna.py`'s module docstring.
+- **Multiple independent studies** work the same way multiple named wandb
+  sweeps did: `OPTUNA_STUDY_NAME=<tag>` namespaces the study file (and hence
+  the SLURM job name) — see this section's usage block.
+
+## Hyperparameter sweep (wandb — legacy, superseded by Optuna above)
+
+Kept working and documented (nothing here was removed) — still a reasonable
+choice off Leonardo, e.g. a workstation or any cluster where the agent's
+machine has both internet AND enough process-count headroom to just not run
+into the issues below. On Leonardo specifically, use the Optuna path above
+instead; this section (and its "Notes / gotchas") is preserved mainly
+because it documents real, non-obvious infrastructure failure modes
+(`RLIMIT_NPROC` behavior, `wandb sync` segfaults, offline-mode sweep
+duplication) that are worth knowing about even if you never run this path.
 
 A W&B **Bayesian sweep** over the optimization stage's learning rates, BOLD
 loss-term weights, and dFC window size — each trial fits a **fixed list of

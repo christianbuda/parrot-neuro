@@ -179,6 +179,10 @@ def _log_subject_summary(wandb, subject_id, loss_eeg, loss_bold, metrics, figure
 
 def _log_aggregate(wandb, per_subject_combined, per_subject_eeg, per_subject_bold,
                     per_subject_eeg_ratio, per_subject_bold_ratio, n_subjects):
+    """Returns the combined_loss value (the sweep's minimized objective) --
+    unused by this module's own main() (wandb's Sweeps controller reads the
+    metric back from wandb itself), but eeg_bold_fit_optuna.py's caller needs
+    it directly to hand to Optuna's study.tell()."""
     import numpy as np
     # aggregate/combined_loss (the sweep's minimized metric -- see
     # sweep_eeg_bold.yaml) is the ratio-based combination; the raw *_loss_mean
@@ -195,6 +199,7 @@ def _log_aggregate(wandb, per_subject_combined, per_subject_eeg, per_subject_bol
         aggregate["aggregate/bold_loss_ratio_mean"] = float(np.mean(per_subject_bold_ratio))
     wandb.log(aggregate)
     print(f"Aggregate over {n_subjects} subjects: {aggregate}")
+    return aggregate["aggregate/combined_loss"]
 
 
 def _run_sequential(wandb, run, args, subjects):
