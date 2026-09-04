@@ -17,9 +17,22 @@
 # offline run directory already has its run ID embedded from when the
 # training job called wandb.init(id=..., mode="offline"), so no --id needed.
 #
-# Usage: bash hpc/leonardo/sync_orphaned_runs.sh
+# Works unchanged for BOTH the Optuna pipeline (examples/eeg_bold_fit_optuna.py
+# / optuna_train.sbatch) and the legacy wandb-sweep one (sweep_train.sbatch)
+# -- this globs by directory STRUCTURE (<dir>/wandb/offline-run-*), which
+# both write, not by any pipeline-specific naming.
+#
+# Usage:
+#   bash hpc/leonardo/sync_orphaned_runs.sh            # everything
+#   bash hpc/leonardo/sync_orphaned_runs.sh 'optuna-*'  # Optuna runs only --
+#     matches optuna_train.sbatch's WANDB_DIR naming (wandb_offline/optuna-
+#     <study_name>-<task_tag>/); the legacy path names dirs after the bare
+#     wandb run ID instead, so this glob naturally excludes those. Quote it
+#     so the shell doesn't expand the glob itself before this script sees it.
 ###############################################################################
 set -euo pipefail
+
+DIR_GLOB="${1:-*}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 for _c in "${PARROT_CONFIG:-}" \
@@ -67,7 +80,7 @@ export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_TH
 n=0
 failed=0
 corrupt=0
-for run_dir in "$WORKDIR"/parrot/wandb_offline/*/wandb/offline-run-*; do
+for run_dir in "$WORKDIR"/parrot/wandb_offline/$DIR_GLOB/wandb/offline-run-*; do
     [ -d "$run_dir" ] || continue
     n=$((n + 1))
     echo "=== [$n] syncing $run_dir ==="
@@ -91,7 +104,7 @@ for run_dir in "$WORKDIR"/parrot/wandb_offline/*/wandb/offline-run-*; do
 done
 
 if [ "$n" -eq 0 ]; then
-    echo "No offline run directories found under $WORKDIR/parrot/wandb_offline/"
+    echo "No offline run directories found under $WORKDIR/parrot/wandb_offline/$DIR_GLOB/"
 else
     echo "Done: $((n - failed - corrupt))/$n fully synced, $corrupt partial (truncated log), $failed hard failures."
     if [ "$failed" -ne 0 ] || [ "$corrupt" -ne 0 ]; then
