@@ -137,6 +137,12 @@ def main() -> None:
     import wandb
     run = wandb.init(
         project=args.wandb_project, entity=args.wandb_entity, mode=args.wandb_mode,
+        # group, not a wandb Sweep (there is none here -- see module
+        # docstring): clusters every trial from this Optuna study together
+        # in the wandb UI's Runs table (collapsible/filterable by group),
+        # the closest equivalent to what a Sweep page used to give for free.
+        group=args.optuna_study_name,
+        job_type="optuna_trial",
         config={**vars(args), "optuna_trial_number": trial.number, "optuna_study_name": args.optuna_study_name},
     )
 
