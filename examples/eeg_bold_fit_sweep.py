@@ -99,6 +99,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--spacing", default="2.0", help="dipole spacing in mm (string)")
     p.add_argument("--leadfield-label", default="duneuroCGAL")
     p.add_argument("--optimize", default="both", choices=("eeg", "bold", "both"))
+    p.add_argument("--bold-model", default="hrf", choices=("hrf", "balloon"),
+                    help="see eeg_bold_fit_cli.py --bold-model -- 'hrf' (linear HRF-kernel "
+                         "convolution, default) or 'balloon' (Friston/Deco Balloon-Windkessel "
+                         "hemodynamic ODE), applied identically to every subject in this sweep "
+                         "trial.")
     p.add_argument("--schedule", default="alternating", choices=("alternating", "phased", "joint"),
                     help="see eeg_bold_fit_cli.py --schedule -- same three strategies (phased "
                          "splits --num-epochs in half), applied identically to every subject in "
@@ -237,6 +242,7 @@ def _run_sequential(wandb, run, args, subjects):
             num_epochs=args.num_epochs,
             bold_every=args.bold_every,
             optimize=args.optimize,
+            bold_model=args.bold_model,
             schedule=args.schedule,
             joint_eeg_weight=args.joint_eeg_weight,
             joint_bold_weight=args.joint_bold_weight,
@@ -325,6 +331,7 @@ def _worker_argv(worker_script, args, subject_id, worker_output_root):
         "--spacing", args.spacing,
         "--leadfield-label", args.leadfield_label,
         "--optimize", args.optimize,
+        "--bold-model", args.bold_model,
         "--schedule", args.schedule,
         "--joint-eeg-weight", str(args.joint_eeg_weight),
         "--joint-bold-weight", str(args.joint_bold_weight),
