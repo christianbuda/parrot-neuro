@@ -52,7 +52,9 @@ optax = "*"
 equinox = "*"
 tvboptim = "*"      # your TVB-optim library (PyPI, currently 0.3.1)
 potpourri3d = "*"   # heat-method geodesics on the scalp mesh (electrode analyses)
-wandb = "*"         # experiment tracking / sweeps (examples/eeg_bold_fit_sweep.py)
+wandb = "*"         # experiment tracking / logging (examples/eeg_bold_fit_sweep.py, eeg_bold_fit_optuna.py)
+optuna = "*"        # locally-coordinated hyperparameter search, no online agent needed
+                     # (examples/eeg_bold_fit_optuna.py -- see hpc/leonardo/README.md)
 # The local Subject API, installed editable so edits under src/ take effect live.
 parrot-neuro = { path = ".", editable = true }
 

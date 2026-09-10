@@ -157,3 +157,40 @@ WANDB_API_KEY="${WANDB_API_KEY:-<YOUR_WANDB_API_KEY>}"   # https://wandb.ai/auth
 # boost_qos_lprod) -- override only if your measured walltime needs more room.
 # SWEEP_CPUS=8 ; SWEEP_MEM=64G ; SWEEP_TIME=2-00:00:00
 # SWEEP_QOS="boost_qos_lprod"   # 4-day wall -- NOT "normal" (24h), a sequential trial can exceed it
+
+# --- Optuna hyperparameter search (submit_optuna_sweep.sh) -- RECOMMENDED over
+# the W&B sweep above for LEONARDO: no login-node agent process needed at all
+# (Optuna coordinates through one shared file, not a server) -- see README.md's
+# "Hyperparameter sweep" section for why this replaced the W&B-agent approach.
+# wandb (WANDB_API_KEY etc. above) is still used here, but purely for
+# logging/plots -- offline per-trial, synced in bulk later via
+# sync_orphaned_runs.sh; it plays no role in choosing what to try next, so a
+# missing/invalid WANDB_API_KEY does not block the search itself, only the
+# per-trial dashboard logging.
+# OPTUNA_STUDY_NAME="default"
+# Fixed list of subjects EVERY trial fits -- same semantics as SWEEP_SUBJECTS
+# above (one trial = one sampled hyperparameter set, fit against ALL of these).
+# OPTUNA_SUBJECTS="${OPTUNA_SUBJECTS:-010002,010003,010004,010005,010006}"
+# Non-swept fit hyperparameters -- same fields/defaults as the SWEEP_* block
+# above; only the 7 fields in eeg_bold_fit_optuna.py's trial.suggest_* calls
+# vary per trial. No footgun here the way SWEEP_* has (a plain `=` is fine):
+# optuna_train.sbatch is only ever invoked via `sbatch --export=ALL` from
+# submit_optuna_sweep.sh itself, never re-sources this file separately.
+# OPTUNA_ATLAS="1000" ; OPTUNA_OPTIMIZE="both" ; OPTUNA_BOLD_MODEL="hrf"
+# OPTUNA_NUM_EPOCHS="300" ; OPTUNA_BOLD_EVERY="2" ; OPTUNA_SCHEDULE="alternating"
+# OPTUNA_JOINT_EEG_WEIGHT="1e5" ; OPTUNA_JOINT_BOLD_WEIGHT="1.0"
+#
+# Parallel (whole-node) mode -- identical rationale/numbers to SWEEP_GPUS
+# above, just renamed: unset (default) = sequential, one GPU/subject at a
+# time, boost_qos_lprod (4-day). Set to fit len(OPTUNA_GPUS) subjects
+# SIMULTANEOUSLY per round instead -- MATCH OPTUNA_SUBJECTS' count to
+# len(OPTUNA_GPUS) for zero idle-GPU billing.
+# OPTUNA_GPUS="0,1,2,3"
+#
+# Per-trial SLURM resources -- UNMEASURED for YOUR actual OPTUNA_SUBJECTS
+# list; run `submit_optuna_sweep.sh smoke` first and size these from the
+# observed walltime. Defaults already scale with OPTUNA_GPUS (8 cores/64G per
+# GPU, 20h wall if set to stay under `normal`'s 24h cap, else 2 days under
+# boost_qos_lprod).
+# OPTUNA_CPUS=8 ; OPTUNA_MEM=64G ; OPTUNA_TIME=2-00:00:00
+# OPTUNA_QOS="boost_qos_lprod"   # 4-day wall -- NOT "normal" (24h), a sequential trial can exceed it
