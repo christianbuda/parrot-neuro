@@ -77,8 +77,10 @@ def build_network(
     the gradient toward fast timescales).
 
     This ``solver`` is shared by both the EEG and BOLD ``prepare()`` calls in
-    ``train.build_simulators`` -- the BOLD one also streams its HRF
-    convolution through this same block scan (``reduce=streaming_hrf_bold``),
+    ``train.build_simulators`` -- the BOLD one also streams its BOLD forward
+    model (HRF convolution or Balloon-Windkessel ODE integration, per
+    ``BoldFitConfig.bold_model``) through this same block scan
+    (``reduce=streaming_hrf_bold`` or ``reduce=streaming_balloon_bold``),
     which requires ``K`` to be an *exact* multiple of the BOLD period in raw
     steps (``tr_ms / dt``), not just close to ``sqrt(n_steps)``. See
     ``config.BoldFitConfig.solver_block_size`` for the full rationale.

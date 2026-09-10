@@ -14,7 +14,12 @@
 #                                         #   validates the whole agent->dispatch->sbatch
 #                                         #   --wait->offline-train->sync round trip
 #   ./submit_sweep.sh start [N] [COUNT]   # N background agents (default 8), COUNT runs
-#                                         #   each (default 5) -> N*COUNT total trials
+#                                         #   each (default 5) -> N*COUNT total trials.
+#                                         #   SWEEP_AGENT_STAGGER=<seconds> (default 2)
+#                                         #   sets the delay between each agent's launch --
+#                                         #   widen it to also spread out when they finish
+#                                         #   and sync later, not just when they start; see
+#                                         #   README.md's login-node RLIMIT_NPROC gotchas.
 #   ./submit_sweep.sh list                # show every known sweep (name + ID) in this checkout
 #   ./submit_sweep.sh status              # squeue + how many agents are still running
 #   ./submit_sweep.sh stop                # kill this sweep's background agents
@@ -145,6 +150,30 @@ case "$CMD" in
         echo "[start] launching $n_agents background agents x $runs_per_agent runs each ($((n_agents * runs_per_agent)) total trials)"
         echo "[start] these are long-lived LOGIN-NODE processes (hours-to-days) -- run this under tmux/screen,"
         echo "        not a plain shell that dies on logout."
+        # Stagger between launches, not a bare burst of N -- each `wandb
+        # agent` startup spins up wandb's own internal asyncio "service"
+        # thread (plus Python import overhead) immediately, and launching
+        # dozens within the same few seconds risks the login node's
+        # RLIMIT_NPROC ceiling -- same class of failure `pixi run` per-agent
+        # used to cause outright (see the note above WANDB_BIN's
+        # resolution), but a DIFFERENT source of it: confirmed 2026-08-30,
+        # N=24 with a 0.2s stagger still lost 4 agents at launch to
+        # "RuntimeError: can't start new thread" / a bare SIGSEGV, all from
+        # wandb's own thread spin-up, not pixi/rayon.
+        #
+        # Widening this ALSO helps a second, later pressure point: agents
+        # launched close together tend to run similar-length trials and so
+        # finish (and hit the OpenBLAS `wandb sync` thread storm -- see
+        # README.md) close together too, piling sync-time load onto the
+        # same moment. A wider stagger desynchronizes both launch AND
+        # finish/sync timing across the batch, not just launch. Override via
+        # SWEEP_AGENT_STAGGER (seconds) -- e.g. SWEEP_AGENT_STAGGER=60 to
+        # spread N=24 over ~24 min, or higher still to spread finishes
+        # across a meaningfully different slice of each other's ~6h+
+        # walltime. Default 2s (2s x 128 = ~4.3min total) is just enough
+        # margin for the launch-burst issue above; it does nothing for the
+        # sync-time desync unless widened further.
+        stagger="${SWEEP_AGENT_STAGGER:-2}"
         for i in $(seq 1 "$n_agents"); do
             log="$AGENT_LOG_DIR/agent-$i.log"
             nohup wandb agent --count "$runs_per_agent" "$id" > "$log" 2>&1 < /dev/null &
@@ -152,19 +181,7 @@ case "$CMD" in
             disown "$pid" 2>/dev/null || true
             echo "$pid" >> "$AGENT_PID_FILE"
             echo "  agent $i: pid=$pid log=$log"
-            # Stagger, not a bare burst of N -- each `wandb agent` startup
-            # spins up wandb's own internal asyncio "service" thread (plus
-            # Python import overhead) immediately, and launching dozens within
-            # the same few seconds risks the login node's RLIMIT_NPROC ceiling
-            # -- same class of failure `pixi run` per-agent used to cause
-            # outright (see the note above WANDB_BIN's resolution), but a
-            # DIFFERENT source of it: confirmed 2026-08-30, N=24 with the old
-            # 0.2s stagger still lost 4 agents at launch to "RuntimeError:
-            # can't start new thread" / a bare SIGSEGV, all from wandb's own
-            # thread spin-up, not pixi/rayon. 2s x 128 = ~4.3min total to reach
-            # full concurrency -- negligible against hours-long trials, and
-            # gives each agent's thread pool room to settle before the next.
-            sleep 2
+            sleep "$stagger"
         done
         ;;
 

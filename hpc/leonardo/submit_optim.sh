@@ -51,6 +51,13 @@ OPTIM_ATLAS="${OPTIM_ATLAS:-1000}"
 OPTIM_SPACING="${OPTIM_SPACING:-2.0}"
 OPTIM_LEADFIELD_LABEL="${OPTIM_LEADFIELD_LABEL:-duneuroCGAL}"
 OPTIM_OPTIMIZE="${OPTIM_OPTIMIZE:-both}"
+# schedule: "alternating" (default, original interleaved fit) | "phased"
+# (splits OPTIM_NUM_EPOCHS in half: BOLD-only then EEG-only) | "joint" (one
+# combined EEG+BOLD loss/step per epoch instead of two separate ones) -- see
+# eeg_bold_fit_cli.py --schedule. joint_*_weight only matters for "joint".
+OPTIM_SCHEDULE="${OPTIM_SCHEDULE:-alternating}"
+OPTIM_JOINT_EEG_WEIGHT="${OPTIM_JOINT_EEG_WEIGHT:-1e5}"
+OPTIM_JOINT_BOLD_WEIGHT="${OPTIM_JOINT_BOLD_WEIGHT:-1.0}"
 # BOLD loss is a weighted combination of static FC + dFC/FCD (both computed
 # from the same simulated trajectory -- see train.make_bold_loss_fn); either
 # weight at 0 recovers a single-mode fit.
@@ -122,6 +129,7 @@ build_subjects() {
 # Exports every OPTIM_* + resource var so `--export=ALL` propagates them.
 export_run_vars() {
     export OPTIM_ATLAS OPTIM_SPACING OPTIM_LEADFIELD_LABEL OPTIM_OPTIMIZE \
+           OPTIM_SCHEDULE OPTIM_JOINT_EEG_WEIGHT OPTIM_JOINT_BOLD_WEIGHT \
            OPTIM_BOLD_FC_WEIGHT OPTIM_BOLD_DFC_WEIGHT \
            OPTIM_NUM_EPOCHS OPTIM_BOLD_EVERY OPTIM_EEG_TASK OPTIM_FMRI_TASK OPTIM_LEARNING_RATE \
            OPTIM_LEARNING_RATE_BOLD OPTIM_BOLD_PSD_WEIGHT OPTIM_GAMMA_WEIGHT \
@@ -149,7 +157,7 @@ case "$CMD" in
         export_run_vars
         export OPTIM_SUBJECT="$subject" OPTIM_SKIP_DIAGNOSTICS=0 OPTIM_GPU_UTIL_LOG=1
         unset OPTIM_SUBJECTS_FILE || true
-        echo "[pilot] subject=$subject  qos=$PILOT_QOS  epochs=$OPTIM_NUM_EPOCHS  atlas=$OPTIM_ATLAS  optimize=$OPTIM_OPTIMIZE"
+        echo "[pilot] subject=$subject  qos=$PILOT_QOS  epochs=$OPTIM_NUM_EPOCHS  atlas=$OPTIM_ATLAS  optimize=$OPTIM_OPTIMIZE  schedule=$OPTIM_SCHEDULE"
         echo "[pilot] this is a MEASUREMENT run -- read its walltime + GPU-idle before sizing 'run'"
         cmd=( sbatch --account="$ACCT" --job-name=parrot-optim-pilot
               --partition="$BOOST_PART" --qos="$PILOT_QOS" --gres=gpu:1
@@ -209,9 +217,12 @@ case "$CMD" in
         N=$(build_subjects)
         echo "$N subjects -> --array=0-$((N-1))${ARRAY_THROTTLE}  (file: $SUBJ_FILE)"
         printf '  gpu:1  %sc  time=%s  mem=%s  qos=%s (part=%s)\n' "$OPTIM_CPUS" "$OPTIM_TIME" "$OPTIM_MEM" "$BOOST_QOS" "$BOOST_PART"
-        printf '  atlas=%s  optimize=%s  bold_fc_weight=%s  bold_dfc_weight=%s  epochs=%s  bold_every=%s  t1_warmup=%s  solver_block_size=%s  early_stop_patience=%s\n' \
-            "$OPTIM_ATLAS" "$OPTIM_OPTIMIZE" "$OPTIM_BOLD_FC_WEIGHT" "$OPTIM_BOLD_DFC_WEIGHT" "$OPTIM_NUM_EPOCHS" "$OPTIM_BOLD_EVERY" \
+        printf '  atlas=%s  optimize=%s  schedule=%s  bold_fc_weight=%s  bold_dfc_weight=%s  epochs=%s  bold_every=%s  t1_warmup=%s  solver_block_size=%s  early_stop_patience=%s\n' \
+            "$OPTIM_ATLAS" "$OPTIM_OPTIMIZE" "$OPTIM_SCHEDULE" "$OPTIM_BOLD_FC_WEIGHT" "$OPTIM_BOLD_DFC_WEIGHT" "$OPTIM_NUM_EPOCHS" "$OPTIM_BOLD_EVERY" \
             "${OPTIM_T1_WARMUP:-off}" "${OPTIM_SOLVER_BLOCK_SIZE:-off}" "${OPTIM_EARLY_STOP_PATIENCE:-off}"
+        if [ "$OPTIM_SCHEDULE" = "joint" ]; then
+            printf '  joint_eeg_weight=%s  joint_bold_weight=%s\n' "$OPTIM_JOINT_EEG_WEIGHT" "$OPTIM_JOINT_BOLD_WEIGHT"
+        fi
         printf '  learning_rate_bold=%s  bold_psd_weight=%s  gamma_weight=%s\n' \
             "${OPTIM_LEARNING_RATE_BOLD:-off}" "$OPTIM_BOLD_PSD_WEIGHT" "$OPTIM_GAMMA_WEIGHT"
         echo "  output: $OPTIM_OUTPUT_DIR"

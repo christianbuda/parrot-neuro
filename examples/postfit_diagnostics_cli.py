@@ -9,7 +9,7 @@ tweaked ``--solver-block-size``/rendering and want fresh figures for the same
 fitted parameters.
 
 Rebuilds the same network/simulators as the original fit (pass MATCHING
---atlas/--spacing/--leadfield-label/--eeg-task/--fmri-task/--noise-seed --
+--atlas/--spacing/--leadfield-label/--bold-model/--eeg-task/--fmri-task/--noise-seed --
 these determine what gets built, and must agree with however the npz was
 produced), then reconstructs the fitted parameters from the npz
 (saved in natural post-sigmoid units -- see
@@ -42,6 +42,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--atlas", type=int, default=1000, choices=(100, 1000))
     p.add_argument("--spacing", default="2.0", help="dipole spacing in mm (string)")
     p.add_argument("--leadfield-label", default="duneuroCGAL")
+    p.add_argument("--bold-model", default="hrf", choices=("hrf", "balloon"),
+                    help="must match the original fit's BOLD forward model -- a mismatch won't "
+                         "crash (the fitted dynamics params are model-independent) but will "
+                         "diagnose against the wrong BOLD forward pass.")
     p.add_argument("--bold-dfc-weight", type=float, default=0.5,
                     help="doesn't need to match the original fit's weights -- purely controls "
                          "whether the FCD/dFC diagnostic plots render here (>0 = render them).")
@@ -62,7 +66,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--solver-block-size", type=int, default=1400,
                     help="pure memory/compute trade, doesn't affect results -- EXCEPT it must be "
                          "an exact multiple of the BOLD period in raw steps (tr_ms/dt -- 1400 for "
-                         "the defaults), since the BOLD simulator streams its HRF convolution "
+                         "the defaults), since the BOLD simulator streams its BOLD forward model "
+                         "(HRF convolution or Balloon-Windkessel ODE integration, per --bold-model) "
                          "through this same block scan (see train.build_simulators). Pass "
                          "--solver-block-size=0 for the old unblocked behaviour (also drops the "
                          "streaming BOLD monitor's memory win).")
@@ -102,6 +107,7 @@ def main() -> None:
         spacing=args.spacing,
         leadfield_label=args.leadfield_label,
         output_dir=out_dir,
+        bold_model=args.bold_model,
         bold_dfc_weight=args.bold_dfc_weight,
         eeg_task=args.eeg_task,
         fmri_task=args.fmri_task,

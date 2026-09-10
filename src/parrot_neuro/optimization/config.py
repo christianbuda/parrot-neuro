@@ -203,7 +203,26 @@ class BoldFitConfig:
     eeg_settle_ms: float = 500.0  # discard as transient before computing the EEG loss
     eeg_stride_ms: float = 4.0    # subsample post-settle states at this period (1000/stride = eff. fs)
     tr_ms: float = 1400.0  # fixed by the dataset (LEMON), not tunable -- adjust the rest around it
+    # HRF-only: pre-convolution downsample stride (see train.build_simulators). Ignored when
+    # bold_model="balloon" -- the Balloon-Windkessel ODE integrates at the raw simulation dt.
     bold_downsample_ms: float = 4.0
+
+    # --- BOLD forward model: HRF convolution vs. Balloon-Windkessel ODE ---
+    # "hrf" (default): linear HRF-kernel convolution (tvboptim's HRFBold, streamed via
+    # train.streaming_hrf_bold). "balloon": Friston 2000 / Deco 2014 4-state hemodynamic ODE
+    # (tvboptim's BalloonWindkesselBold, streamed via optimization.balloon.streaming_balloon_bold).
+    # See train.build_simulators for how each is wired in.
+    bold_model: str = "hrf"  # "hrf" | "balloon"
+    # Balloon-Windkessel hemodynamic constants (used only when bold_model="balloon";
+    # tvboptim's own BalloonWindkesselBold defaults). Integrates at the raw simulation dt
+    # (dt_bw == dt) -- no separate integration-step knob.
+    balloon_taus: float = 0.65   # s, vasodilatory signal decay time constant
+    balloon_tauf: float = 0.41   # s, autoregulatory feedback time constant
+    balloon_tauo: float = 0.98   # s, transit time
+    balloon_alpha: float = 0.32  # Grubb's vessel stiffness exponent
+    balloon_Eo: float = 0.4      # resting oxygen extraction fraction
+    balloon_vo: float = 0.04     # resting blood volume fraction
+    balloon_TE: float = 0.04     # s, echo time
     # 8 TRs (11.2s) burn-in -- lowered from 20 (28s, ~48% of the 42-TR budget at this tr_ms) to
     # leave enough TRs for the "dfc" loss to have more than a handful of windows. Assumes the
     # network settles within ~8 TRs at this dt/base_sigma -- worth confirming against
@@ -253,6 +272,29 @@ class BoldFitConfig:
     # simulator/loss is still built, for diagnostics, but never gets a gradient
     # step and its loss history stays empty).
     optimize: str = "both"  # "eeg" | "bold" | "both"
+
+    # --- schedule (only meaningful when optimize == "both") ---
+    # "alternating" (default): train.run_alternating_fit -- 1 EEG step every
+    # epoch, 1 BOLD step every bold_every epochs, num_epochs total, interleaved.
+    # "phased": train.run_phased_fit -- num_epochs split in half: the first
+    # num_epochs // 2 epochs are BOLD-only, then the remaining num_epochs -
+    # num_epochs // 2 (the odd leftover, if any) are EEG-only, on one
+    # continuously-updated diff_params (bold_every is unused).
+    # "joint": train.run_joint_fit -- ONE combined loss (joint_eeg_weight *
+    # EEG-PSD + joint_bold_weight * BOLD-FC/dFC), from the SAME two
+    # simulators the other schedules use, but ONE gradient step per epoch
+    # instead of two separate ones (see train.make_joint_loss_fn's docstring
+    # for why it deliberately does NOT fuse them into one simulator call --
+    # an earlier version tried that and blew up backward-pass memory).
+    # num_epochs total (bold_every is unused -- both terms every epoch, no
+    # skipping).
+    schedule: str = "alternating"  # "alternating" | "phased" | "joint"
+    # Plain scalar weights combining EEG PSD loss (~1e-6) and BOLD FC/dFC loss
+    # (~1e-1) into schedule="joint"'s single loss -- not auto-balanced, so the
+    # large default gap in joint_eeg_weight vs joint_bold_weight is a rough,
+    # order-of-magnitude attempt to counter that scale gap, not a tuned value.
+    joint_eeg_weight: float = 1e5
+    joint_bold_weight: float = 1.0
 
     # --- early stopping (see train.is_loss_stalled) ---
     # None (default) = old behaviour, always run all num_epochs. Set an int to
@@ -306,9 +348,38 @@ class BoldFitConfig:
     def __post_init__(self):
         if self.optimize not in ("eeg", "bold", "both"):
             raise ValueError(f"optimize must be 'eeg', 'bold', or 'both', got {self.optimize!r}")
-        for name in ("bold_fc_weight", "bold_dfc_weight", "bold_psd_weight", "gamma_weight"):
+        if self.schedule not in ("alternating", "phased", "joint"):
+            raise ValueError(
+                f"schedule must be 'alternating', 'phased', or 'joint', got {self.schedule!r}"
+            )
+        if self.schedule != "alternating" and self.optimize != "both":
+            raise ValueError(
+                f"schedule={self.schedule!r} needs optimize='both' (phased/joint both fit EEG "
+                f"and BOLD together, just on a different schedule) -- got optimize={self.optimize!r}."
+            )
+        if self.bold_model not in ("hrf", "balloon"):
+            raise ValueError(f"bold_model must be 'hrf' or 'balloon', got {self.bold_model!r}")
+        for name in ("bold_fc_weight", "bold_dfc_weight", "bold_psd_weight", "gamma_weight",
+                     "joint_eeg_weight", "joint_bold_weight"):
             if getattr(self, name) < 0:
                 raise ValueError(f"{name} must be >= 0, got {getattr(self, name)!r}")
+
+        # simulator_bold's BOLD reducer (streaming_hrf_bold or streaming_balloon_bold, see
+        # train.build_simulators) only emits BOLD samples at TR boundaries -- it asserts
+        # block_len % (tr_ms/dt) == 0 at JIT-trace time, which surfaces as a cryptic error deep
+        # inside a jitted call. Check the same constraint here, up front, for both t1_bold (the
+        # un-blocked case) and solver_block_size (when set).
+        period_steps = self.tr_ms / self.dt
+        if not float(self.t1_bold / self.dt / period_steps).is_integer():
+            raise ValueError(
+                f"t1_bold/dt ({self.t1_bold / self.dt}) must be a multiple of tr_ms/dt "
+                f"({period_steps}) -- the BOLD reducer only emits samples at TR boundaries."
+            )
+        if self.solver_block_size is not None and not float(self.solver_block_size / period_steps).is_integer():
+            raise ValueError(
+                f"solver_block_size ({self.solver_block_size}) must be a multiple of tr_ms/dt "
+                f"({period_steps}) -- the BOLD reducer's per-block update requires this."
+            )
 
         # The EEG loss compares the simulator's post-settle, strided output
         # directly against the empirical PSD's frequency bins — the two only

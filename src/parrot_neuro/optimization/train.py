@@ -17,8 +17,9 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from tvboptim.experimental.network_dynamics import prepare, solve
-from tvboptim.observations.tvb_monitors import HRFBold, SubSampling, streaming_hrf_bold
+from tvboptim.observations.tvb_monitors import BalloonWindkesselBold, HRFBold, SubSampling, streaming_hrf_bold
 
+from .balloon import streaming_balloon_bold
 from .config import BOLD_BANDPASS_HIGH, BOLD_BANDPASS_LOW, BOLD_BANDPASS_ORDER, DEFAULT_LEARNABLE_PARAMS, LearnableParam
 from .connectivity import bold_psd_band, dfc_histogram, fc_vector, filter_sim_bold, wasserstein_1d_from_hist
 from .forward import project_to_scalp
@@ -40,17 +41,19 @@ class Simulators:
     sharing one parameter pytree, plus the BOLD monitor built on the long
     warm-up's history.
 
-    ``simulator_bold``'s HRF convolution is streamed (folded into
-    ``prepare()``'s ``reduce=`` block scan -- see ``build_simulators``), so
-    calling it already returns the final BOLD buffer, not a raw solution to
-    run ``bold_monitor`` on afterward. ``bold_monitor`` is kept on this
-    dataclass only because ``_process_history``'s warm-start buffer and
-    ``streaming_hrf_bold``'s kernel/period/voi config live on it -- it is
-    never called directly as a function anymore."""
+    ``simulator_bold``'s BOLD forward model -- HRF convolution or
+    Balloon-Windkessel ODE integration, per ``BoldFitConfig.bold_model`` -- is
+    streamed (folded into ``prepare()``'s ``reduce=`` block scan -- see
+    ``build_simulators``), so calling it already returns the final BOLD
+    buffer, not a raw solution to run ``bold_monitor`` on afterward.
+    ``bold_monitor`` is kept on this dataclass only because its config
+    (``HRFBold``'s kernel/period/voi, or ``BalloonWindkesselBold``'s
+    hemodynamic-constant/period/voi) lives on it -- it is never called
+    directly as a function anymore."""
 
     simulator_eeg: Callable
     simulator_bold: Callable
-    bold_monitor: HRFBold
+    bold_monitor: HRFBold | BalloonWindkesselBold
     params: object  # Bunch — feed to learnable_partition() / eqx.combine
 
 
@@ -65,6 +68,14 @@ def build_simulators(
     bold_downsample_ms: float,
     bold_voi: int = 8,
     t1_warmup: float | None = None,
+    bold_model: str = "hrf",
+    balloon_taus: float = 0.65,
+    balloon_tauf: float = 0.41,
+    balloon_tauo: float = 0.98,
+    balloon_alpha: float = 0.32,
+    balloon_Eo: float = 0.4,
+    balloon_vo: float = 0.04,
+    balloon_TE: float = 0.04,
 ) -> Simulators:
     """Warm up ``network`` at both horizons and prepare pure solve functions.
 
@@ -79,24 +90,36 @@ def build_simulators(
     forward-only simulation whose sole purpose is to seed ``network``'s
     initial state (the warm-up's *last* timestep -- see
     ``Network.initial_state``) and a short delay-coupling history buffer,
-    plus give ``HRFBold`` a history tail to convolve against. None of those
-    three consumers reads more than a short recent window regardless of how
-    long the warm-up ran (delay buffers need ``max_delay`` seconds -- tens of
-    ms for physiological conduction delays; ``HRFBold._process_history`` slices
-    exactly the kernel's ``duration`` -- 20s by default -- off the *end*).
+    plus (``bold_model="hrf"`` only) give ``HRFBold`` a history tail to
+    convolve against. None of those consumers reads more than a short recent
+    window regardless of how long the warm-up ran (delay buffers need
+    ``max_delay`` seconds -- tens of ms for physiological conduction delays;
+    ``HRFBold._process_history`` slices exactly the kernel's ``duration`` --
+    20s by default -- off the *end*; ``bold_model="balloon"`` doesn't consume
+    the warm-up trajectory for its BOLD monitor at all -- see below).
     Running the warm-up for the *full* ``t1_bold`` (which can be minutes, by
     design, to give the FC/dFC loss a long BOLD signal) computes and holds a
     proportionally huge trajectory just to throw away all but its tail --
     the dominant GPU-memory cost of this function for a long ``t1_bold``.
     ``t1_warmup`` decouples the two: pass something comfortably longer than
-    both the settling time of your dynamics and the HRF kernel duration (e.g.
-    30s), independent of how long ``t1_bold`` itself is. This does NOT change
-    the length of BOLD signal available to the loss -- ``simulator_bold``
-    (the one actually called during training) still integrates the full
-    ``t1_bold``; only the throwaway pre-roll gets shorter. It does change the
-    *exact* initial state training starts from (a different, still-settled,
-    point along an equally-valid stochastic trajectory -- not a less-settled
-    one), which is why this is opt-in via ``None`` rather than always-on.
+    both the settling time of your dynamics and (for ``bold_model="hrf"``)
+    the HRF kernel duration (e.g. 30s), independent of how long ``t1_bold``
+    itself is. This does NOT change the length of BOLD signal available to
+    the loss -- ``simulator_bold`` (the one actually called during training)
+    still integrates the full ``t1_bold``; only the throwaway pre-roll gets
+    shorter. It does change the *exact* initial state training starts from
+    (a different, still-settled, point along an equally-valid stochastic
+    trajectory -- not a less-settled one), which is why this is opt-in via
+    ``None`` rather than always-on.
+
+    ``bold_model`` selects the BOLD forward model: ``"hrf"`` (default) is the
+    linear HRF-convolution path (``HRFBold``/``streaming_hrf_bold``);
+    ``"balloon"`` is the Balloon-Windkessel hemodynamic ODE
+    (``BalloonWindkesselBold``/``.balloon.streaming_balloon_bold``) -- see
+    ``config.BoldFitConfig``'s ``balloon_*`` fields for its hemodynamic
+    constants (Friston 2000 / Deco 2014 defaults). Both are streamed into the
+    same block-checkpointed scan (see the ``reduce=`` call below), so neither
+    materializes the full raw trajectory regardless of which is chosen.
     """
     print(f"Preparing simulators: EEG t1={t1_eeg:.1f}s, BOLD t1={t1_bold:.1f}s")
     result_eeg = solve(network, solver, t0=t0, t1=t1_eeg, dt=dt)
@@ -110,35 +133,63 @@ def build_simulators(
     result_bold = solve(network, solver, t0=t0, t1=warmup_t1, dt=dt)
     network.update_history(result_bold)
 
-    # SubSampling (pick every downsample_period-th raw sample), NOT HRFBold's
-    # own default (TemporalAverage, mean over each window): streaming_hrf_bold
-    # below requires a uniform-integer-stride downsampler -- its per-block
-    # update() always does a hard-coded "take every Nth sample" slice
-    # regardless of what monitor.downsample actually is, so passing anything
-    # else here would silently desync the streaming path from what this
-    # object's own (now never-called-directly) __call__ would have computed.
-    # A deliberate, small numerical difference from the old TemporalAverage
-    # default -- see build_simulators' docstring.
-    bold_monitor = HRFBold(
-        history=result_bold,
-        period=tr_ms,
-        downsample_period=bold_downsample_ms,
-        voi=bold_voi,
-        downsample=SubSampling(voi=bold_voi, period=bold_downsample_ms),
-    )
-    # reduce=streaming_hrf_bold(...) folds the HRF convolution into the same
-    # block scan solver_block_size checkpoints, block-by-block, instead of
-    # materializing the full raw trajectory and convolving it post-hoc (the
-    # dominant GPU-memory cost of this whole pipeline for a long t1_bold --
-    # see config.BoldFitConfig.solver_block_size). simulator_bold(combined)
+    if bold_model == "hrf":
+        # SubSampling (pick every downsample_period-th raw sample), NOT
+        # HRFBold's own default (TemporalAverage, mean over each window):
+        # streaming_hrf_bold below requires a uniform-integer-stride
+        # downsampler -- its per-block update() always does a hard-coded
+        # "take every Nth sample" slice regardless of what monitor.downsample
+        # actually is, so passing anything else here would silently desync
+        # the streaming path from what this object's own
+        # (now never-called-directly) __call__ would have computed. A
+        # deliberate, small numerical difference from the old TemporalAverage
+        # default -- see build_simulators' docstring.
+        bold_monitor = HRFBold(
+            history=result_bold,
+            period=tr_ms,
+            downsample_period=bold_downsample_ms,
+            voi=bold_voi,
+            downsample=SubSampling(voi=bold_voi, period=bold_downsample_ms),
+        )
+        reduce = streaming_hrf_bold(bold_monitor, dt)
+    elif bold_model == "balloon":
+        # Integrates at the raw simulation dt (dt_bw=dt, downsample=None) --
+        # streaming_balloon_bold requires exactly this; see its docstring.
+        # Unlike HRFBold, no history/warm-start is needed: the ODE's own
+        # settling time is far shorter than this pipeline's BOLD burn-in
+        # (config.BoldFitConfig.bold_skip_trs), so every build starts from
+        # the standard resting initial condition.
+        bold_monitor = BalloonWindkesselBold(
+            period=tr_ms,
+            dt_bw=dt,
+            voi=bold_voi,
+            taus=balloon_taus,
+            tauf=balloon_tauf,
+            tauo=balloon_tauo,
+            alpha=balloon_alpha,
+            Eo=balloon_Eo,
+            vo=balloon_vo,
+            TE=balloon_TE,
+            downsample=None,
+        )
+        reduce = streaming_balloon_bold(bold_monitor, dt)
+    else:
+        raise ValueError(f"bold_model must be 'hrf' or 'balloon', got {bold_model!r}")
+
+    # reduce=... folds the BOLD forward model into the same block scan
+    # solver_block_size checkpoints, block-by-block, instead of materializing
+    # the full raw trajectory and applying it post-hoc (the dominant
+    # GPU-memory cost of this whole pipeline for a long t1_bold -- see
+    # config.BoldFitConfig.solver_block_size). simulator_bold(combined)
     # therefore returns the final [n_bold, n_voi, n_nodes] BOLD buffer
     # directly, not a raw solution -- there is no post-hoc bold_monitor(sol)
     # call anywhere anymore (make_bold_loss_fn, diagnostics.py). Requires
     # solver.block_size to be an exact multiple of the BOLD period in raw
-    # steps (tr_ms/dt); see streaming_hrf_bold's own docstring.
+    # steps (tr_ms/dt); see streaming_hrf_bold's/streaming_balloon_bold's own
+    # docstrings.
     simulator_bold, params = prepare(
         network, solver, t0=t0, t1=t1_bold, dt=dt,
-        reduce=streaming_hrf_bold(bold_monitor, dt),
+        reduce=reduce,
     )
 
     return Simulators(simulator_eeg, simulator_bold, bold_monitor, params)
@@ -178,6 +229,39 @@ def compute_target_psd(dataset):
     return jnp.array(np.stack(list(map(compute_psd, dataset._chunks))).mean(axis=0))
 
 
+def _eeg_psd_loss(source_ys, mask_col, idx_min, idx_max, target_psd, channel_indices,
+                   leadfield, smoothing_blocks, dipole_labels, settle, stride,
+                   gamma_weight, gamma_idx_min, gamma_idx_max, eps):
+    """Linear-PSD MSE between ``source_ys[settle::stride, 1/2]`` (JR pyramidal
+    y1 - y2, zeroed on subcortical nodes) projected to scalp and
+    ``target_psd``. The numeric core shared by ``make_eeg_loss_fn`` and
+    ``make_joint_loss_fn`` -- both feed it ``simulator_eeg``'s own
+    short-horizon ``.ys``, so both compute the *exact* same loss.
+    """
+    source_activity = (
+        source_ys[settle::stride, 1].T - source_ys[settle::stride, 2].T
+    ) * mask_col
+
+    simulated_eeg = project_to_scalp(
+        source_activity, channel_indices, leadfield, smoothing_blocks, dipole_labels
+    )
+
+    sim_psd = smooth_ts(compute_psd(simulated_eeg))
+    target_psd = smooth_ts(target_psd)
+
+    norm_sim = sim_psd / (jnp.sum(sim_psd[:, idx_min:idx_max], keepdims=True) + eps)
+    norm_target = target_psd / (jnp.sum(target_psd[:, idx_min:idx_max], keepdims=True) + eps)
+
+    loss = jnp.mean((norm_sim[:, idx_min:idx_max] - norm_target[:, idx_min:idx_max]) ** 2)
+
+    if gamma_weight > 0:
+        log_sim = jnp.log(sim_psd[:, gamma_idx_min:gamma_idx_max] + eps)
+        log_target = jnp.log(target_psd[:, gamma_idx_min:gamma_idx_max] + eps)
+        loss = loss + gamma_weight * jnp.mean((log_sim - log_target) ** 2)
+
+    return loss
+
+
 def make_eeg_loss_fn(simulator_eeg, mask_cortical, idx_min, idx_max, dt,
                       settle_ms=500.0, stride_ms=4.0,
                       gamma_weight=0.0, gamma_idx_min=None, gamma_idx_max=None, eps=1e-8):
@@ -205,32 +289,45 @@ def make_eeg_loss_fn(simulator_eeg, mask_cortical, idx_min, idx_max, dt,
                      leadfield, smoothing_blocks, dipole_labels):
         combined = eqx.combine(current_diff, current_static)
         sim_result = simulator_eeg(combined)
-
-        # JR pyramidal output (y1 - y2), zeroed on subcortical nodes.
-        source_activity = (
-            sim_result.ys[settle::stride, 1].T - sim_result.ys[settle::stride, 2].T
-        ) * mask_col
-
-        simulated_eeg = project_to_scalp(
-            source_activity, channel_indices, leadfield, smoothing_blocks, dipole_labels
+        return _eeg_psd_loss(
+            sim_result.ys, mask_col, idx_min, idx_max, target_psd, channel_indices,
+            leadfield, smoothing_blocks, dipole_labels, settle, stride,
+            gamma_weight, gamma_idx_min, gamma_idx_max, eps,
         )
 
-        sim_psd = smooth_ts(compute_psd(simulated_eeg))
-        target_psd = smooth_ts(target_psd)
-
-        norm_sim = sim_psd / (jnp.sum(sim_psd[:, idx_min:idx_max], keepdims=True) + 1e-8)
-        norm_target = target_psd / (jnp.sum(target_psd[:, idx_min:idx_max], keepdims=True) + 1e-8)
-
-        loss = jnp.mean((norm_sim[:, idx_min:idx_max] - norm_target[:, idx_min:idx_max]) ** 2)
-
-        if gamma_weight > 0:
-            log_sim = jnp.log(sim_psd[:, gamma_idx_min:gamma_idx_max] + eps)
-            log_target = jnp.log(target_psd[:, gamma_idx_min:gamma_idx_max] + eps)
-            loss = loss + gamma_weight * jnp.mean((log_sim - log_target) ** 2)
-
-        return loss
-
     return eeg_loss_fn
+
+
+def _bold_fc_dfc_loss(Xs, target_fc_vec, target_dfc_hist, tr_ms,
+                       dfc_window_trs, dfc_step_trs, dfc_centers, dfc_k_min, dfc_sigma,
+                       fc_weight, dfc_weight,
+                       bandpass_low, bandpass_high, bandpass_order, eps,
+                       psd_weight, target_psd_band, psd_nperseg, psd_noverlap):
+    """``fc_weight * FC-vector MSE + dfc_weight * dFC/FCD Wasserstein distance``
+    (plus an optional ``psd_weight`` spectral-shape term) on an already
+    ``skip_t``-trimmed BOLD signal ``Xs`` [n_bold, n_nodes], from ONE filtered
+    trajectory (``Xs_filt``). The numeric core shared by ``make_bold_loss_fn``
+    (which feeds it its own ``simulator_bold`` call's output) and
+    ``make_joint_loss_fn`` (which feeds it the BOLD half of the joint
+    simulator's output instead) so both compute the exact same BOLD loss.
+    """
+    Xs_filt = filter_sim_bold(Xs, tr_ms, low=bandpass_low, high=bandpass_high, order=bandpass_order)
+
+    fc_sim = fc_vector(Xs_filt, skip_t=0, eps=eps)
+    fc_loss = jnp.mean((fc_sim - target_fc_vec) ** 2)
+
+    dfc_hist_sim = dfc_histogram(Xs_filt, dfc_window_trs, dfc_step_trs, dfc_centers,
+                                  skip_t=0, k_min=dfc_k_min, sigma=dfc_sigma, eps=eps)
+    dfc_loss = wasserstein_1d_from_hist(dfc_hist_sim, target_dfc_hist)
+
+    loss = fc_weight * fc_loss + dfc_weight * dfc_loss
+
+    if psd_weight > 0:
+        sim_psd_band = bold_psd_band(Xs_filt, tr_ms, psd_nperseg, psd_noverlap, skip_t=0,
+                                      low=bandpass_low, high=bandpass_high, eps=eps)
+        loss = loss + psd_weight * jnp.mean((sim_psd_band - target_psd_band) ** 2)
+
+    return loss
 
 
 def make_bold_loss_fn(simulator_bold, target_fc_vec, target_dfc_hist, skip_t, tr_ms,
@@ -284,23 +381,12 @@ def make_bold_loss_fn(simulator_bold, target_fc_vec, target_dfc_hist, skip_t, tr
         ok = jnp.all(jnp.isfinite(Xs))
 
         def good(_):
-            Xs_filt = filter_sim_bold(Xs, tr_ms, low=bandpass_low, high=bandpass_high, order=bandpass_order)
-
-            fc_sim = fc_vector(Xs_filt, skip_t=0, eps=eps)
-            fc_loss = jnp.mean((fc_sim - target_fc_vec) ** 2)
-
-            dfc_hist_sim = dfc_histogram(Xs_filt, dfc_window_trs, dfc_step_trs, dfc_centers,
-                                          skip_t=0, k_min=dfc_k_min, sigma=dfc_sigma, eps=eps)
-            dfc_loss = wasserstein_1d_from_hist(dfc_hist_sim, target_dfc_hist)
-
-            loss = fc_weight * fc_loss + dfc_weight * dfc_loss
-
-            if psd_weight > 0:
-                sim_psd_band = bold_psd_band(Xs_filt, tr_ms, psd_nperseg, psd_noverlap, skip_t=0,
-                                              low=bandpass_low, high=bandpass_high, eps=eps)
-                loss = loss + psd_weight * jnp.mean((sim_psd_band - target_psd_band) ** 2)
-
-            return loss
+            return _bold_fc_dfc_loss(
+                Xs, target_fc_vec, target_dfc_hist, tr_ms,
+                dfc_window_trs, dfc_step_trs, dfc_centers, dfc_k_min, dfc_sigma,
+                fc_weight, dfc_weight, bandpass_low, bandpass_high, bandpass_order, eps,
+                psd_weight, target_psd_band, psd_nperseg, psd_noverlap,
+            )
 
         def bad(_):
             return jnp.array(bad_loss, dtype=jnp.float64)
@@ -338,6 +424,116 @@ def make_update_steps(eeg_loss_fn, bold_loss_fn, eeg_optimizer, bold_optimizer):
         return new_diff, new_opt_state, loss
 
     return eeg_update_step, bold_update_step
+
+
+def make_joint_loss_fn(simulator_eeg, simulator_bold, mask_cortical, idx_min, idx_max, dt,
+                        target_fc_vec, target_dfc_hist, skip_t, tr_ms,
+                        dfc_window_trs, dfc_step_trs, dfc_centers, dfc_k_min, dfc_sigma,
+                        fc_weight, dfc_weight,
+                        bandpass_low=BOLD_BANDPASS_LOW, bandpass_high=BOLD_BANDPASS_HIGH,
+                        bandpass_order=BOLD_BANDPASS_ORDER, eps=1e-8, bad_loss=1e3,
+                        psd_weight=0.0, target_psd_band=None, psd_nperseg=32, psd_noverlap=16,
+                        settle_ms=500.0, stride_ms=4.0,
+                        gamma_weight=0.0, gamma_idx_min=None, gamma_idx_max=None,
+                        joint_eeg_weight=1.0, joint_bold_weight=1.0):
+    """Single combined EEG-PSD + BOLD-FC/dFC loss over the SAME two simulators
+    ``make_eeg_loss_fn``/``make_bold_loss_fn`` already use -- the "joint"
+    schedule's loss, as opposed to the alternating/phased schedules' two
+    separate per-loss *steps* (this is one step, over both losses).
+
+    An earlier version tried to get this from ONE simulator call (a single
+    long ``t1_bold``-horizon run whose ``reduce=`` also captured a raw EEG
+    window near its start, avoiding a second simulator entirely). That
+    blows up backward-pass memory: the block-checkpointed scan
+    (``config.BoldFitConfig.solver_block_size``) only saves O(n_steps/K + K)
+    memory when its carry is state-sized (see
+    ``network.build_network``'s docstring) -- adding a several-hundred-MB
+    raw-window buffer to that carry makes JAX retain ONE COPY OF IT PER
+    BLOCK BOUNDARY for the backward pass (~500 blocks at the production
+    ``t1_bold``/``solver_block_size``), turning a few-hundred-MB buffer into
+    tens-to-100+GB of added memory -- observed as the "joint" schedule
+    becoming dramatically (not just ~2x) slower than alternating. Calling
+    ``simulator_eeg`` and ``simulator_bold`` as two ordinary, independent
+    calls (exactly as ``make_eeg_loss_fn``/``make_bold_loss_fn`` already do)
+    sidesteps this entirely -- neither one's reduce/carry is touched, so
+    both keep their existing, already-proven memory profile. The only
+    difference from the alternating schedule is what happens with their
+    outputs: ONE combined loss/gradient step instead of two separate ones.
+
+    The two losses are summed as ``joint_eeg_weight * eeg_loss +
+    joint_bold_weight * bold_loss`` -- plain scalar weights, not
+    auto-balanced, because the two losses live on very different scales
+    (EEG's normalized-linear PSD MSE ~1e-6, BOLD's weighted FC+dFC ~1e-1);
+    pick weights that roughly counter that gap.
+
+    Returns ``(loss, (eeg_loss, bold_loss))`` (``has_aux``-style) so
+    ``run_joint_fit`` can log both raw, unweighted components every epoch
+    into the same ``loss_history_eeg``/``loss_history_bold`` fields the
+    other two schedules populate -- one combined-loss printout
+    (``train.relative_final_loss``) works the same across all three.
+    """
+    settle = int(settle_ms / dt)
+    stride = int(stride_ms / dt)
+    mask_col = jnp.atleast_2d(jnp.asarray(mask_cortical)).T
+    if gamma_weight > 0 and (gamma_idx_min is None or gamma_idx_max is None):
+        raise ValueError("gamma_idx_min/gamma_idx_max must be given when gamma_weight > 0")
+    if psd_weight > 0 and target_psd_band is None:
+        raise ValueError("target_psd_band must be given when psd_weight > 0")
+
+    @eqx.filter_jit
+    def joint_loss_fn(current_diff, current_static, target_psd, channel_indices,
+                       leadfield, smoothing_blocks, dipole_labels):
+        combined = eqx.combine(current_diff, current_static)
+
+        sim_result = simulator_eeg(combined)
+        eeg_loss = _eeg_psd_loss(
+            sim_result.ys, mask_col, idx_min, idx_max, target_psd, channel_indices,
+            leadfield, smoothing_blocks, dipole_labels, settle, stride,
+            gamma_weight, gamma_idx_min, gamma_idx_max, eps,
+        )
+
+        bold_buffer = simulator_bold(combined)
+        Xs = bold_buffer[:, 0, :][skip_t:, :]
+        ok = jnp.all(jnp.isfinite(Xs))
+
+        def good(_):
+            return _bold_fc_dfc_loss(
+                Xs, target_fc_vec, target_dfc_hist, tr_ms,
+                dfc_window_trs, dfc_step_trs, dfc_centers, dfc_k_min, dfc_sigma,
+                fc_weight, dfc_weight, bandpass_low, bandpass_high, bandpass_order, eps,
+                psd_weight, target_psd_band, psd_nperseg, psd_noverlap,
+            )
+
+        def bad(_):
+            return jnp.array(bad_loss, dtype=jnp.float64)
+
+        bold_loss = jax.lax.cond(ok, good, bad, operand=None)
+
+        loss = joint_eeg_weight * eeg_loss + joint_bold_weight * bold_loss
+        return loss, (eeg_loss, bold_loss)
+
+    return joint_loss_fn
+
+
+def make_joint_update_step(joint_loss_fn, joint_optimizer):
+    """Single gradient-step closure for the "joint" schedule -- one optimizer,
+    one combined loss, mirroring ``make_update_steps``'s two per-loss steps
+    but fused into one."""
+
+    @eqx.filter_jit
+    def joint_update_step(current_diff, current_static, current_opt_state,
+                           target_psd, channel_indices, leadfield, smoothing_blocks, dipole_labels):
+        (loss, (eeg_loss, bold_loss)), grads = jax.value_and_grad(
+            joint_loss_fn, argnums=0, has_aux=True
+        )(
+            current_diff, current_static, target_psd, channel_indices,
+            leadfield, smoothing_blocks, dipole_labels,
+        )
+        updates, new_opt_state = joint_optimizer.update(grads, current_opt_state, current_diff)
+        new_diff = optax.apply_updates(current_diff, updates)
+        return new_diff, new_opt_state, loss, eeg_loss, bold_loss
+
+    return joint_update_step
 
 
 def print_learnable_params(diff_params, learnable_params: tuple[LearnableParam, ...] = DEFAULT_LEARNABLE_PARAMS):
@@ -528,6 +724,140 @@ def run_alternating_fit(
             eeg_stalled = (not do_eeg) or is_loss_stalled(
                 loss_history_eeg, early_stop_window, early_stop_patience, early_stop_min_delta)
             bold_stalled = (not do_bold) or is_loss_stalled(
+                loss_history_bold, early_stop_window, early_stop_patience, early_stop_min_delta)
+            if eeg_stalled and bold_stalled:
+                print(f"Early stopping at epoch {epoch + 1}: loss trend stalled "
+                      f"(window={early_stop_window}, patience={early_stop_patience}).")
+                break
+
+    return FitResult(diff_params, static_params, loss_history_eeg, loss_history_bold)
+
+
+def run_phased_fit(
+    diff_params_init,
+    static_params,
+    eeg_update_step,
+    bold_update_step,
+    eeg_optimizer,
+    bold_optimizer,
+    target_psd,
+    channel_indices,
+    leadfield,
+    smoothing_blocks,
+    dipole_labels,
+    bold_phase_epochs=200,
+    eeg_phase_epochs=200,
+    print_every=10,
+    print_fn=print_learnable_params,
+    early_stop_window=20,
+    early_stop_patience=None,
+    early_stop_min_delta=1e-3,
+    on_epoch=None,
+) -> FitResult:
+    """Two-phase fit: ``bold_phase_epochs`` of BOLD-only steps, then
+    ``eeg_phase_epochs`` of EEG-only steps -- as opposed to
+    ``run_alternating_fit``'s interleaved schedule. Both phases share ONE
+    continuously-updated ``diff_params`` (phase 2 starts from phase 1's
+    fitted values); this is literally two back-to-back
+    ``run_alternating_fit`` calls with ``optimize="bold"`` then
+    ``optimize="eeg"``, not new alternation math -- each phase gets its own
+    fresh per-loss Adam state exactly as ``run_alternating_fit`` already
+    builds internally (phase 1 never steps EEG, so there is no phase-1 EEG
+    optimizer state for phase 2 to inherit anyway).
+
+    ``on_epoch``'s epoch index restarts at 0 for phase 2 (phase-local, not a
+    running total across both phases) -- a cosmetic simplification; the
+    printed phase-boundary banner disambiguates which phase a given epoch
+    number belongs to.
+    """
+    print(f"=== Phase 1/2: BOLD-only, {bold_phase_epochs} epochs ===")
+    phase1 = run_alternating_fit(
+        diff_params_init, static_params, eeg_update_step, bold_update_step,
+        eeg_optimizer, bold_optimizer, target_psd, channel_indices, leadfield,
+        smoothing_blocks, dipole_labels,
+        num_epochs=bold_phase_epochs, bold_every=1, print_every=print_every, print_fn=print_fn,
+        optimize="bold",
+        early_stop_window=early_stop_window, early_stop_patience=early_stop_patience,
+        early_stop_min_delta=early_stop_min_delta,
+        on_epoch=on_epoch,
+    )
+
+    print(f"=== Phase 2/2: EEG-only, {eeg_phase_epochs} epochs ===")
+    phase2 = run_alternating_fit(
+        phase1.diff_params, static_params, eeg_update_step, bold_update_step,
+        eeg_optimizer, bold_optimizer, target_psd, channel_indices, leadfield,
+        smoothing_blocks, dipole_labels,
+        num_epochs=eeg_phase_epochs, bold_every=1, print_every=print_every, print_fn=print_fn,
+        optimize="eeg",
+        early_stop_window=early_stop_window, early_stop_patience=early_stop_patience,
+        early_stop_min_delta=early_stop_min_delta,
+        on_epoch=on_epoch,
+    )
+
+    return FitResult(
+        phase2.diff_params, static_params,
+        loss_history_eeg=phase2.loss_history_eeg,
+        loss_history_bold=phase1.loss_history_bold,
+    )
+
+
+def run_joint_fit(
+    diff_params_init,
+    static_params,
+    joint_update_step,
+    joint_optimizer,
+    target_psd,
+    channel_indices,
+    leadfield,
+    smoothing_blocks,
+    dipole_labels,
+    num_epochs=200,
+    print_every=10,
+    print_fn=print_learnable_params,
+    early_stop_window=20,
+    early_stop_patience=None,
+    early_stop_min_delta=1e-3,
+    on_epoch=None,
+) -> FitResult:
+    """Single combined-loss fit for the "joint" schedule: one gradient step
+    per epoch against ``joint_eeg_weight * eeg_loss + joint_bold_weight *
+    bold_loss`` (see ``make_joint_loss_fn``) -- both terms every epoch, no
+    ``bold_every``-style skipping (a joint loss needs both every step).
+
+    Both raw (unweighted) loss components are still logged into
+    ``loss_history_eeg``/``loss_history_bold`` every epoch, so downstream
+    reporting (``relative_final_loss``, the CLI's combined-ratio printout)
+    works the same across all three schedules.
+    """
+    diff_params = diff_params_init
+    opt_state = joint_optimizer.init(diff_params)
+
+    loss_history_eeg, loss_history_bold = [], []
+
+    for epoch in range(num_epochs):
+        diff_params, opt_state, loss, loss_eeg, loss_bold = joint_update_step(
+            diff_params, static_params, opt_state,
+            target_psd, channel_indices, leadfield, smoothing_blocks, dipole_labels,
+        )
+        opt_state = jax.lax.stop_gradient(opt_state)
+        loss_eeg = float(loss_eeg)
+        loss_bold = float(loss_bold)
+        loss_history_eeg.append(loss_eeg)
+        loss_history_bold.append(loss_bold)
+
+        print(f"Epoch {epoch + 1:04d} | joint: {float(loss):.5f} | "
+              f"EEG: {loss_eeg:.5f} | BOLD FC: {loss_bold:.5f}")
+
+        if on_epoch is not None:
+            on_epoch(epoch, loss_eeg, loss_bold, True)
+
+        if print_fn is not None and (epoch + 1) % print_every == 0:
+            print_fn(diff_params)
+
+        if early_stop_patience is not None:
+            eeg_stalled = is_loss_stalled(
+                loss_history_eeg, early_stop_window, early_stop_patience, early_stop_min_delta)
+            bold_stalled = is_loss_stalled(
                 loss_history_bold, early_stop_window, early_stop_patience, early_stop_min_delta)
             if eeg_stalled and bold_stalled:
                 print(f"Early stopping at epoch {epoch + 1}: loss trend stalled "

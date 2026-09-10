@@ -99,6 +99,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--spacing", default="2.0", help="dipole spacing in mm (string)")
     p.add_argument("--leadfield-label", default="duneuroCGAL")
     p.add_argument("--optimize", default="both", choices=("eeg", "bold", "both"))
+    p.add_argument("--bold-model", default="hrf", choices=("hrf", "balloon"),
+                    help="see eeg_bold_fit_cli.py --bold-model -- 'hrf' (linear HRF-kernel "
+                         "convolution, default) or 'balloon' (Friston/Deco Balloon-Windkessel "
+                         "hemodynamic ODE), applied identically to every subject in this sweep "
+                         "trial.")
+    p.add_argument("--schedule", default="alternating", choices=("alternating", "phased", "joint"),
+                    help="see eeg_bold_fit_cli.py --schedule -- same three strategies (phased "
+                         "splits --num-epochs in half), applied identically to every subject in "
+                         "this sweep trial.")
+    p.add_argument("--joint-eeg-weight", type=float, default=1e5,
+                    help="see eeg_bold_fit_cli.py --joint-eeg-weight (--schedule joint only)")
+    p.add_argument("--joint-bold-weight", type=float, default=1.0,
+                    help="see eeg_bold_fit_cli.py --joint-bold-weight (--schedule joint only)")
     p.add_argument("--num-epochs", type=int, default=_env_int("SWEEP_NUM_EPOCHS", 300))
     p.add_argument("--bold-every", type=int, default=2)
     p.add_argument("--eeg-task", default="eyesclosed")
@@ -166,6 +179,10 @@ def _log_subject_summary(wandb, subject_id, loss_eeg, loss_bold, metrics, figure
 
 def _log_aggregate(wandb, per_subject_combined, per_subject_eeg, per_subject_bold,
                     per_subject_eeg_ratio, per_subject_bold_ratio, n_subjects):
+    """Returns the combined_loss value (the sweep's minimized objective) --
+    unused by this module's own main() (wandb's Sweeps controller reads the
+    metric back from wandb itself), but eeg_bold_fit_optuna.py's caller needs
+    it directly to hand to Optuna's study.tell()."""
     import numpy as np
     # aggregate/combined_loss (the sweep's minimized metric -- see
     # sweep_eeg_bold.yaml) is the ratio-based combination; the raw *_loss_mean
@@ -182,6 +199,7 @@ def _log_aggregate(wandb, per_subject_combined, per_subject_eeg, per_subject_bol
         aggregate["aggregate/bold_loss_ratio_mean"] = float(np.mean(per_subject_bold_ratio))
     wandb.log(aggregate)
     print(f"Aggregate over {n_subjects} subjects: {aggregate}")
+    return aggregate["aggregate/combined_loss"]
 
 
 def _run_sequential(wandb, run, args, subjects):
@@ -208,8 +226,13 @@ def _run_sequential(wandb, run, args, subjects):
     for subject_id in subjects:
         subject = Subject(args.bids_root, subject_id)
 
+        # Schedule suffix only when non-default -- mirrors eeg_bold_fit_cli.py's
+        # own output_dir naming exactly, so _run_parallel's post-hoc out_dir
+        # reconstruction (which has no in-process cfg to read it back from)
+        # stays in sync with whichever path actually wrote the results.
+        schedule_suffix = "" if args.schedule == "alternating" else f"_{args.schedule}"
         output_root = os.path.join(args.output_root, f"atlas-{args.atlas}", run.id)
-        output_dir = os.path.join(output_root, f"{subject.subject}_{args.optimize}")
+        output_dir = os.path.join(output_root, f"{subject.subject}_{args.optimize}{schedule_suffix}")
         os.makedirs(output_dir, exist_ok=True)
 
         solver_block_size = None if args.solver_block_size == 0 else args.solver_block_size
@@ -224,6 +247,10 @@ def _run_sequential(wandb, run, args, subjects):
             num_epochs=args.num_epochs,
             bold_every=args.bold_every,
             optimize=args.optimize,
+            bold_model=args.bold_model,
+            schedule=args.schedule,
+            joint_eeg_weight=args.joint_eeg_weight,
+            joint_bold_weight=args.joint_bold_weight,
             bold_fc_weight=args.bold_fc_weight,
             bold_dfc_weight=args.bold_dfc_weight,
             bold_psd_weight=args.bold_psd_weight,
@@ -309,6 +336,10 @@ def _worker_argv(worker_script, args, subject_id, worker_output_root):
         "--spacing", args.spacing,
         "--leadfield-label", args.leadfield_label,
         "--optimize", args.optimize,
+        "--bold-model", args.bold_model,
+        "--schedule", args.schedule,
+        "--joint-eeg-weight", str(args.joint_eeg_weight),
+        "--joint-bold-weight", str(args.joint_bold_weight),
         "--num-epochs", str(args.num_epochs),
         "--bold-every", str(args.bold_every),
         "--eeg-task", args.eeg_task,
@@ -417,9 +448,15 @@ def _run_parallel(wandb, run, args, subjects):
         if failed:
             raise RuntimeError(f"round {round_idx}: subject(s) failed: {failed} -- see {log_dir}/<subject>.log")
 
+        # Matches eeg_bold_fit_cli.py's own output_dir naming (see
+        # _run_sequential's identical schedule_suffix comment) -- this process
+        # never sees the worker's in-process cfg, so it must reconstruct the
+        # exact same path the subprocess wrote to.
+        schedule_suffix = "" if args.schedule == "alternating" else f"_{args.schedule}"
         for subject_id, _gpu_id, _proc, _log_file in procs:
             subject = Subject(args.bids_root, subject_id)
-            out_dir = Path(worker_output_root) / f"atlas-{args.atlas}" / f"{subject.subject}_{args.optimize}"
+            out_dir = (Path(worker_output_root) / f"atlas-{args.atlas}"
+                       / f"{subject.subject}_{args.optimize}{schedule_suffix}")
             loss_eeg, loss_bold, metrics, figures = _load_worker_result(out_dir)
             _log_subject_epochs(wandb, subject_id, loss_eeg, loss_bold, args.bold_every)
             eeg_ratio, bold_ratio, final_eeg, final_bold = _log_subject_summary(

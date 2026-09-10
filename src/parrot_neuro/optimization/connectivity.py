@@ -103,7 +103,7 @@ def extract_bold_2d(bold_result):
     streaming-reduced return -- see ``train.build_simulators``) or, for
     backward compatibility, anything with a ``.ys`` attribute of that shape
     (a ``NativeSolution``-like object, e.g. from a direct post-hoc
-    ``HRFBold(...)`` call).
+    ``HRFBold(...)`` or ``BalloonWindkesselBold(...)`` call).
     """
     ys = getattr(bold_result, "ys", bold_result)
     return ys[:, 0, :]

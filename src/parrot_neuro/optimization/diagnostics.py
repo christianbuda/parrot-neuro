@@ -49,7 +49,8 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> dict:
     figures["node_activity"] = out_dir / "node_activity.png"
     fig.savefig(figures["node_activity"], dpi=150)
 
-    # simulator_bold already streams the HRF convolution (see
+    # simulator_bold already streams the BOLD forward model (HRF convolution
+    # or Balloon-Windkessel ODE integration, per cfg.bold_model -- see
     # train.build_simulators), so sim_result_bold is already the small
     # [n_bold, n_voi, n_nodes] buffer, not the full raw per-ms trajectory --
     # no separate bold_monitor(...) call, and no need to `del` it early for

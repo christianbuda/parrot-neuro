@@ -3,6 +3,7 @@ development/
 eeg_bold_fit_res/
 eeg_bold_fit_res_summary/
 eeg_channel_qc_res/
+eeg_bold_fit_sweep_res/
 # parrot specific
 .temp_pipeline*
 
