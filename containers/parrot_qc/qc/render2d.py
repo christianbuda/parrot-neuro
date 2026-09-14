@@ -9,6 +9,16 @@ The T1 background is passed through `_masked_bg`: MP2RAGE (MPRAGEised) T1s keep 
 low-but-nonzero speckle in the air that nilearn's autoscaling stretches into
 visible noise around the head. We zero the sub-tissue background (Otsu split) so
 it renders black; on an already-clean conventional T1 this is a no-op.
+
+`_masked_bg` also straightens the affine (see below): subject T1s are a few
+degrees off axis-aligned, and `plot_roi`/`plot_stat_map` reslice the background
+with nearest-neighbour interpolation (nilearn hardcodes this in
+`_plot_img_with_bg`; unlike `plot_anat`, it isn't exposed as a kwarg). Nearest-
+neighbour resampling of a rotated grid onto axis-aligned display planes aliases
+into a visible moire/staircase ripple, worst in smooth regions like the skull/
+scalp falloff. Pre-straightening once with cubic interpolation makes the later
+reslice a geometric no-op, so nilearn's fixed choice of interpolation no longer
+matters.
 """
 from __future__ import annotations
 
@@ -21,6 +31,7 @@ from matplotlib.colors import ListedColormap  # noqa: E402
 from matplotlib.patches import Patch      # noqa: E402
 import numpy as np                        # noqa: E402
 import nibabel as nib                     # noqa: E402
+from nibabel.processing import resample_to_output  # noqa: E402
 from nilearn import plotting              # noqa: E402
 from nilearn.image import crop_img, resample_to_img  # noqa: E402
 
@@ -55,9 +66,11 @@ _BG_CACHE: dict = {}
 
 
 def _masked_bg(path):
-    """Return a background-cleaned copy of the T1 as a nibabel image (cached by
-    path+mtime). Voxels below the Otsu split are zeroed so the extracranial noise
-    renders black; clean T1s are effectively unchanged."""
+    """Return a background-cleaned, axis-straightened copy of the T1 as a nibabel
+    image (cached by path+mtime). Voxels below the Otsu split are zeroed so the
+    extracranial noise renders black (clean T1s are effectively unchanged), then
+    the volume is resampled onto an axis-aligned affine at the same voxel size
+    (cubic spline) -- see the module docstring for why."""
     path = str(path)
     try:
         key = (path, os.path.getmtime(path))
@@ -85,8 +98,13 @@ def _masked_bg(path):
     # scl_inter to the already-scaled data (asanyarray applied it once) -> double
     # scaling. The affine preserves orientation/geometry.
     masked = nib.Nifti1Image(out, img.affine)
-    _BG_CACHE[key] = masked
-    return masked
+    # Straighten a few-degree-off affine onto axis-aligned voxel axes (same voxel
+    # size, cubic interpolation) so nilearn's later reslice-to-cut-plane is a
+    # geometric no-op regardless of which interpolation it uses internally.
+    zooms = [float(z) for z in img.header.get_zooms()[:3]]
+    straightened = resample_to_output(masked, voxel_sizes=zooms, order=3)
+    _BG_CACHE[key] = straightened
+    return straightened
 
 
 def _display_figure(disp):
