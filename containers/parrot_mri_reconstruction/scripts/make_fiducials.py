@@ -28,11 +28,10 @@ NAS and IN are left at the SimNIBS template values: the manual picks show no
 significant bias for either (NAS anterior -0.05 mm; IN unbiased but with 9 mm of
 z-scatter, the inion being a notoriously unreliable landmark).
 
-Must run under the SimNIBS interpreter, which is the only one that can import
-simnibs in this image:
+Must run under the SimNIBS interpreter -- the default python in this image cannot
+import simnibs. `simnibs_python` is on PATH via source_env.sh:
 
-    /opt/SimNIBS-4.5/simnibs_env/bin/python /scripts/make_fiducials.py \
-        --subject <ID> --output_dir /derivatives
+    simnibs_python /scripts/make_fiducials.py --subject <ID> --output_dir /derivatives
 """
 import argparse
 import json

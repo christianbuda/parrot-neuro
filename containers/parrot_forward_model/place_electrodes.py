@@ -42,28 +42,16 @@ if __name__ == "__main__":
     vertices = np.array(mesh.vertices)
     faces = np.array(mesh.faces)
     
-    if os.path.isfile(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/fiducials.json')):
-        with open(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/fiducials.json'), 'r') as f:
-            fiducials = json.load(f)
-    else:
-        # take simnibs fiducials and dump them in electrodes folder
-        fiducials = np.loadtxt(os.path.join(output_dir, f'simnibscharm/sub-{subject}/eeg_positions/Fiducials.csv'), delimiter=',', dtype=str)
-        names = fiducials[:,-1].tolist()
-        points = fiducials[:,1:-1].astype(float).tolist()
-        
-        # project the fiducials on the mesh vertices to get fid indices
-        points, _ = project_fid_on_mesh(points, vertices, return_positions = True, return_indices=True)
-    
-        fiducials = dict(zip(names, points))
-        if 'Nz' in fiducials.keys():
-            fiducials['NAS'] = fiducials.pop('Nz')
-        if 'Iz' in fiducials.keys():
-            fiducials['IN'] = fiducials.pop('Iz')
-        
-        os.makedirs(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/'), exist_ok=True)
-        with open(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/fiducials.json'), 'w') as f:
-            # project_fid_on_mesh returns numpy arrays; cast to lists so json can serialise them
-            json.dump({k: np.asarray(v).tolist() for k, v in fiducials.items()}, f)
+    # Fiducials come from the `fiducials` stage (make_fiducials.py), which warps corrected
+    # MNI coordinates into the subject. Deriving them here from the SimNIBS CSV is gone: those
+    # template points are ~7.6 mm posterior of the preauricular point, which lands them on the
+    # pinna and tilts the montage.
+    fid_path = os.path.join(output_dir, f'scalplandmarks/sub-{subject}/fiducials.json')
+    if not os.path.isfile(fid_path):
+        raise SystemExit(f'No fiducials at {fid_path}. Run the `fiducials` stage '
+                         '(make_fiducials.py, parrot_mri_reconstruction) first, or place them by hand.')
+    with open(fid_path, 'r') as f:
+        fiducials = json.load(f)
 
     points = [fiducials['RPA'], fiducials['LPA'], fiducials['NAS'], fiducials['IN']]
 
