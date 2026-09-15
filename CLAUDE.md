@@ -88,7 +88,7 @@ parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
 | `bin/images.sh` | **Single source of truth** for the Docker image tags + build contexts (sourced by `run_reconstruction.sh` and `build.sh`) |
 | `bin/build.sh` | Builds (and optionally `--push`es) the Parrot images |
 | `bin/stage.sh` + `utils/staging/` | Pre-pipeline cohort → Parrot-ready BIDS staging. `bin/stage.sh <cohort> <src> <out>` runs `utils/staging/<cohort>.py` inside the MRI image; `common.py` holds cohort-agnostic helpers (header hygiene, `participants.tsv` writer) |
-| `bin/legend_of_files.txt` | **Authoritative map of the output (derivatives) directory layout** |
+| `bin/legend_of_files.txt` | **Authoritative map of the output (derivatives) directory layout**; copied into `<output_dir>/` on every run so a derivatives tree stays self-documenting |
 | `containers/parrot_mri_reconstruction/scripts/` | Reconstruction step scripts (atlas, surfaces, tissue labels, cerebellum, bigbrain, …) |
 | `containers/parrot_forward_model/place_dipoles.py` | Poisson-disk dipole sampling + orientation assignment |
 | `containers/parrot_forward_model/mesher.cpp` | CGAL tetrahedral mesher (C++) |
@@ -170,8 +170,13 @@ parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
 
 ## Repo Layout Notes
 
-- `src/parrot_neuro/`, `tests/`, `examples/`, `external/` are **scaffolding, currently
-  empty** — the README's "Python API" is aspirational, not yet implemented.
+- `src/parrot_neuro/` is the local-dev Python API: `Subject`, a **read-only** facade over one
+  subject's derivatives (`s.path.*` → paths, `s.load.*` → loaded objects). It reads pipeline
+  outputs; it computes nothing. Layer order — `_layout.py` (stage dir names, the single source
+  of truth for them) → `_paths.py` (path composition, stdlib only) → `_loaders.py` (readers) →
+  `subject.py` (the facade). `tests/` covers it; `examples/subject_usage.py` is the tour.
+  The TVB→EEG/BOLD fitting subpackage (`parrot_neuro.optimization`) lives on the
+  `eeg-bold-fit` branch, not on `main`.
 - `utils/staging/` holds the dataset-staging tooling (see Key Files); the rest of `utils/`
   is still scaffolding. Run staging via `bin/stage.sh`, never on the host (needs nibabel).
 - `development/` is git-ignored scratch (JAX-TVB, tractography, US, EEG prototypes): where the

@@ -396,6 +396,13 @@ trap 'exit 143' TERM
 TEMPLATEFLOW_DIR="$OUTPUT_DIR/.templateflow"
 mkdir -p "$TEMPLATEFLOW_DIR"
 
+# Ship the derivatives-layout legend with the outputs, so a derivatives tree stays
+# self-documenting once it is detached from this checkout. Refreshed every run (the
+# repo copy is the source of truth) and non-fatal: a read-only or already-correct
+# copy must never abort a reconstruction.
+cp -f "$PARROT_SCRIPT_DIR/bin/legend_of_files.txt" "$OUTPUT_DIR/legend_of_files.txt" 2>/dev/null \
+    || echo "WARNING: could not copy legend_of_files.txt into $OUTPUT_DIR"
+
 # Auto-discover participants if none were provided
 if [ ${#PARTICIPANTS[@]} -eq 0 ]; then
     echo "No participant labels provided. Scanning $BIDS_DIR for subjects..."
