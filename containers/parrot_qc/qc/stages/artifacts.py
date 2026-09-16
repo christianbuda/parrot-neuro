@@ -3,7 +3,7 @@
 The `artifacts` stage adds extra-brain physiological noise sources -- eyes (sampled natively in the
 subject's Eye_balls compartment) and muscle (HArtMuT template positions warped into the subject) --
 and solves geometry-only artifact leadfields stackable with the brain leadfield. This validates:
-  * the subject<->MNI affine (artifacts/registration/) and its scalp-overlap self-check,
+  * the subject<->MNI affine (artifacts/registration/), re-measured here rather than trusted,
   * the artifact dipole sets + artifactsources.json (counts, neck coverage),
   * the eye leadfield and the muscle leadfield (subject-mesh solve OR the canned HArtMuT fallback),
 and renders the source positions on the head plus sample EOG/EMG cap topographies.
@@ -14,6 +14,7 @@ the inputs) this reports `skip`, never `fail` -- like the other optional stages.
 import json
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from ..checks import StageResult, PASS, WARN, FAIL, fmt_range
 from .. import render3d
@@ -127,6 +128,43 @@ def _check_electrode_clearance(r, name, positions, elec, gap):
           f"median {np.median(d):.1f} mm")
 
 
+# A correct MNI->subject affine lands the NYhead template scalp on the subject scalp to ~2-3 mm
+# (2.1-2.6 mm across the 10 AEGEUS subjects). These bound that measurement.
+REG_RESIDUAL_WARN_MM = 4.0
+REG_RESIDUAL_FAIL_MM = 6.0
+
+
+def _check_registration(r, ctx, affine_path):
+    """Re-measure the MNI->subject affine here instead of trusting the registration's self-report.
+
+    The residual is computed template->subject: map every NYhead scalp vertex through the affine
+    and ask how far it lands from the subject scalp. The opposite direction is what the stage used
+    to report, and it is nearly blind -- it sits at 14-15 mm for a correct affine and 20-28 mm for
+    one mirrored by an RAS/LPS mix-up, so both passed a 30 mm threshold. This direction separates
+    them 2.4 vs 14-21 mm. Recomputing it here also means a stale registration_qc.json cannot make
+    a bad affine look fine.
+    """
+    try:
+        A = np.load(affine_path)
+        nyhead = ctx.deriv / ".hartmut_cache" / "nyhead_scalp.stl"
+        charm = ctx.stage_dir("surfaces") / "charm_scalp.ply"
+        if not nyhead.exists() or not charm.exists():
+            r.add(PASS, "MNI registration", "affine present (scalp meshes unavailable to re-check)")
+            return
+        tmpl = np.asarray(render3d.load_surface(nyhead).points, dtype=float)
+        subj = np.asarray(render3d.load_surface(charm).points, dtype=float)
+        mapped = (np.hstack([tmpl, np.ones((len(tmpl), 1))]) @ A.T)[:, :3]
+        d, _ = cKDTree(subj).query(mapped, k=1)
+        err = float(np.mean(d))
+        st = PASS if err <= REG_RESIDUAL_WARN_MM else (WARN if err <= REG_RESIDUAL_FAIL_MM else FAIL)
+        detail = f"template->subject scalp residual {err:.1f} mm (expect <= {REG_RESIDUAL_WARN_MM:.0f})"
+        if st is FAIL:
+            detail += " — affine is wrong; artifact sources are misplaced"
+        r.add(st, "MNI registration", detail)
+    except Exception as e:  # noqa: BLE001
+        r.warn("MNI registration", f"could not re-measure the affine: {e}")
+
+
 def _electrode_positions(ctx, n_rows):
     """Montage positions in leadfield-row order (landmarks_10-5-full.csv), or None on mismatch."""
     csv = ctx.stage_dir("electrodes") / "landmarks_10-5-full.csv"
@@ -145,21 +183,9 @@ def run(ctx) -> StageResult:
 
     # --- subject<->MNI registration --------------------------------------------------------------
     reg = ctx.stage_dir("artifacts/registration")
-    if (reg / "mni_to_subject_affine.npy").exists():
-        qc_json = reg / "registration_qc.json"
-        if qc_json.exists():
-            try:
-                info = json.loads(qc_json.read_text())
-                overlap = float(info.get("mean_scalp_overlap_mm", float("nan")))
-                # ~15-25 mm is the expected template-vs-subject scalp shape difference (the ray-cast
-                # corrects the radial part); only a grossly large value indicates a bad registration.
-                st = PASS if overlap <= 30 else WARN
-                r.add(st, "MNI registration", f"scalp overlap {overlap:.1f} mm "
-                      f"(via {info.get('selected_transformlist', '?')})")
-            except Exception as e:  # noqa: BLE001
-                r.warn("MNI registration", f"qc json unreadable: {e}")
-        else:
-            r.add(PASS, "MNI registration", "affine present (no qc json)")
+    affine_path = reg / "mni_to_subject_affine.npy"
+    if affine_path.exists():
+        _check_registration(r, ctx, affine_path)
     else:
         r.fail("MNI registration", "mni_to_subject_affine.npy missing")
 
