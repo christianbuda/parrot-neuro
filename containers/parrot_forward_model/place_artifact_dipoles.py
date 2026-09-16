@@ -12,9 +12,10 @@ rather than the brain `dipoles/…/spacing…mm/` tree. Two groups:
 
 * **muscle** — HArtMuT's template muscle source positions warped into the subject via
   affine-bring-into-frame (`artifacts/registration/sub-<S>/mni_to_subject_affine.npy`) followed by the
-  ray-cast layer-normalized projection (`hartmut_warp.ray_cast_warp`). Sources whose ray misses
-  the subject skull/scalp shell (e.g. no neck FOV) are dropped and counted, as are sources that
-  land within `--min-electrode-distance` of an electrode (see `drop_near_electrodes`).
+  ray-cast layer-normalized projection (`hartmut_warp.ray_cast_warp`), against the subject's
+  charm compact-bone and scalp surfaces. Sources whose ray misses the subject skull/scalp shell
+  (e.g. no neck FOV) are dropped and counted, as are sources that land within
+  `--min-electrode-distance` of an electrode (see `drop_near_electrodes`).
 
 Artifacts are a small, fixed source set (spacing-independent), so this runs **once** per subject,
 not per dipole spacing. Orientation/amplitude are deferred to the simulation/noise stage; here we
@@ -182,7 +183,14 @@ def place_muscle(output_dir, subject, hartmut_dir, generator, head_center, elect
     tmpl_scalp.vertices = apply_affine(A, tmpl_scalp.vertices)
     src_pos = apply_affine(A, src_pos)
 
-    subj_skull = load_mesh(os.path.join(output_dir, f"surfaces/sub-{subject}/freesurfer_BEM_outer_skull.ply"))
+    # The warp interpolates each source along the subject's skull->scalp segment, so the "skull"
+    # must be real bone. freesurfer_BEM_outer_skull.ply is an MNE watershed shell: outside the
+    # braincase it hugs the scalp (measured 2.5-4.0 mm gap over face, jaw and neck vs 13-93 mm in
+    # the template), so every facial source collapsed onto the skin regardless of its true depth.
+    # charm's compact-bone surface has the orbits, maxilla and mandible, which is what the depth
+    # fraction is defined against. It is not watertight, so a few sources per subject lose their
+    # skull intersection and are dropped by ray_cast_warp -- counted in n_dropped_raycast.
+    subj_skull = load_mesh(os.path.join(output_dir, f"surfaces/sub-{subject}/charm_bone_compact.ply"))
     subj_scalp = load_mesh(os.path.join(output_dir, f"surfaces/sub-{subject}/charm_scalp.ply"))
     subj_scalp = decimate_for_raycast(subj_scalp)  # 105k-face charm scalp -> ~20k for fast casting
 
