@@ -417,8 +417,10 @@ EEG ARTIFACT SOURCES
     │   ├── subject_to_mni_affine.npy: (4,4) the inverse; maps the subject montage into template
     │   │   space for the fallback electrode interpolation.
     │   ├── ants_affine.mat: the raw ANTs (antspyx) transform.
-    │   └── registration_qc.json: which transform direction was selected + the subject-to-NYhead
-    │       scalp overlap (mm) self-check.
+    │   └── registration_qc.json: both scalp residuals (mm). The GATED one is
+    │       template->subject (NYhead scalp mapped through the affine, distance to charm_scalp);
+    │       ~2-3 mm is correct. subject->template sits at 14-15 mm even for a good affine and is
+    │       recorded but not gated -- it barely separates a correct fit from a mirrored one.
     └── dipoles/sub-<ID>/: the artifact source dipoles -- a small fixed set, spacing-independent.
         ├── eyes/: dipoles sampled NATIVELY inside surfaces/charm_eyes_balls.ply. Same file
         │   contract as the brain volumetric dipoles (dipole_positions / _volume / _labels /
@@ -427,7 +429,8 @@ EEG ARTIFACT SOURCES
         │   by the geometry-only leadfield.
         ├── muscle/: face/neck muscle dipoles -- HArtMuT NYhead template positions warped into
         │   the subject (affine + ray-cast layer-normalized projection preserving skull<->scalp
-        │   depth fraction). Same file contract.
+        │   depth fraction, cast against surfaces/charm_bone_compact.ply and charm_scalp.ply).
+        │   Same file contract.
         ├── artifactsources.json: the machine-readable record of what survived, and the file the
         │   orchestrator reads to choose the muscle path (solve vs canned fallback).
         │     eyes: {n_dipoles, n_dropped_near_electrode}
