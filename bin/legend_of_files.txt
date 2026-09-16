@@ -113,7 +113,8 @@ ANATOMICAL RECONSTRUCTION
 │       ├── converted/: surfaces extracted from subject.msh (feed surfaces/charm_*.ply).
 │       ├── surfaces/, segmentation/, label_prep/: charm intermediates.
 │       ├── eeg_positions/: SimNIBS's own EEG montage + Fiducials.csv (MNI template fiducials
-│       │   warped to the subject -- the fallback source for scalplandmarks/fiducials.json).
+│       │   warped to the subject). NOT used as a fiducial source: those template LPA/RPA sit
+│       │   ~7.6 mm posterior of the preauricular point -- see scalplandmarks/fiducials.json.
 │       ├── toMNI/: subject<->MNI transforms computed by charm.
 │       ├── T1.nii.gz, T2_reg.nii.gz: charm's conformed inputs.
 │       └── charm_report.html / charm_log.html: SimNIBS's own report.
@@ -299,14 +300,24 @@ DIFFUSION (OPTIONAL -- only when the subject has DWI)
 
 FORWARD MODEL
 -------------
-├── scalplandmarks/: subject landmarks on surfaces/charm_scalp.ply, written by the electrodes
-│   │                stage (it has no stage of its own).
+├── scalplandmarks/: subject landmarks on surfaces/charm_scalp.ply, written by the fiducials
+│   │                stage (it has no folder of its own).
 │   └── sub-<ID>/
-│       ├── fiducials.json: NAS, IN, LPA, RPA positions in world space. Written by
-│       │   place_electrodes.py, which SEEDS it from SimNIBS's eeg_positions/Fiducials.csv
-│       │   (i.e. MNI template fiducials warped to the subject) when the file does not exist.
-│       │   Drop in a hand-picked file here BEFORE running electrodes to override it -- the
-│       │   montage is built from these four points and inherits any error in them.
+│       ├── fiducials.json: NAS, IN, LPA, RPA positions in world space, written by
+│       │   make_fiducials.py: MNI coordinates warped in with SimNIBS's mni2subject_coords
+│       │   and snapped to charm_scalp.ply. LPA/RPA come from the median of 20 hand-picked
+│       │   LEMON subjects, NOT from SimNIBS's own template -- those are ~7.6 mm posterior
+│       │   (100% of 40 picks), which lands them on the pinna, where the coronal cut used to
+│       │   bisect for Cz wraps ear cartilage and tilts the whole montage. NAS/IN keep the
+│       │   SimNIBS values (no significant bias; the inion has ~9 mm of scatter).
+│       │   REQUIRED by electrodes -- there is no longer a fallback deriving it from the
+│       │   SimNIBS CSV. Drop in a hand-picked file here to override it; make_fiducials
+│       │   refuses to overwrite a file it did not write unless --force, so manual picks
+│       │   survive a rerun. The montage is built from these four points and inherits any
+│       │   error in them.
+│       ├── fiducials_provenance.json: what wrote fiducials.json, the MNI coordinates used,
+│       │   and the per-point snap distance to the scalp. Its ABSENCE is what marks
+│       │   fiducials.json as hand-picked or legacy, and so protects it from being replaced.
 │       └── outlines.npy: OPTIONAL INPUT, not an output. Right-ear / left-ear / eye outlines
 │           used to exclude electrodes that land on them. There is NO fallback: when this file
 │           is absent, place_electrodes.py performs no exclusion at all and the "selected"
@@ -315,9 +326,13 @@ FORWARD MODEL
 ├── electrodes/: 10-5 montage sampled on surfaces/charm_scalp.ply.
 │   └── sub-<ID>/
 │       ├── landmarks_10-5-full.csv: all 10-5 electrode positions, in world space.
-│       └── selected_landmarks_10-5-full.json: the electrodes kept after ear/eye exclusion --
-│           identical to the full set unless scalplandmarks/outlines.npy was supplied.
-│           THIS subset, in this order, is the row order of every leadfield.
+│       ├── selected_landmarks_10-5-full.json: the electrodes kept after ear/eye exclusion --
+│       │   identical to the full set unless scalplandmarks/outlines.npy was supplied.
+│       │   THIS subset, in this order, is the row order of every leadfield.
+│       └── placement_qc.json: ear-approach tortuosity (arc/chord over the last 30 mm of the
+│           coronal cut before each preauricular point). ~1.00 means the cut ran over smooth
+│           scalp; >1.1 means it wrapped the pinna, which biases Cz and tilts the montage.
+│           Thresholded by the electrodes QC stage (warn 1.08, fail 1.25).
 │
 ├── dipoles/: source dipoles, Poisson-disk sampled on the surfaces and in the subcortical
 │   │         volumes. Pre-sampled at all three spacings; each solver then uses its own.
