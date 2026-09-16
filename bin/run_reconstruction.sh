@@ -81,6 +81,8 @@ usage() {
     echo "  --spacing-duneuro-simnibs  Dipole spacing (mm) for DUNEuro FEM with SimNIBS mesh (Default: 3)."
     echo "  --spacing-duneuro-cgal     Dipole spacing (mm) for DUNEuro FEM with CGAL mesh (Default: 2)."
     echo "  --dipole-seed              Integer seed for reproducible dipole sampling (Default: unset = random)."
+    echo "  --artifact-electrode-gap   Minimum artifact source-to-electrode distance in mm; closer sources are"
+    echo "                             dropped (Default: 5). Guards the 1/r^2 point-dipole singularity."
     echo "  --dwi-preprocessed FORMAT  DWI is already preprocessed; skip QSIPrep. FORMAT is 'qsiprep' (a qsiprep-"
     echo "                             derivatives tree already at <output_dir>/qsiprep/) or 'hcp' (HCP-YA, staged under"
     echo "                             <bids_dir>/sourcedata/hcp/<ID>/; uses QSIRecon --input-type hcpya)."
@@ -130,6 +132,7 @@ SPACING_OPENMEEG=4
 SPACING_DUNEURO_SIMNIBS=3
 SPACING_DUNEURO_CGAL=2
 DIPOLE_SEED=""
+ARTIFACT_ELECTRODE_GAP=5
 DWI_FORMAT=""           # "" = raw DWI in BIDS dwi/ (run QSIPrep); else a preprocessed format
 FIX_INPUTS=false
 RECON_BACKEND=fastsurfer
@@ -169,6 +172,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dipole-seed)
             DIPOLE_SEED="$2"
+            shift 2
+            ;;
+        --artifact-electrode-gap)
+            ARTIFACT_ELECTRODE_GAP="$2"
             shift 2
             ;;
         --dwi-preprocessed)
@@ -1924,7 +1931,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         #    artifacts/dipoles/sub-<S>/artifactsources.json (counts + neck-coverage flag).
         if [ ! -f "$LOG_DIR/${NAME}-dipoles_log.txt" ]; then
             run_in_docker_FWD "$NAME-dipoles" "$LOG_DIR/${NAME}-dipoles_log.txt" "$IMG_FORWARD_MODEL" \
-                "cd /scripts && python place_artifact_dipoles.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
+                "cd /scripts && python place_artifact_dipoles.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache --min-electrode-distance $ARTIFACT_ELECTRODE_GAP${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
         fi
 
         # 3. artifact leadfields (solvers image). Eyes + muscle share ONE transfer matrix; muscle

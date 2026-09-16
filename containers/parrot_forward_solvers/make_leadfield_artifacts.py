@@ -65,7 +65,33 @@ def snap_to_valid_tissue(positions_mm, nodes, tetrahedra, tissue_label, tissue_n
     print(f"  snapped {len(dip)} dipoles to nearest {valid_names} tet: "
           f"median {np.median(moved_mm):.2f} mm, max {moved_mm.max():.2f} mm "
           f"({int((moved_mm > 2).sum())} moved >2 mm, e.g. out-of-mesh sources).")
-    return convert_dipoles(snapped)
+    return convert_dipoles(snapped), snapped
+
+
+# A single source this far above the 99th-percentile footprint means a near-singular column: a point
+# dipole that ended up within a millimetre or two of an electrode (potential ~ 1/r^2) captures that
+# channel almost entirely. place_artifact_dipoles.py drops such sources, so this is a backstop --
+# the counterpart to make_leadfield_duneuro's DEAD_SOURCE_FAIL_FRAC, which only catches zero columns.
+HOT_SOURCE_WARN_RATIO = 5.0
+HOT_SOURCE_FAIL_RATIO = 20.0
+
+
+def check_source_footprints(leadfield, group_name):
+    """Warn/fail on outlier-large source columns; returns the per-source footprints."""
+    n_src = leadfield.shape[1] // 3
+    fp = np.linalg.norm(leadfield.reshape(leadfield.shape[0], n_src, 3), axis=(0, 2))
+    p99 = np.percentile(fp, 99)
+    ratio = float(fp.max() / p99) if p99 > 0 else np.inf
+    msg = (f"  source footprints: median {np.median(fp):.4g}, p99 {p99:.4g}, "
+           f"max {fp.max():.4g} (max/p99 = {ratio:.1f}x, source {int(fp.argmax())})")
+    if ratio >= HOT_SOURCE_FAIL_RATIO:
+        raise ValueError(
+            f"{msg}\ngroup '{group_name}': one source exceeds the 99th percentile by {ratio:.1f}x "
+            f"(>= {HOT_SOURCE_FAIL_RATIO}x). This is a near-singular leadfield column -- almost "
+            'always a source that landed within ~1 mm of an electrode. Check the '
+            '--min-electrode-distance drop in place_artifact_dipoles.py.')
+    print(msg + ('  WARNING: above the expected range.' if ratio >= HOT_SOURCE_WARN_RATIO else ''))
+    return fp
 
 
 def main():
@@ -112,12 +138,12 @@ def main():
 
     # Snap + convert every group's dipoles onto the mesh BEFORE constructing the driver (the driver
     # reorders the grid arrays it is handed, so any mesh lookup must happen first).
-    group_dipoles = {}
+    group_dipoles, group_positions = {}, {}
     for g in groups:
         print(f"\n=== Placing group '{g['name']}' (valid_tissues={g['valid_tissues']}) ===")
         dip_path = os.path.join(output_dir, g['dipoles_dir'], 'dipole_positions.npy')
-        group_dipoles[g['name']] = snap_to_valid_tissue(dip_path, nodes, tetrahedra, tissue_label,
-                                                        tissue_names, g['valid_tissues'])
+        group_dipoles[g['name']], group_positions[g['name']] = snap_to_valid_tissue(
+            dip_path, nodes, tetrahedra, tissue_label, tissue_names, g['valid_tissues'])
 
     # Artifacts are always isotropic (no WM anisotropy relevant to eye/muscle sources).
     config = {
@@ -165,6 +191,16 @@ def main():
         out = os.path.join(output_dir, f'leadfields/sub-{subject}/processed_duneuro{out_tag}-leadfield.npy')
         np.save(out, leadfield)
         print(f"  saved {leadfield.shape} -> {out}")
+
+        # The solve uses the SNAPPED positions, not the ones on disk; record them so the downstream
+        # noise generator multiplies this leadfield by matching geometry (mm, subject space).
+        solved = os.path.join(output_dir, g['dipoles_dir'], 'dipole_positions_solved.npy')
+        np.save(solved, group_positions[name] * 1000.0)
+
+        # Checked last so every output on disk describes THIS run: raising earlier would leave a
+        # previous run's processed leadfield next to the new raw one. The step is log-guarded, so a
+        # failure here means no log is written and the next invocation redoes the group.
+        check_source_footprints(leadfield, name)
 
 
 if __name__ == '__main__':

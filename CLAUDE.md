@@ -161,6 +161,18 @@ parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
     orchestrator uses HArtMuT's canned muscle leadfield interpolated onto the montage instead of solving.
   - **Eyes + muscle share ONE transfer matrix** (`make_leadfield_artifacts.py`) — the expensive
     DUNEuro step depends only on mesh/conductivities/electrodes, not the dipoles.
+  - **Electrode clearance (`--artifact-electrode-gap`, default 5 mm).** The warp puts muscle sources at
+    scalp depth, where the electrodes also live, so some land a millimetre under a sensor; a point
+    dipole's potential goes as 1/r², so such a source takes over that channel (measured: 0.6 mm →
+    162× the p99 footprint, owning >50% of 260/345 rows). `place_artifact_dipoles.py` therefore
+    **drops** sources inside the gap (0.5–11.5% of them across AEGEUS). Don't relocate them instead —
+    pushing inward drives scalp sources into the skull, where there is no muscle. Backstops:
+    `make_leadfield_artifacts.py` fails at max/p99 ≥ 20× (healthy is 1.3–2.3×) and the QC stage checks
+    both clearance and per-source outliers. The solver's snap-to-tet still shaves ≲1.5 mm off the
+    placed clearance, which is why QC allows a tolerance rather than testing ≥ gap exactly.
+  - **The solve uses `dipole_positions_solved.npy`, not `dipole_positions.npy`** — `snap_to_valid_tissue`
+    moves every source to the nearest valid-tissue tet centroid first. Multiply the artifact leadfield
+    by the *solved* positions; the placed ones are up to ~10 mm away.
   - **QC:** the `parrot_qc` stage `artifacts` validates the registration/dipole/leadfield outputs and
     renders source positions + sample EOG/EMG topographies (it `skip`s when the stage didn't run).
   - **New deps/rebuilds:** `parrot_forward_model` needs `embreex`+`rtree` (fast ray-casting) and the

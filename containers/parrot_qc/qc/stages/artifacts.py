@@ -76,6 +76,57 @@ def _total_footprint(L):
     return np.linalg.norm(L, axis=1)
 
 
+def _source_footprint(L):
+    """Per-SOURCE total coupling to the whole cap (norm over electrodes+orientations) -> (n_src,).
+    The per-electrode counterpart is _total_footprint; this one exposes individual bad sources."""
+    n_src = L.shape[1] // 3
+    return np.linalg.norm(L.reshape(L.shape[0], n_src, 3), axis=(0, 2))
+
+
+def _check_source_outliers(r, name, L):
+    """Flag near-singular source columns -> (footprints, max/p99 ratio).
+
+    A point dipole's potential grows as 1/r^2, so a source that ends up a millimetre from an
+    electrode captures that channel almost entirely and swamps every other source once the noise
+    generator multiplies through. place_artifact_dipoles.py drops such sources by distance; this
+    checks the *result*. Healthy cohort range is 1.3-2.5x."""
+    fp = _source_footprint(L)
+    p99 = np.percentile(fp, 99)
+    ratio = float(fp.max() / p99) if p99 > 0 else float("inf")
+    n_hot = int((fp > 5 * p99).sum())
+    st = PASS if ratio < 5 else (WARN if ratio < 20 else FAIL)
+    r.add(st, f"{name} source outliers",
+          f"max/p99 = {ratio:.1f}x (source {int(fp.argmax())}), {n_hot} source(s) above 5x p99; "
+          f"median {np.median(fp):.3g}, p99 {p99:.3g}, max {fp.max():.3g}")
+    return fp, ratio
+
+
+SNAP_TOLERANCE_MM = 1.5   # see _check_electrode_clearance
+CLEARANCE_FAIL_MM = 3.0   # below this the 1/r^2 growth is steep enough to distort the column
+
+
+def _check_electrode_clearance(r, name, positions, elec, gap):
+    """Distance from each source to the nearest electrode -- the upstream cause of hot columns.
+
+    Measured on the geometry the solver used, which is NOT quite the geometry placement produced:
+    make_leadfield_artifacts snaps every source to the nearest valid-tissue tet centroid, and that
+    can shave a fraction of a millimetre off the clearance place_artifact_dipoles guaranteed.
+    Allowing SNAP_TOLERANCE_MM keeps this check on real regressions instead of warning on every
+    subject; what actually matters (the resulting footprint) is checked by _check_source_outliers.
+    """
+    if positions is None or elec is None or gap is None:
+        return
+    from scipy.spatial import cKDTree
+    d, _ = cKDTree(elec).query(positions, k=1)
+    st = (PASS if d.min() >= gap - SNAP_TOLERANCE_MM
+          else WARN if d.min() >= CLEARANCE_FAIL_MM else FAIL)
+    r.add(st, f"{name} electrode clearance",
+          f"closest source {d.min():.2f} mm from an electrode (target {gap:g} mm at placement, "
+          f"{SNAP_TOLERANCE_MM:g} mm snap tolerance); {int((d < gap).sum())} below target, "
+          f"{int((d < CLEARANCE_FAIL_MM).sum())} under {CLEARANCE_FAIL_MM:g} mm; "
+          f"median {np.median(d):.1f} mm")
+
+
 def _electrode_positions(ctx, n_rows):
     """Montage positions in leadfield-row order (landmarks_10-5-full.csv), or None on mismatch."""
     csv = ctx.stage_dir("electrodes") / "landmarks_10-5-full.csv"
@@ -115,6 +166,9 @@ def run(ctx) -> StageResult:
     # --- artifactsources.json: counts + neck coverage --------------------------------------------
     n_eye = n_muscle = None
     neck_ok = True
+    # Placement-time clearance target; absent from outputs predating the fix, in which
+    # case the pipeline default is assumed and the check below reports the shortfall.
+    gap_mm = 5.0
     src_json = adip / "artifactsources.json"
     if src_json.exists():
         try:
@@ -123,9 +177,15 @@ def run(ctx) -> StageResult:
             mus = src.get("muscle", {})
             n_muscle = mus.get("n_kept")
             neck_ok = bool(mus.get("neck_coverage", True))
+            near_el = mus.get("n_dropped_near_electrode")
+            gap_mm = float(mus.get("min_electrode_distance_mm", gap_mm))
+            drops = f"dropped {mus.get('n_dropped')}"
+            if near_el is not None:
+                drops += (f": {mus.get('n_dropped_raycast')} ray-miss, {near_el} within "
+                          f"{mus.get('min_electrode_distance_mm')} mm of an electrode")
             r.add(PASS, "artifactsources.json",
                   f"eyes={n_eye}, muscle kept={n_muscle}/{mus.get('n_total')} "
-                  f"(dropped {mus.get('n_dropped')}), neck_coverage={neck_ok}")
+                  f"({drops}), neck_coverage={neck_ok}")
             if not neck_ok:
                 r.warn("muscle neck coverage",
                        "too few muscle sources survived the warp -> canned-leadfield fallback used")
@@ -160,6 +220,23 @@ def run(ctx) -> StageResult:
                                     lf_dir / MUSCLE_FALLBACK_LF, None)
     else:
         r.fail("muscle leadfield", "neither solved nor fallback leadfield present")
+
+    # --- per-source sanity: clearance (cause) + outlier footprints (effect) -----------------------
+    # The solve uses the SNAPPED positions when they were recorded; fall back to the placed ones.
+    mus_solved = _load(adip / "muscle" / "dipole_positions_solved.npy")
+    mus_used = mus_solved if mus_solved is not None else mus_pos
+    # Geometry-only use, so read the montage directly rather than via _electrode_positions (which
+    # gates on matching the leadfield row count).
+    elec_csv = ctx.stage_dir("electrodes") / "landmarks_10-5-full.csv"
+    elec_all = (np.array(list(_read_csv_coords(elec_csv).values()), dtype=float)
+                if elec_csv.exists() else None)
+    _check_electrode_clearance(r, "muscle", mus_used, elec_all, gap_mm)
+
+    mus_fp = None
+    if muscle_L is not None:
+        mus_fp, _ = _check_source_outliers(r, "muscle leadfield", muscle_L)
+    if eye_L is not None:
+        _check_source_outliers(r, "eye leadfield", eye_L)
 
     # --- figures ---------------------------------------------------------------------------------
     scalp = _scalp_mesh(ctx)
@@ -230,4 +307,26 @@ def run(ctx) -> StageResult:
                                                              title="EMG", point_size=12,
                                                              cmap="inferno", scalar_bar=True,
                                                              scalar_bar_title="log10 sensitivity"))
+
+    # 4. Per-SOURCE strength: each muscle source coloured by how hard it drives the whole cap,
+    #    as log10 of its footprint over the median. Decades, not a ratio to the p99: the healthy
+    #    spread is itself ~2 decades (deep facial vs superficial neck), so a p99-normalised scale
+    #    renders everything black -- the exact failure that made emg_footprint unreadable. The top
+    #    of the scale follows the data, so a source that slipped under an electrode both stands out
+    #    as an isolated bright dot AND visibly compresses everything else.
+    if mus_fp is not None and mus_used is not None and len(mus_used) == len(mus_fp):
+        p50 = np.median(mus_fp)
+        z = np.log10(mus_fp / p50, out=np.full(len(mus_fp), -1.0), where=mus_fp > 0) if p50 > 0 else mus_fp
+        ctx.add_figure(r, "muscle_source_strength",
+                       f"Per-source cap coupling, log10(footprint / median); peak "
+                       f"{10 ** float(z.max()):.0f}x the median. An isolated bright dot is a "
+                       "source too close to an electrode.",
+                       lambda p: render3d.snapshot_points(mus_used, p, scalars=z, ref_mesh=scalp,
+                                                          ref_opacity=0.2,
+                                                          views=("anterior", "left", "superior"),
+                                                          title="source strength", point_size=6,
+                                                          cmap="inferno",
+                                                          clim=(-1, max(2.0, float(z.max()))),
+                                                          scalar_bar=True,
+                                                          scalar_bar_title="log10(fp / median)"))
     return r

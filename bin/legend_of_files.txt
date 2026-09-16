@@ -430,11 +430,17 @@ EEG ARTIFACT SOURCES
         │   depth fraction). Same file contract.
         ├── artifactsources.json: the machine-readable record of what survived, and the file the
         │   orchestrator reads to choose the muscle path (solve vs canned fallback).
-        │     eyes: {n_dipoles}
-        │     muscle: {n_kept, n_dropped, n_total, kept_fraction, neck_coverage}
-        │   neck_coverage=false means too few muscle sources survived the ray-cast warp (e.g. the
-        │   T1 has no neck FOV) -> the canned HArtMuT leadfield is interpolated onto the montage
-        │   instead of solving.
+        │     eyes: {n_dipoles, n_dropped_near_electrode}
+        │     muscle: {n_kept, n_dropped, n_total, n_dropped_raycast, n_dropped_near_electrode,
+        │              kept_fraction, raycast_fraction, neck_coverage,
+        │              min_electrode_distance_mm, min_clearance_mm}
+        │   Sources are dropped for two independent reasons: the ray-cast warp missed (no neck
+        │   FOV), and the source landed within --artifact-electrode-gap mm of an electrode (a
+        │   point dipole's 1/r^2 potential would otherwise swamp that channel).
+        │   neck_coverage keys off raycast_fraction ONLY -- the electrode-clearance drop does not
+        │   influence it, so the fallback decision keeps its original meaning. neck_coverage=false
+        │   means too few sources survived the WARP -> the canned HArtMuT leadfield is interpolated
+        │   onto the montage instead of solving.
         └── solve_groups.json: which source groups share one DUNEuro transfer matrix. The
             expensive solve depends only on mesh/conductivities/electrodes, not on the dipoles,
             so eyes and muscle are solved together.
