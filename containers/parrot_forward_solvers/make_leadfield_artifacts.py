@@ -65,6 +65,15 @@ def snap_to_valid_tissue(positions_mm, nodes, tetrahedra, tissue_label, tissue_n
     print(f"  snapped {len(dip)} dipoles to nearest {valid_names} tet: "
           f"median {np.median(moved_mm):.2f} mm, max {moved_mm.max():.2f} mm "
           f"({int((moved_mm > 2).sum())} moved >2 mm, e.g. out-of-mesh sources).")
+
+    # Which compartment each source actually ended up in -- the artifact counterpart of the brain
+    # solver's "Dipole Location Diagnostics". Worth printing because the answer is not the obvious
+    # one: SimNIBS charm labels only the EXTRAOCULAR muscles as Muscle, so every face/neck source
+    # lands in Skin (sigma 0.148 vs 0.461 S/m) for want of a muscle compartment to land in.
+    landed = tissue_label[valid_mask][idx]
+    print('  landed in:', ', '.join(
+        f"{tissue_names[int(t)]} {int(c)} ({100 * c / len(dip):.0f}%)"
+        for t, c in zip(*np.unique(landed, return_counts=True))))
     return convert_dipoles(snapped), snapped
 
 

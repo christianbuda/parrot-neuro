@@ -170,6 +170,14 @@ parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
     `make_leadfield_artifacts.py` fails at max/p99 ≥ 20× (healthy is 1.3–2.3×) and the QC stage checks
     both clearance and per-source outliers. The solver's snap-to-tet still shaves ≲1.5 mm off the
     placed clearance, which is why QC allows a tolerance rather than testing ≥ gap exactly.
+  - **"Muscle" sources sit in Skin, and that is the head model, not a placement bug.** SimNIBS charm
+    labels only the **extraocular** muscles as `Muscle` (~0.1% of tets; 80–90% of them within 15 mm of
+    an eyeball), so the subject has no facial/neck muscle compartment and all 3180 warped sources land
+    in Skin — σ 0.148 vs 0.461 S/m. It applies near-uniformly, so it is close to a global scale the
+    amplitude generator will absorb; the real fix is segmenting facial/neck muscle upstream. The solver
+    prints the landing breakdown per group. Related: ~720 of the 3180 HArtMuT sources are extraocular
+    (Rectus/Oblique), which belong *inside the orbit*, but `ray_cast_warp` projects every source onto
+    the skull↔scalp shell — they end up ~44 mm from the subject's ocular muscle compartment.
   - **The solve uses `dipole_positions_solved.npy`, not `dipole_positions.npy`** — `snap_to_valid_tissue`
     moves every source to the nearest valid-tissue tet centroid first. Multiply the artifact leadfield
     by the *solved* positions; the placed ones are up to ~10 mm away.
