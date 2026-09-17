@@ -79,3 +79,9 @@ template_data/hartmut/assets/
 !.pixi/config.toml
 templateflow_cache/
 hpc/leonardo/config.local.sh
+
+# analyses/ working state: the code under analyses/ is tracked, its caches are not.
+# analyses/cache alone is ~6.7 GB of leadfield/connectome .npz.
+analyses/cache/
+analyses/__marimo__/
+analyses/results_guide.html
