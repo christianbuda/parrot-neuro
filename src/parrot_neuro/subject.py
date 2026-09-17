@@ -156,6 +156,10 @@ class Subject:
         """Whether the fMRI-derived optimization node mask (desc-optim_nodes) exists."""
         return self.path.optim_nodes().exists()
 
+    @property
+    def has_nmmfit(self) -> bool:
+        return bool(self.nmm_fits())
+
     # --- discovery of variable outputs (glob) -------------------------------
     def available_leadfields(self) -> list[str]:
         """Discovered leadfield keys, e.g. ``['duneuroCGAL-2.0mm', 'openmeeg-4.0mm', ...]``.
@@ -187,3 +191,12 @@ class Subject:
             except ValueError:
                 continue
         return sorted(out)
+
+    def nmm_fits(self) -> list[str]:
+        """Discovered NMM parameter-fit names under ``derivatives/nmmfit/sub-<id>/``
+        -- directories that contain a saved ``*_desc-nmmparams.npz``. Pass one to
+        ``NMMParams.for_subject(..., fit=<name>)`` or ``s.path.nmm_params(<name>, atlas)``."""
+        d = self.path.nmmfit_dir()
+        if not d.is_dir():
+            return []
+        return sorted({p.parent.name for p in d.glob("*/*_desc-nmmparams.npz")})

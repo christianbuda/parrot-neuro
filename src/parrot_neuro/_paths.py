@@ -229,3 +229,12 @@ class SubjectPaths:
         return self.sfile(
             L.FMRI, f"{self._s.subj}_task-{task}_atlas-schaefer_desc-optim_nodes.npz"
         )
+
+    # --- NMM simulation parameter fits (optional) ---------------------------
+    def nmmfit_dir(self) -> Path:
+        return self.stage_dir(L.NMMFIT)
+
+    def nmm_params(self, fit_name: str, atlas: int, ext: str = "npz") -> Path:
+        """A saved ``NMMParams`` file. ``ext`` in {npz, json}. Discover fit names
+        with :meth:`Subject.nmm_fits`."""
+        return self.nmmfit_dir() / fit_name / f"{self._s.subj}_atlas-{atlas}_desc-nmmparams.{ext}"
