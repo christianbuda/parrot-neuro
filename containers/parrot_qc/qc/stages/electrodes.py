@@ -95,6 +95,24 @@ def run(ctx) -> StageResult:
     else:
         r.warn("selected electrodes", "selected_landmarks json missing")
 
+    # Ear-approach tortuosity (written by place_electrodes.py). Cz is the arc-length midpoint of
+    # the coronal cut; if that cut wraps the pinna the extra arc pushes Cz off the midline and
+    # rolls the whole montage about the NAS-IN axis. Thresholds are provisional (set on a
+    # 10-subject cohort where healthy runs measured <=1.04 and the two tilted ones 1.39 and 2.18).
+    pq = edir / "placement_qc.json"
+    if pq.exists():
+        try:
+            t = json.loads(pq.read_text())
+            worst = float(t["max_tortuosity"])
+            per = ", ".join(f"{k}={v:.3f}" for k, v in t["ear_approach_tortuosity"].items())
+            level = FAIL if worst >= 1.25 else WARN if worst >= 1.08 else PASS
+            detail = f"max {worst:.3f} ({per})"
+            if level is not PASS:
+                detail += " - coronal cut is wrapping the ear; Cz and the montage midline are tilted"
+            r.add(level, "ear-approach tortuosity", detail)
+        except Exception as e:  # noqa: BLE001
+            r.warn("ear-approach tortuosity", f"unreadable: {e}")
+
     # 3D scatter on scalp, selected highlighted
     if coords:
         names = list(coords)

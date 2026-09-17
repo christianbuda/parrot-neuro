@@ -95,7 +95,7 @@ usage() {
     echo "                             cohort be split into walltime-bounded, dependency-chained SLURM jobs. Known stages:"
     echo "                             ingest,fastsurfer,hippunfold,freesurfer,mne,schaefer,freesurfersubcortical,simnibscharm,"
     echo "                             fslfirst,synthstrip,cerebellum,bigbrain,surfaces,atlas,tissuelabels,qsiprep,qsirecon,"
-    echo "                             connectivity,dwitensor,dwi2t1,electrodes,dipoles,tetmesh,anisotropy,forwardsolvers,artifacts,qc."
+    echo "                             connectivity,dwitensor,dwi2t1,fiducials,electrodes,dipoles,tetmesh,anisotropy,forwardsolvers,artifacts,qc."
     exit 1
 }
 
@@ -257,7 +257,7 @@ fi
 # ANTs heavies), not here -- the orchestrator only needs the per-stage on/off gate.
 KNOWN_STAGES=(ingest fastsurfer hippunfold freesurfer mne schaefer freesurfersubcortical
               simnibscharm fslfirst synthstrip cerebellum bigbrain surfaces atlas tissuelabels
-              qsiprep qsirecon connectivity dwitensor dwi2t1 electrodes dipoles tetmesh
+              qsiprep qsirecon connectivity dwitensor dwi2t1 fiducials electrodes dipoles tetmesh
               anisotropy forwardsolvers artifacts qc)
 if [ "$STAGES_ARG" = "all" ]; then
     STAGE_SET=("${KNOWN_STAGES[@]}")
@@ -1686,6 +1686,29 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     if [ -f "$OUTPUT_DIR/tissuelabels/sub-${SUBJECT}/electrical/sim4life.nii.gz" ]; then
         VOLUME_TO_MESH="sim4life"
         CGAL_VALID_TISSUES='"Brain (Grey Matter)" Thalamus Hippocampus'
+    fi
+
+    # ---------------------------------------------------------
+    # SCALP FIDUCIALS
+    # ---------------------------------------------------------
+    # Warps corrected MNI fiducials into the subject (see make_fiducials.py for the
+    # provenance of those coordinates). Must precede `electrodes`, which now requires
+    # scalplandmarks/fiducials.json rather than deriving it from the SimNIBS CSV.
+    # Needs charm (the warp) and surfaces (charm_scalp.ply, for the scalp snap).
+    NAME="fiducials"
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+        log_step "Running $NAME reconstruction..."
+        mkdir -p "$OUTPUT_DIR/scalplandmarks/sub-${SUBJECT}"
+
+        step_start=$(date +%s)
+
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
+            "simnibs_python /scripts/make_fiducials.py --subject $SUBJECT --output_dir /derivatives"
+
+        step_end=$(date +%s)
+        echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+    else
+        echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
     fi
 
     # ---------------------------------------------------------

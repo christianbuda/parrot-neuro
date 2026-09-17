@@ -34,6 +34,8 @@ STEP_FOLDER = {
     "freesurfersubcortical": "fastsurfer",
     # Carries the DWI products into T1 space; writes next to the tensor fit.
     "dwi2t1": "dwitensor",
+    # Warps the corrected MNI fiducials in; writes the landmarks electrodes consumes.
+    "fiducials": "scalplandmarks",
 }
 
 # Top-level entries that are not pipeline stages and so have no layout constant.
