@@ -15,18 +15,23 @@ Design notes
   MNI152NLin2009cAsym head at the vertex and in x/y; it only extends further down the neck).
 * **Convention-proof 4x4 derivation.** ANTs point transforms carry the usual LPS/inverse-order
   gotchas. Rather than trust a hand-derived matrix, we push a spanning set of reference points
-  through antspyx's own `apply_transforms_to_points` and least-squares-fit the 4x4 to the
-  result. We try both the fwd and inv transform lists and **auto-select** the one whose 4x4,
-  applied to the NYhead scalp, best overlaps the subject's real `charm_scalp.ply` — which also
-  doubles as an on-the-spot sanity check (a bad registration shows up as large overlap error).
+  through antspyx's own `apply_transforms_to_points` and least-squares-fit the 4x4 to the result.
+  `apply_transforms_to_points` works in **LPS**, so RAS mesh coordinates are flipped into LPS on
+  the way in and back to RAS on the way out. Skipping that flip silently yields the LPS matrix,
+  which *looks* like a plausible affine but mirrors the head in x/y.
+* **Validated, not auto-selected.** We registered fixed=subject, moving=MNI, so the stored affine
+  maps subject->MNI and bringing MNI points into subject space needs `whichtoinvert=[True]`. That
+  is the only correct direction, so we assert the result instead of scoring candidates: a
+  score-the-candidates fallback just picks the least-wrong of two broken matrices.
 
 Outputs (artifacts/registration/sub-<S>/):
   mni_to_subject_affine.npy   (4,4) MNI-world -> subject-T1-world (mm, RAS homogeneous)
   subject_to_mni_affine.npy   (4,4) inverse
   ants_affine.mat             raw ANTs affine transform (for the record / fallback interp)
-  registration_qc.json        overlap error + which transform list won (audit trail)
+  registration_qc.json        both scalp residuals (audit trail)
 """
 import argparse
+import contextlib
 import json
 import os
 
@@ -34,6 +39,23 @@ import ants
 import numpy as np
 import pandas as pd
 import trimesh
+from scipy.spatial import cKDTree
+
+
+# A correct affine puts the NYhead scalp on the subject scalp to ~2.1-2.6 mm; these bound that.
+REG_RESIDUAL_WARN_MM = 4.0
+REG_RESIDUAL_MAX_MM = 6.0
+
+# RAS <-> LPS is a sign flip on x and y, and is its own inverse.
+_LPS_FLIP = np.array([-1.0, -1.0, 1.0])
+
+
+def ras_lps(pts):
+    return np.asarray(pts, dtype=np.float64) * _LPS_FLIP
+
+
+def lps_ras(pts):
+    return np.asarray(pts, dtype=np.float64) * _LPS_FLIP
 
 
 def add_output_dir(output_dir, *paths):
@@ -82,6 +104,11 @@ def main():
 
     out_dir = add_output_dir(args.output_dir, f"artifacts/registration/sub-{args.subject}")
     os.makedirs(out_dir, exist_ok=True)
+    # Drop any previous run's affine up front: if the residual gate below rejects this run, a stale
+    # (possibly mirrored) matrix must not survive for the dipole/leadfield stages to consume.
+    for stale in ("mni_to_subject_affine.npy", "subject_to_mni_affine.npy"):
+        with contextlib.suppress(FileNotFoundError):
+            os.remove(os.path.join(out_dir, stale))
 
     fixed = ants.image_read(args.t1)          # subject frame
     moving = ants.image_read(args.template)   # MNI frame
@@ -95,60 +122,61 @@ def main():
 
     subj_verts, _ = load_scalp_vertices(args.subject_scalp)
 
-    # antspyx point convention is fiddly (LPS + inverse order). We registered fixed=subject,
-    # moving=MNI, so the stored affine maps subject->MNI; moving MNI points into subject space
-    # needs the INVERSE (whichtoinvert=[True]). For an affine reg fwd/invtransforms are the same
-    # .mat, so the direction is chosen by whichtoinvert, not by which list. Try both and keep
-    # whichever 4x4 lands the NYhead scalp on the subject scalp.
-    from scipy.spatial import cKDTree
-    candidates = {"invert=True": [True], "invert=False": [False]}
-    best = None
-    errs = {}
-    for name, wti in candidates.items():
-        mapped = ants.apply_transforms_to_points(
-            3, points_to_df(ref), reg["fwdtransforms"], whichtoinvert=wti).to_numpy()
-        A = fit_affine(ref, mapped)                     # MNI -> subject (candidate)
-        nyhead_in_subj = apply_affine(A, tmpl_verts)
-        # Score subject->NYhead: "is the subject scalp covered by the mapped NYhead scalp?".
-        # This direction is robust to NYhead's extra neck (which the subject scan usually lacks
-        # and which would inflate the NYhead->subject mean even for a correct fit).
-        d, _ = cKDTree(nyhead_in_subj).query(subj_verts, k=1)
-        err = float(np.mean(d))
-        print(f"  [{name}] mean subject->NYhead scalp NN distance = {err:.2f} mm")
-        errs[name] = err
-        if best is None or err < best["err"]:
-            best = {"err": err, "A": A, "which": name}
+    # `apply_transforms_to_points` works in LPS, while every mesh here is in RAS world mm.
+    # Feed it LPS and flip the result back, or the fitted 4x4 comes out mirrored in x/y.
+    ref_lps = ras_lps(ref)
+    mapped = lps_ras(ants.apply_transforms_to_points(
+        3, points_to_df(ref_lps), reg["fwdtransforms"], whichtoinvert=[True]).to_numpy())
+    A = fit_affine(ref, mapped)                         # MNI -> subject, RAS world mm
 
-    A = best["A"]
-    A_inv = np.linalg.inv(A)
-    np.save(os.path.join(out_dir, "mni_to_subject_affine.npy"), A)
-    np.save(os.path.join(out_dir, "subject_to_mni_affine.npy"), A_inv)
-    # keep the raw ANTs affine for the record / fallback electrode interp
-    if reg["fwdtransforms"]:
-        import shutil
-        shutil.copy(reg["fwdtransforms"][0], os.path.join(out_dir, "ants_affine.mat"))
+    # apply_transforms_to_points is exactly affine here, so the fit must be exact. A nonzero
+    # residual means the transform list was not a plain affine and the 4x4 is a lossy summary.
+    fit_err = float(np.abs(apply_affine(A, ref) - mapped).max())
+    if fit_err > 1e-3:
+        raise SystemExit(f"ERROR: 4x4 fit residual {fit_err:.3g} mm — transform is not affine.")
+
+    nyhead_in_subj = apply_affine(A, tmpl_verts)
+    # Gate on template->subject: every mapped NYhead vertex should land on the subject scalp.
+    # The reverse direction (subject->template) is NOT usable as a check -- it stays at 14-15 mm
+    # even for a correct fit, because the subject scalp has detail (ears, nose, neck cut) the
+    # smooth NYhead surface lacks, so it barely separates a good registration from a mirrored one.
+    d_ts, _ = cKDTree(subj_verts).query(nyhead_in_subj, k=1)
+    d_st, _ = cKDTree(nyhead_in_subj).query(subj_verts, k=1)
+    err = float(np.mean(d_ts))
+    print(f"  scalp residual template->subject = {err:.2f} mm "
+          f"(subject->template {np.mean(d_st):.2f} mm, not gated)")
 
     qc = {
-        "selected_transformlist": best["which"],
-        "mean_scalp_overlap_mm": best["err"],
+        "scalp_residual_template_to_subject_mm": err,
+        "scalp_residual_subject_to_template_mm": float(np.mean(d_st)),
+        "affine_fit_residual_mm": fit_err,
         "template": os.path.basename(args.template),
         "note": "MNI152NLin2009 world frame; affine-only bring-into-frame for the ray-cast warp",
     }
     with open(os.path.join(out_dir, "registration_qc.json"), "w") as f:
         json.dump(qc, f, indent=2)
 
-    print(f"Saved MNI<->subject affine to {out_dir} "
-          f"(subject->NYhead scalp {best['err']:.2f} mm via {best['which']}).")
-    # This residual is dominated by the *shape* difference between the NYhead template scalp and
-    # the subject's scalp, which an affine cannot remove (and the ray-cast then corrects radially)
-    # -- so a value of ~15-25 mm is normal, not an error. Warn only if it is grossly large (likely
-    # a genuinely failed registration) or if the two directions are near-tied (ambiguous choice).
-    if best["err"] > 35.0:
-        print("WARNING: scalp residual > 35 mm — registration likely failed; inspect before use.")
-    ordered = sorted(errs.values())
-    if len(ordered) > 1 and ordered[1] - ordered[0] < 3.0:
-        print("WARNING: the two transform directions scored within 3 mm — direction choice is "
-              "ambiguous; inspect the registration.")
+    # Gate BEFORE writing the affine itself. A correct affine lands the NYhead scalp on the subject
+    # scalp to ~2-3 mm (measured 2.1-2.6 mm across the 10 AEGEUS subjects); anything near 10 mm is
+    # a failed registration or a reintroduced convention bug, either of which puts the warped
+    # muscle sources centimetres off. Failing here leaves no affine on disk for a later stage to
+    # pick up -- registration_qc.json is already written, so the residual is still auditable.
+    if err > REG_RESIDUAL_MAX_MM:
+        raise SystemExit(f"ERROR: template->subject scalp residual {err:.2f} mm exceeds "
+                         f"{REG_RESIDUAL_MAX_MM} mm — registration failed; artifact sources "
+                         f"would be misplaced. No affine written; inspect before use.")
+    if err > REG_RESIDUAL_WARN_MM:
+        print(f"WARNING: template->subject scalp residual {err:.2f} mm is above the "
+              f"{REG_RESIDUAL_WARN_MM} mm typical range; inspect the registration.")
+
+    np.save(os.path.join(out_dir, "mni_to_subject_affine.npy"), A)
+    np.save(os.path.join(out_dir, "subject_to_mni_affine.npy"), np.linalg.inv(A))
+    # keep the raw ANTs affine for the record / fallback electrode interp
+    if reg["fwdtransforms"]:
+        import shutil
+        shutil.copy(reg["fwdtransforms"][0], os.path.join(out_dir, "ants_affine.mat"))
+
+    print(f"Saved MNI<->subject affine to {out_dir} (template->subject scalp {err:.2f} mm).")
 
 
 if __name__ == "__main__":

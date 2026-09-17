@@ -88,7 +88,7 @@ parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
 | `bin/images.sh` | **Single source of truth** for the Docker image tags + build contexts (sourced by `run_reconstruction.sh` and `build.sh`) |
 | `bin/build.sh` | Builds (and optionally `--push`es) the Parrot images |
 | `bin/stage.sh` + `utils/staging/` | Pre-pipeline cohort → Parrot-ready BIDS staging. `bin/stage.sh <cohort> <src> <out>` runs `utils/staging/<cohort>.py` inside the MRI image; `common.py` holds cohort-agnostic helpers (header hygiene, `participants.tsv` writer) |
-| `bin/legend_of_files.txt` | **Authoritative map of the output (derivatives) directory layout** |
+| `bin/legend_of_files.txt` | **Authoritative map of the output (derivatives) directory layout**; copied into `<output_dir>/` on every run so a derivatives tree stays self-documenting |
 | `containers/parrot_mri_reconstruction/scripts/` | Reconstruction step scripts (atlas, surfaces, tissue labels, cerebellum, bigbrain, …) |
 | `containers/parrot_forward_model/place_dipoles.py` | Poisson-disk dipole sampling + orientation assignment |
 | `containers/parrot_forward_model/mesher.cpp` | CGAL tetrahedral mesher (C++) |
@@ -161,6 +161,26 @@ parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
     orchestrator uses HArtMuT's canned muscle leadfield interpolated onto the montage instead of solving.
   - **Eyes + muscle share ONE transfer matrix** (`make_leadfield_artifacts.py`) — the expensive
     DUNEuro step depends only on mesh/conductivities/electrodes, not the dipoles.
+  - **Electrode clearance (`--artifact-electrode-gap`, default 5 mm).** The warp puts muscle sources at
+    scalp depth, where the electrodes also live, so some land a millimetre under a sensor; a point
+    dipole's potential goes as 1/r², so such a source takes over that channel (measured: 0.6 mm →
+    162× the p99 footprint, owning >50% of 260/345 rows). `place_artifact_dipoles.py` therefore
+    **drops** sources inside the gap (0.5–11.5% of them across AEGEUS). Don't relocate them instead —
+    pushing inward drives scalp sources into the skull, where there is no muscle. Backstops:
+    `make_leadfield_artifacts.py` fails at max/p99 ≥ 20× (healthy is 1.3–2.3×) and the QC stage checks
+    both clearance and per-source outliers. The solver's snap-to-tet still shaves ≲1.5 mm off the
+    placed clearance, which is why QC allows a tolerance rather than testing ≥ gap exactly.
+  - **"Muscle" sources sit in Skin, and that is the head model, not a placement bug.** SimNIBS charm
+    labels only the **extraocular** muscles as `Muscle` (~0.1% of tets; 80–90% of them within 15 mm of
+    an eyeball), so the subject has no facial/neck muscle compartment and all 3180 warped sources land
+    in Skin — σ 0.148 vs 0.461 S/m. It applies near-uniformly, so it is close to a global scale the
+    amplitude generator will absorb; the real fix is segmenting facial/neck muscle upstream. The solver
+    prints the landing breakdown per group. Related: ~720 of the 3180 HArtMuT sources are extraocular
+    (Rectus/Oblique), which belong *inside the orbit*, but `ray_cast_warp` projects every source onto
+    the skull↔scalp shell — they end up ~44 mm from the subject's ocular muscle compartment.
+  - **The solve uses `dipole_positions_solved.npy`, not `dipole_positions.npy`** — `snap_to_valid_tissue`
+    moves every source to the nearest valid-tissue tet centroid first. Multiply the artifact leadfield
+    by the *solved* positions; the placed ones are up to ~10 mm away.
   - **QC:** the `parrot_qc` stage `artifacts` validates the registration/dipole/leadfield outputs and
     renders source positions + sample EOG/EMG topographies (it `skip`s when the stage didn't run).
   - **New deps/rebuilds:** `parrot_forward_model` needs `embreex`+`rtree` (fast ray-casting) and the
@@ -170,8 +190,13 @@ parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
 
 ## Repo Layout Notes
 
-- `src/parrot_neuro/`, `tests/`, `examples/`, `external/` are **scaffolding, currently
-  empty** — the README's "Python API" is aspirational, not yet implemented.
+- `src/parrot_neuro/` is the local-dev Python API: `Subject`, a **read-only** facade over one
+  subject's derivatives (`s.path.*` → paths, `s.load.*` → loaded objects). It reads pipeline
+  outputs; it computes nothing. Layer order — `_layout.py` (stage dir names, the single source
+  of truth for them) → `_paths.py` (path composition, stdlib only) → `_loaders.py` (readers) →
+  `subject.py` (the facade). `tests/` covers it; `examples/subject_usage.py` is the tour.
+  The TVB→EEG/BOLD fitting subpackage (`parrot_neuro.optimization`) lives on the
+  `eeg-bold-fit` branch, not on `main`.
 - `utils/staging/` holds the dataset-staging tooling (see Key Files); the rest of `utils/`
   is still scaffolding. Run staging via `bin/stage.sh`, never on the host (needs nibabel).
 - `development/` is git-ignored scratch (JAX-TVB, tractography, US, EEG prototypes): where the

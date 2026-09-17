@@ -12,8 +12,10 @@ rather than the brain `dipoles/…/spacing…mm/` tree. Two groups:
 
 * **muscle** — HArtMuT's template muscle source positions warped into the subject via
   affine-bring-into-frame (`artifacts/registration/sub-<S>/mni_to_subject_affine.npy`) followed by the
-  ray-cast layer-normalized projection (`hartmut_warp.ray_cast_warp`). Sources whose ray misses
-  the subject skull/scalp shell (e.g. no neck FOV) are dropped and counted.
+  ray-cast layer-normalized projection (`hartmut_warp.ray_cast_warp`), against the subject's
+  charm compact-bone and scalp surfaces. Sources whose ray misses the subject skull/scalp shell
+  (e.g. no neck FOV) are dropped and counted, as are sources that land within
+  `--min-electrode-distance` of an electrode (see `drop_near_electrodes`).
 
 Artifacts are a small, fixed source set (spacing-independent), so this runs **once** per subject,
 not per dipole spacing. Orientation/amplitude are deferred to the simulation/noise stage; here we
@@ -28,11 +30,16 @@ import os
 
 import numpy as np
 import trimesh
+from scipy.spatial import cKDTree
 
 # Below this fraction of muscle sources surviving the warp (e.g. a scan with no neck FOV, so most
 # rays miss the subject scalp), the subject can't host the muscle sources on its own mesh and the
 # orchestrator uses HArtMuT's canned muscle leadfield instead of solving.
 MUSCLE_NECK_COVERAGE_MIN = 0.5
+
+# Minimum source-to-electrode distance (mm); sources closer than this are dropped. A point dipole's
+# potential grows as 1/r^2, so a source a millimetre under an electrode swamps that channel.
+MIN_ELECTRODE_DISTANCE = 5.0
 
 from hartmut_warp import ray_cast_warp, load_mesh
 # Pure helper reuse — importing place_dipoles is side-effect free (its globals/paths are only
@@ -43,6 +50,27 @@ from place_dipoles import poisson_disk_subsampling
 def apply_affine(A, pts):
     pts_h = np.hstack([pts, np.ones((len(pts), 1))])
     return (pts_h @ A.T)[:, :3]
+
+
+def read_electrode_positions(path):
+    """Read `<name>,<x>,<y>,<z>` electrode rows -> (n_elec, 3) mm, same convention the solver uses."""
+    return np.loadtxt(path, delimiter=",", usecols=(1, 2, 3), ndmin=2)
+
+
+def drop_near_electrodes(positions, electrodes, min_dist):
+    """Boolean keep-mask for sources at least `min_dist` mm from every electrode.
+
+    The artifact leadfield is solved with point dipoles; the potential a point dipole produces at
+    distance r grows as 1/r^2, so a source that the warp happens to place a millimetre beneath an
+    electrode contributes ~100x the footprint of a normal source and captures essentially that whole
+    channel. That is a singularity of the point-source idealization (a real muscle is centimetres of
+    distributed fibre) and the mesh cannot resolve it either, so such sources are dropped rather than
+    relocated -- moving them inward would push scalp sources into the skull where there is no muscle.
+    """
+    if len(electrodes) == 0:
+        return np.ones(len(positions), dtype=bool)
+    dist, _ = cKDTree(electrodes).query(positions, k=1)
+    return dist >= min_dist
 
 
 def decimate_for_raycast(mesh, target_faces=20000):
@@ -66,6 +94,10 @@ def save_group(out_dir, positions, directions, labels, volume=None):
     """Write one artifact source group in the dipole contract the solver reads."""
     os.makedirs(out_dir, exist_ok=True)
     n = len(positions)
+    # Guards the drop masks below: positions/directions/labels are subset together, and a mismatch
+    # would silently mislabel sources rather than fail.
+    assert len(directions) == n and len(labels) == n, \
+        f"group arrays misaligned: {n} positions, {len(directions)} directions, {len(labels)} labels"
     if volume is None:
         volume = np.ones(n)  # geometry-only solve ignores volume; keep the contract populated
     np.save(os.path.join(out_dir, "dipole_positions.npy"), positions.astype(np.float64))
@@ -95,7 +127,7 @@ def sample_eye_interior(mesh, spacing, generator):
     return candidates[keep]
 
 
-def place_eyes(output_dir, subject, spacing, generator, head_center):
+def place_eyes(output_dir, subject, spacing, generator, head_center, electrodes, min_elec_dist):
     eyes_path = os.path.join(output_dir, f"surfaces/sub-{subject}/charm_eyes_balls.ply")
     mesh = load_mesh(eyes_path)
     # Split the two eyeballs (separate connected components).
@@ -122,14 +154,22 @@ def place_eyes(output_dir, subject, spacing, generator, head_center):
 
     if not all_pos:
         raise RuntimeError("No eye dipoles could be sampled.")
-    positions = np.vstack(all_pos)
+    positions, directions, labels = np.vstack(all_pos), np.vstack(all_dir), np.concatenate(all_lab)
+
+    # Same clearance rule as muscle. Eyes sit ~1 cm behind the nearest electrode so this never
+    # fires in practice; keeping it uniform means the invariant holds for every artifact group.
+    clear = drop_near_electrodes(positions, electrodes, min_elec_dist)
+    if not clear.all():
+        print(f"  dropped {int((~clear).sum())} eye source(s) within {min_elec_dist:.1f} mm of an electrode.")
+    positions, directions, labels = positions[clear], directions[clear], labels[clear]
+
     save_group(os.path.join(output_dir, f"artifacts/dipoles/sub-{subject}/eyes"),
-               positions, np.vstack(all_dir), np.concatenate(all_lab))
-    return len(positions)
+               positions, directions, labels)
+    return {"n_dipoles": int(len(positions)), "n_dropped_near_electrode": int((~clear).sum())}
 
 
 # ------------------------------------------------------------------ muscle (warp) --------------
-def place_muscle(output_dir, subject, hartmut_dir, generator, head_center):
+def place_muscle(output_dir, subject, hartmut_dir, generator, head_center, electrodes, min_elec_dist):
     A = np.load(os.path.join(output_dir, f"artifacts/registration/sub-{subject}/mni_to_subject_affine.npy"))
 
     src_pos = np.load(os.path.join(hartmut_dir, "muscle_sources.npy"))
@@ -143,20 +183,36 @@ def place_muscle(output_dir, subject, hartmut_dir, generator, head_center):
     tmpl_scalp.vertices = apply_affine(A, tmpl_scalp.vertices)
     src_pos = apply_affine(A, src_pos)
 
-    subj_skull = load_mesh(os.path.join(output_dir, f"surfaces/sub-{subject}/freesurfer_BEM_outer_skull.ply"))
+    # The warp interpolates each source along the subject's skull->scalp segment, so the "skull"
+    # must be real bone. freesurfer_BEM_outer_skull.ply is an MNE watershed shell: outside the
+    # braincase it hugs the scalp (measured 2.5-4.0 mm gap over face, jaw and neck vs 13-93 mm in
+    # the template), so every facial source collapsed onto the skin regardless of its true depth.
+    # charm's compact-bone surface has the orbits, maxilla and mandible, which is what the depth
+    # fraction is defined against. It is not watertight, so a few sources per subject lose their
+    # skull intersection and are dropped by ray_cast_warp -- counted in n_dropped_raycast.
+    subj_skull = load_mesh(os.path.join(output_dir, f"surfaces/sub-{subject}/charm_bone_compact.ply"))
     subj_scalp = load_mesh(os.path.join(output_dir, f"surfaces/sub-{subject}/charm_scalp.ply"))
     subj_scalp = decimate_for_raycast(subj_scalp)  # 105k-face charm scalp -> ~20k for fast casting
 
     warped, keep = ray_cast_warp(src_pos, tmpl_skull, tmpl_scalp, subj_skull, subj_scalp,
                                  center=head_center)
     kept_lab = np.asarray(src_lab)[keep]
+
+    clear = drop_near_electrodes(warped, electrodes, min_elec_dist)
+    warped, kept_lab = warped[clear], kept_lab[clear]
+    d_min = float(cKDTree(electrodes).query(warped, k=1)[0].min()) if len(electrodes) and len(warped) else float("nan")
+    print(f"  dropped {int((~clear).sum())} muscle source(s) within {min_elec_dist:.1f} mm of an "
+          f"electrode; closest survivor now {d_min:.2f} mm.")
+
     # Placeholder orientation = outward radial (metadata only).
     radial = warped - head_center
     radial /= (np.linalg.norm(radial, axis=1, keepdims=True) + 1e-12)
 
     save_group(os.path.join(output_dir, f"artifacts/dipoles/sub-{subject}/muscle"),
                warped, radial, kept_lab)
-    return int(keep.sum()), int((~keep).sum())
+    return {"n_raycast_kept": int(keep.sum()), "n_dropped_raycast": int((~keep).sum()),
+            "n_dropped_near_electrode": int((~clear).sum()), "n_kept": int(len(warped)),
+            "min_clearance_mm": round(d_min, 3)}
 
 
 def main():
@@ -167,6 +223,9 @@ def main():
     ap.add_argument("--hartmut-dir", required=True, help="HArtMuT asset cache (fetch_hartmut.py dest)")
     ap.add_argument("--groups", nargs="+", default=["eyes", "muscle"], choices=["eyes", "muscle"])
     ap.add_argument("--eye-spacing", type=float, default=3.0, help="eye dipole spacing (mm)")
+    ap.add_argument("--min-electrode-distance", type=float, default=MIN_ELECTRODE_DISTANCE,
+                    help="drop artifact sources closer than this (mm) to any electrode "
+                         f"(default {MIN_ELECTRODE_DISTANCE})")
     ap.add_argument("--seed", type=int, default=None)
     args = ap.parse_args()
 
@@ -178,23 +237,37 @@ def main():
                                         f"surfaces/sub-{args.subject}/freesurfer_BEM_outer_skull.ply"))
     head_center = np.asarray(subj_skull.centroid, dtype=np.float64)
 
+    electrodes = read_electrode_positions(os.path.join(
+        args.output_dir, f"electrodes/sub-{args.subject}/landmarks_10-5-full.csv"))
+    print(f"Loaded {len(electrodes)} electrodes; minimum source-electrode distance "
+          f"{args.min_electrode_distance:.1f} mm.")
+
     summary = {}
     if "eyes" in args.groups:
         print("Placing eye dipoles (native)...")
-        n_eyes = place_eyes(args.output_dir, args.subject, args.eye_spacing, generator, head_center)
-        summary["eyes"] = {"n_dipoles": int(n_eyes)}
+        eyes = place_eyes(args.output_dir, args.subject, args.eye_spacing, generator, head_center,
+                          electrodes, args.min_electrode_distance)
+        summary["eyes"] = eyes
     if "muscle" in args.groups:
         print("Placing muscle dipoles (warp)...")
-        kept, dropped = place_muscle(args.output_dir, args.subject, args.hartmut_dir,
-                                     generator, head_center)
-        total = kept + dropped
-        frac = kept / total if total else 0.0
-        # neck_coverage=False signals the orchestrator to use the canned-leadfield fallback:
-        # too few muscle sources survived the warp for a subject-specific solve to be meaningful.
-        summary["muscle"] = {"n_kept": int(kept), "n_dropped": int(dropped),
-                             "n_total": int(total), "kept_fraction": round(frac, 4),
-                             "neck_coverage": bool(frac >= MUSCLE_NECK_COVERAGE_MIN)}
-        print(f"Muscle: kept {kept}, dropped {dropped} (no-neck / ray-miss); "
+        mus = place_muscle(args.output_dir, args.subject, args.hartmut_dir,
+                           generator, head_center, electrodes, args.min_electrode_distance)
+        total = mus["n_raycast_kept"] + mus["n_dropped_raycast"]
+        # neck_coverage gauges the WARP only (FOV/ray-miss), not the electrode-clearance drop, so
+        # the solve-vs-canned-fallback decision keeps exactly the meaning it had before.
+        frac = mus["n_raycast_kept"] / total if total else 0.0
+        summary["muscle"] = {"n_kept": mus["n_kept"],
+                             "n_dropped": total - mus["n_kept"],
+                             "n_dropped_raycast": mus["n_dropped_raycast"],
+                             "n_dropped_near_electrode": mus["n_dropped_near_electrode"],
+                             "n_total": int(total),
+                             "kept_fraction": round(mus["n_kept"] / total if total else 0.0, 4),
+                             "raycast_fraction": round(frac, 4),
+                             "neck_coverage": bool(frac >= MUSCLE_NECK_COVERAGE_MIN),
+                             "min_electrode_distance_mm": args.min_electrode_distance,
+                             "min_clearance_mm": mus["min_clearance_mm"]}
+        print(f"Muscle: kept {mus['n_kept']}/{total} (dropped {mus['n_dropped_raycast']} ray-miss, "
+              f"{mus['n_dropped_near_electrode']} near-electrode); "
               f"neck_coverage={summary['muscle']['neck_coverage']}.")
 
     # Machine-readable record the orchestrator reads to pick the muscle path (solve vs fallback).

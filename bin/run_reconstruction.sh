@@ -81,6 +81,8 @@ usage() {
     echo "  --spacing-duneuro-simnibs  Dipole spacing (mm) for DUNEuro FEM with SimNIBS mesh (Default: 3)."
     echo "  --spacing-duneuro-cgal     Dipole spacing (mm) for DUNEuro FEM with CGAL mesh (Default: 2)."
     echo "  --dipole-seed              Integer seed for reproducible dipole sampling (Default: unset = random)."
+    echo "  --artifact-electrode-gap   Minimum artifact source-to-electrode distance in mm; closer sources are"
+    echo "                             dropped (Default: 5). Guards the 1/r^2 point-dipole singularity."
     echo "  --dwi-preprocessed FORMAT  DWI is already preprocessed; skip QSIPrep. FORMAT is 'qsiprep' (a qsiprep-"
     echo "                             derivatives tree already at <output_dir>/qsiprep/) or 'hcp' (HCP-YA, staged under"
     echo "                             <bids_dir>/sourcedata/hcp/<ID>/; uses QSIRecon --input-type hcpya)."
@@ -93,7 +95,7 @@ usage() {
     echo "                             cohort be split into walltime-bounded, dependency-chained SLURM jobs. Known stages:"
     echo "                             ingest,fastsurfer,hippunfold,freesurfer,mne,schaefer,freesurfersubcortical,simnibscharm,"
     echo "                             fslfirst,synthstrip,cerebellum,bigbrain,surfaces,atlas,tissuelabels,qsiprep,qsirecon,"
-    echo "                             connectivity,dwitensor,dwi2t1,electrodes,dipoles,tetmesh,anisotropy,forwardsolvers,artifacts,qc."
+    echo "                             connectivity,dwitensor,dwi2t1,fiducials,electrodes,dipoles,tetmesh,anisotropy,forwardsolvers,artifacts,qc."
     exit 1
 }
 
@@ -130,6 +132,7 @@ SPACING_OPENMEEG=4
 SPACING_DUNEURO_SIMNIBS=3
 SPACING_DUNEURO_CGAL=2
 DIPOLE_SEED=""
+ARTIFACT_ELECTRODE_GAP=5
 DWI_FORMAT=""           # "" = raw DWI in BIDS dwi/ (run QSIPrep); else a preprocessed format
 FIX_INPUTS=false
 RECON_BACKEND=fastsurfer
@@ -169,6 +172,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dipole-seed)
             DIPOLE_SEED="$2"
+            shift 2
+            ;;
+        --artifact-electrode-gap)
+            ARTIFACT_ELECTRODE_GAP="$2"
             shift 2
             ;;
         --dwi-preprocessed)
@@ -250,7 +257,7 @@ fi
 # ANTs heavies), not here -- the orchestrator only needs the per-stage on/off gate.
 KNOWN_STAGES=(ingest fastsurfer hippunfold freesurfer mne schaefer freesurfersubcortical
               simnibscharm fslfirst synthstrip cerebellum bigbrain surfaces atlas tissuelabels
-              qsiprep qsirecon connectivity dwitensor dwi2t1 electrodes dipoles tetmesh
+              qsiprep qsirecon connectivity dwitensor dwi2t1 fiducials electrodes dipoles tetmesh
               anisotropy forwardsolvers artifacts qc)
 if [ "$STAGES_ARG" = "all" ]; then
     STAGE_SET=("${KNOWN_STAGES[@]}")
@@ -395,6 +402,13 @@ trap 'exit 143' TERM
 # them across subjects/runs.
 TEMPLATEFLOW_DIR="$OUTPUT_DIR/.templateflow"
 mkdir -p "$TEMPLATEFLOW_DIR"
+
+# Ship the derivatives-layout legend with the outputs, so a derivatives tree stays
+# self-documenting once it is detached from this checkout. Refreshed every run (the
+# repo copy is the source of truth) and non-fatal: a read-only or already-correct
+# copy must never abort a reconstruction.
+cp -f "$PARROT_SCRIPT_DIR/bin/legend_of_files.txt" "$OUTPUT_DIR/legend_of_files.txt" 2>/dev/null \
+    || echo "WARNING: could not copy legend_of_files.txt into $OUTPUT_DIR"
 
 # Auto-discover participants if none were provided
 if [ ${#PARTICIPANTS[@]} -eq 0 ]; then
@@ -1675,6 +1689,29 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     fi
 
     # ---------------------------------------------------------
+    # SCALP FIDUCIALS
+    # ---------------------------------------------------------
+    # Warps corrected MNI fiducials into the subject (see make_fiducials.py for the
+    # provenance of those coordinates). Must precede `electrodes`, which now requires
+    # scalplandmarks/fiducials.json rather than deriving it from the SimNIBS CSV.
+    # Needs charm (the warp) and surfaces (charm_scalp.ply, for the scalp snap).
+    NAME="fiducials"
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+        log_step "Running $NAME reconstruction..."
+        mkdir -p "$OUTPUT_DIR/scalplandmarks/sub-${SUBJECT}"
+
+        step_start=$(date +%s)
+
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
+            "simnibs_python /scripts/make_fiducials.py --subject $SUBJECT --output_dir /derivatives"
+
+        step_end=$(date +%s)
+        echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+    else
+        echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+    fi
+
+    # ---------------------------------------------------------
     # PLACE ELECTRODES
     # ---------------------------------------------------------
     NAME="electrodes"
@@ -1917,7 +1954,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         #    artifacts/dipoles/sub-<S>/artifactsources.json (counts + neck-coverage flag).
         if [ ! -f "$LOG_DIR/${NAME}-dipoles_log.txt" ]; then
             run_in_docker_FWD "$NAME-dipoles" "$LOG_DIR/${NAME}-dipoles_log.txt" "$IMG_FORWARD_MODEL" \
-                "cd /scripts && python place_artifact_dipoles.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
+                "cd /scripts && python place_artifact_dipoles.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache --min-electrode-distance $ARTIFACT_ELECTRODE_GAP${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
         fi
 
         # 3. artifact leadfields (solvers image). Eyes + muscle share ONE transfer matrix; muscle

@@ -1,5 +1,5 @@
 from electrodes_positions.utils.point_picking import project_fid_on_mesh, select_feasible_positions
-from electrodes_positions.montages import create_standard_montage
+from electrodes_positions.montages import create_standard_montage, get_upper_path
 import json
 import trimesh
 import os
@@ -42,28 +42,16 @@ if __name__ == "__main__":
     vertices = np.array(mesh.vertices)
     faces = np.array(mesh.faces)
     
-    if os.path.isfile(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/fiducials.json')):
-        with open(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/fiducials.json'), 'r') as f:
-            fiducials = json.load(f)
-    else:
-        # take simnibs fiducials and dump them in electrodes folder
-        fiducials = np.loadtxt(os.path.join(output_dir, f'simnibscharm/sub-{subject}/eeg_positions/Fiducials.csv'), delimiter=',', dtype=str)
-        names = fiducials[:,-1].tolist()
-        points = fiducials[:,1:-1].astype(float).tolist()
-        
-        # project the fiducials on the mesh vertices to get fid indices
-        points, _ = project_fid_on_mesh(points, vertices, return_positions = True, return_indices=True)
-    
-        fiducials = dict(zip(names, points))
-        if 'Nz' in fiducials.keys():
-            fiducials['NAS'] = fiducials.pop('Nz')
-        if 'Iz' in fiducials.keys():
-            fiducials['IN'] = fiducials.pop('Iz')
-        
-        os.makedirs(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/'), exist_ok=True)
-        with open(os.path.join(output_dir, f'scalplandmarks/sub-{subject}/fiducials.json'), 'w') as f:
-            # project_fid_on_mesh returns numpy arrays; cast to lists so json can serialise them
-            json.dump({k: np.asarray(v).tolist() for k, v in fiducials.items()}, f)
+    # Fiducials come from the `fiducials` stage (make_fiducials.py), which warps corrected
+    # MNI coordinates into the subject. Deriving them here from the SimNIBS CSV is gone: those
+    # template points are ~7.6 mm posterior of the preauricular point, which lands them on the
+    # pinna and tilts the montage.
+    fid_path = os.path.join(output_dir, f'scalplandmarks/sub-{subject}/fiducials.json')
+    if not os.path.isfile(fid_path):
+        raise SystemExit(f'No fiducials at {fid_path}. Run the `fiducials` stage '
+                         '(make_fiducials.py, parrot_mri_reconstruction) first, or place them by hand.')
+    with open(fid_path, 'r') as f:
+        fiducials = json.load(f)
 
     points = [fiducials['RPA'], fiducials['LPA'], fiducials['NAS'], fiducials['IN']]
 
@@ -86,3 +74,30 @@ if __name__ == "__main__":
 
     with open(os.path.join(output_dir, f'electrodes/sub-{subject}/selected_landmarks_10-5-full.json'), 'w') as f:
         json.dump([key for key in all_landmarks.keys() if key in selected_landmarks.keys()], f)
+
+    # Placement diagnostic. Written last and never fatal: the montage outputs above must not
+    # depend on it. Cz is the arc-length midpoint of the coronal cut, so anything that inflates
+    # the arc on one side (the cut wrapping the pinna) biases Cz and tilts the whole montage.
+    # Tortuosity (arc/chord) over the last 30 mm before each ear endpoint measures that directly
+    # -- it is ~1.00 on smooth scalp for every head, so unlike left/right asymmetry it has no
+    # natural-variation background to hide in.
+    try:
+        Cz_pos = newverts[all_landmarks['Cz']]
+        cut, _ = get_upper_path(newverts, newfac,
+                                np.cross(newverts[RPA_idx] - Cz_pos, newverts[LPA_idx] - Cz_pos),
+                                start_point=RPA_idx, end_point=LPA_idx)
+        tort = {}
+        for end, name in ((cut, 'RPA'), (cut[::-1], 'LPA')):
+            step = np.linalg.norm(np.diff(end, axis=0), axis=-1)
+            cum = np.concatenate([[0.0], np.cumsum(step)])
+            k = int(np.searchsorted(cum, 30.0))
+            chord = np.linalg.norm(end[k] - end[0])
+            tort[name] = float(cum[k] / chord) if chord > 1e-9 else float('nan')
+        with open(os.path.join(output_dir, f'electrodes/sub-{subject}/placement_qc.json'), 'w') as f:
+            json.dump({'ear_approach_tortuosity': tort,
+                       'max_tortuosity': float(max(tort.values())),
+                       'window_mm': 30.0}, f)
+    except BaseException as e:
+        # get_upper_path raises BaseException, so Exception would not catch it.
+        print(f'WARNING: placement diagnostic failed ({type(e).__name__}: {e}); '
+              'electrode positions are unaffected')
