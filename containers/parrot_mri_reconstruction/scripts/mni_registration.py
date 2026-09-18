@@ -28,7 +28,7 @@ Outputs (artifacts/registration/sub-<S>/):
   mni_to_subject_affine.npy   (4,4) MNI-world -> subject-T1-world (mm, RAS homogeneous)
   subject_to_mni_affine.npy   (4,4) inverse
   ants_affine.mat             raw ANTs affine transform (for the record / fallback interp)
-  registration_qc.json        both scalp residuals (audit trail)
+  registration_qc.json        both scalp residuals + the evaluated band (audit trail)
 """
 import argparse
 import contextlib
@@ -43,8 +43,16 @@ from scipy.spatial import cKDTree
 
 
 # A correct affine puts the NYhead scalp on the subject scalp to ~2.1-2.6 mm; these bound that.
+# KEEP IN SYNC with containers/parrot_qc/qc/stages/artifacts.py, which re-measures this
+# independently (deliberately: it must not trust registration_qc.json).
 REG_RESIDUAL_WARN_MM = 4.0
 REG_RESIDUAL_MAX_MM = 6.0
+# The residual is measured only where both surfaces exist. NYhead carries a long neck (down to
+# z = -185 mm); a head built from an FOV-cropped T1 (the MNI152 templates stop at z ~= -73 mm) has
+# no surface there, and those orphan vertices snap 70-110 mm away -- enough on their own to turn a
+# 1.3 mm fit into an 8.8 mm "failure".
+FOV_MARGIN_MM = 5.0
+MIN_EVALUATED_FRAC = 0.5
 
 # RAS <-> LPS is a sign flip on x and y, and is its own inverse.
 _LPS_FLIP = np.array([-1.0, -1.0, 1.0])
@@ -87,6 +95,25 @@ def apply_affine(A, pts):
 
 def points_to_df(pts):
     return pd.DataFrame({"x": pts[:, 0], "y": pts[:, 1], "z": pts[:, 2]})
+
+
+def scalp_residual(mapped_tmpl, subj_verts):
+    """Mean template->subject scalp distance, over the z-band where both surfaces exist.
+
+    Returns (mean_mm, stats); stats records what was excluded so the gate stays auditable.
+    """
+    z_floor = float(subj_verts[:, 2].min()) + FOV_MARGIN_MM
+    keep = mapped_tmpl[:, 2] >= z_floor
+    d, _ = cKDTree(subj_verts).query(mapped_tmpl[keep], k=1)
+    stats = {
+        "n_template_vertices": int(len(mapped_tmpl)),
+        "n_evaluated": int(keep.sum()),
+        "evaluated_fraction": float(keep.mean()),
+        "subject_scalp_z_min_mm": float(subj_verts[:, 2].min()),
+        "fov_margin_mm": FOV_MARGIN_MM,
+        "residual_p90_mm": float(np.percentile(d, 90)),
+    }
+    return float(np.mean(d)), stats
 
 
 def main():
@@ -140,11 +167,12 @@ def main():
     # The reverse direction (subject->template) is NOT usable as a check -- it stays at 14-15 mm
     # even for a correct fit, because the subject scalp has detail (ears, nose, neck cut) the
     # smooth NYhead surface lacks, so it barely separates a good registration from a mirrored one.
-    d_ts, _ = cKDTree(subj_verts).query(nyhead_in_subj, k=1)
+    err, res_stats = scalp_residual(nyhead_in_subj, subj_verts)
     d_st, _ = cKDTree(nyhead_in_subj).query(subj_verts, k=1)
-    err = float(np.mean(d_ts))
     print(f"  scalp residual template->subject = {err:.2f} mm "
-          f"(subject->template {np.mean(d_st):.2f} mm, not gated)")
+          f"({res_stats['n_evaluated']}/{res_stats['n_template_vertices']} vertices above the "
+          f"subject scalp floor z={res_stats['subject_scalp_z_min_mm']:.1f} mm; "
+          f"subject->template {np.mean(d_st):.2f} mm, not gated)")
 
     qc = {
         "scalp_residual_template_to_subject_mm": err,
@@ -152,6 +180,7 @@ def main():
         "affine_fit_residual_mm": fit_err,
         "template": os.path.basename(args.template),
         "note": "MNI152NLin2009 world frame; affine-only bring-into-frame for the ray-cast warp",
+        **res_stats,
     }
     with open(os.path.join(out_dir, "registration_qc.json"), "w") as f:
         json.dump(qc, f, indent=2)
@@ -161,6 +190,11 @@ def main():
     # a failed registration or a reintroduced convention bug, either of which puts the warped
     # muscle sources centimetres off. Failing here leaves no affine on disk for a later stage to
     # pick up -- registration_qc.json is already written, so the residual is still auditable.
+    if res_stats["evaluated_fraction"] < MIN_EVALUATED_FRAC:
+        raise SystemExit(
+            f"ERROR: only {res_stats['evaluated_fraction']:.0%} of the template scalp lands above "
+            f"the subject scalp floor — the affine is badly off (or the subject scalp is a stub); "
+            f"the residual is not meaningful. No affine written.")
     if err > REG_RESIDUAL_MAX_MM:
         raise SystemExit(f"ERROR: template->subject scalp residual {err:.2f} mm exceeds "
                          f"{REG_RESIDUAL_MAX_MM} mm — registration failed; artifact sources "

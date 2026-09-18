@@ -130,8 +130,13 @@ def _check_electrode_clearance(r, name, positions, elec, gap):
 
 # A correct MNI->subject affine lands the NYhead template scalp on the subject scalp to ~2-3 mm
 # (2.1-2.6 mm across the 10 AEGEUS subjects). These bound that measurement.
+# KEEP IN SYNC with containers/parrot_mri_reconstruction/scripts/mni_registration.py, which gates
+# on the same numbers; this stage re-measures independently rather than trusting its JSON.
 REG_RESIDUAL_WARN_MM = 4.0
 REG_RESIDUAL_FAIL_MM = 6.0
+# Only the z-band where both surfaces exist is measured -- see mni_registration.scalp_residual.
+FOV_MARGIN_MM = 5.0
+MIN_EVALUATED_FRAC = 0.5
 
 
 def _check_registration(r, ctx, affine_path):
@@ -143,6 +148,10 @@ def _check_registration(r, ctx, affine_path):
     one mirrored by an RAS/LPS mix-up, so both passed a 30 mm threshold. This direction separates
     them 2.4 vs 14-21 mm. Recomputing it here also means a stale registration_qc.json cannot make
     a bad affine look fine.
+
+    Vertices below the subject scalp's own floor are excluded: NYhead's neck reaches z = -185 mm
+    and an FOV-cropped head (the MNI152 templates end near z = -73 mm) has nothing there to match.
+    Clipping costs no discriminating power (correct 1.3 mm vs mirrored 17.5 mm on MNI09b).
     """
     try:
         A = np.load(affine_path)
@@ -154,10 +163,17 @@ def _check_registration(r, ctx, affine_path):
         tmpl = np.asarray(render3d.load_surface(nyhead).points, dtype=float)
         subj = np.asarray(render3d.load_surface(charm).points, dtype=float)
         mapped = (np.hstack([tmpl, np.ones((len(tmpl), 1))]) @ A.T)[:, :3]
-        d, _ = cKDTree(subj).query(mapped, k=1)
+        keep = mapped[:, 2] >= float(subj[:, 2].min()) + FOV_MARGIN_MM
+        if keep.mean() < MIN_EVALUATED_FRAC:
+            r.fail("MNI registration",
+                   f"only {keep.mean():.0%} of the template scalp lands above the subject scalp "
+                   f"floor — the affine is badly off; artifact sources are misplaced")
+            return
+        d, _ = cKDTree(subj).query(mapped[keep], k=1)
         err = float(np.mean(d))
         st = PASS if err <= REG_RESIDUAL_WARN_MM else (WARN if err <= REG_RESIDUAL_FAIL_MM else FAIL)
-        detail = f"template->subject scalp residual {err:.1f} mm (expect <= {REG_RESIDUAL_WARN_MM:.0f})"
+        detail = (f"template->subject scalp residual {err:.1f} mm over {keep.sum()}/{len(mapped)} "
+                  f"template vertices (expect <= {REG_RESIDUAL_WARN_MM:.0f})")
         if st is FAIL:
             detail += " — affine is wrong; artifact sources are misplaced"
         r.add(st, "MNI registration", detail)
