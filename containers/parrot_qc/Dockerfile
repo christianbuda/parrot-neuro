@@ -34,3 +34,8 @@ RUN pip3 install --no-cache-dir --upgrade pip && \
 # Bake the QC package (run as: python /qc/run_qc.py ...).
 COPY qc /qc
 WORKDIR /qc
+
+# Code shared with the other Parrot images. It lives outside this build context, so bin/build.sh
+# passes containers/_shared as the BuildKit named context "shared". Edit it there, rebuild here.
+COPY --from=shared parrot_common /opt/parrot_shared/parrot_common
+ENV PYTHONPATH="/opt/parrot_shared"

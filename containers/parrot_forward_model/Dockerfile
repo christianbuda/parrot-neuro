@@ -54,4 +54,9 @@ COPY --from=builder /app/build/mesher /usr/local/bin/mesher
 COPY place_electrodes.py place_dipoles.py nifti_to_inr.py mesh_postprocessing.py \
      place_artifact_dipoles.py hartmut_warp.py ./
 
+# Code shared with the other Parrot images. It lives outside this build context, so bin/build.sh
+# passes containers/_shared as the BuildKit named context "shared". Edit it there, rebuild here.
+COPY --from=shared parrot_common /opt/parrot_shared/parrot_common
+ENV PYTHONPATH="/opt/parrot_shared"
+
 CMD ["/bin/bash"]

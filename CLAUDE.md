@@ -197,6 +197,14 @@ parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
   `subject.py` (the facade). `tests/` covers it; `examples/subject_usage.py` is the tour.
   The TVB→EEG/BOLD fitting subpackage (`parrot_neuro.optimization`) lives on the
   `eeg-bold-fit` branch, not on `main`.
+- `containers/_shared/parrot_common/` is the one place code used by **more than one image** lives
+  (shared thresholds, `scalp_residual`, the trimesh `signed_clearance`/`outward_dir`/
+  `nesting_margins` primitives). Each image's build context is its own `containers/<image>/`, so
+  `bin/build.sh` passes this directory as the BuildKit named context `shared` and every Dockerfile
+  does `COPY --from=shared parrot_common /opt/parrot_shared/parrot_common` +
+  `ENV PYTHONPATH=/opt/parrot_shared`. **Gotcha:** nothing tracks which images depend on it —
+  after editing it, rebuild them all (plain `./bin/build.sh`). It is pure enough to test on the
+  host, so it has unit tests (`tests/test_parrot_common.py`) while the rest of `containers/` does not.
 - `utils/staging/` holds the dataset-staging tooling (see Key Files); the rest of `utils/`
   is still scaffolding. Run staging via `bin/stage.sh`, never on the host (needs nibabel).
 - `development/` is git-ignored scratch (JAX-TVB, tractography, US, EEG prototypes): where the

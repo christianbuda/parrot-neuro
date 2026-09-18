@@ -8,6 +8,8 @@ contained, not intersecting.
 import numpy as np
 import nibabel as nib
 import trimesh
+from parrot_common.geometry import fov_escape_depth
+from parrot_common.meshops import nesting_margins
 
 from ..checks import StageResult, PASS, WARN, FAIL, SKIP
 from .. import render3d
@@ -143,8 +145,7 @@ def _check_bem_nesting(result, surf_dir, ctx):
         for name, m in shells:
             if name not in _FOV_CHECKED:
                 continue
-            v = np.asarray(m.vertices)
-            depth = float(np.maximum(lo - v, v - hi).max(1).max())
+            depth = float(fov_escape_depth(m.vertices, lo, hi).max())
             if depth > _FOV_TOL_MM:
                 escapes.append(f"{name} by {depth:.1f} mm")
         result.add(WARN if escapes else PASS, "BEM shells within the image FOV",
@@ -155,8 +156,7 @@ def _check_bem_nesting(result, surf_dir, ctx):
     bad, worst = [], 0.0
     for i, (ni, mi) in enumerate(shells):
         for no, mo in shells[i+1:]:
-            ins = trimesh.proximity.signed_distance(mo, mi.vertices)
-            out = -trimesh.proximity.signed_distance(mi, mo.vertices)
+            ins, out = nesting_margins(mi, mo)
             depth = max(-float(ins.min()), -float(out.min()))
             if (ins < 0).any() or (out < 0).any():
                 worst = max(worst, depth)

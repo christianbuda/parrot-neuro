@@ -79,6 +79,11 @@ COPY make_leadfield_openmeeg.py make_leadfield_duneuro.py \
      dti_to_conductivity_tensors.py mesh_io.py \
      make_leadfield_artifacts.py make_leadfield_hartmut_muscle.py /scripts/
 
+# Code shared with the other Parrot images. It lives outside this build context, so bin/build.sh
+# passes containers/_shared as the BuildKit named context "shared". Edit it there, rebuild here.
+COPY --from=shared parrot_common /opt/parrot_shared/parrot_common
+ENV PYTHONPATH="/opt/parrot_shared:${PYTHONPATH}"
+
 WORKDIR /pipeline
 
 COPY geometry.geom conductivities.cond neuronal_strength_dict.json .

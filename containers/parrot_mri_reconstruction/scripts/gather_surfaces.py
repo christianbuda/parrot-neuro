@@ -1,10 +1,16 @@
 import shutil
+from functools import partial
+
 import trimesh
 import nibabel as nib
 import numpy as np
 import argparse
 import os
 import pymeshfix
+from parrot_common.geometry import fov_escape_depth
+from parrot_common.meshops import nesting_margins
+from parrot_common.meshops import outward_dir as _outward_dir
+from parrot_common.meshops import signed_clearance as _signed_clearance
 
 
 def read_vtk(input):
@@ -293,23 +299,10 @@ def fix_intersection(fixed_mesh, moving_mesh, min_dist, step_size,
     # need to be non-intersecting for BEM solver stability, so best-effort is an
     # acceptable failure mode.
 
-    def signed_clearance(points):
-        # AUTHORITATIVE signed clearance: -signed_distance, +outside / -inside.
-        # trimesh's signed_distance uses a pseudonormal sign test that stays correct
-        # near edges/folds. A naive dot(point - closest, face_normal) does NOT -- on
-        # a deformed shell it reads a deeply-inside vertex that happens to be closest
-        # to a nearby fold as "outside", so the scan never flags it and Phase 1
-        # never repairs it, silently leaving an intersection. So the SIGN must come
-        # from signed_distance; closest_point is used only for the push direction.
-        return -trimesh.proximity.signed_distance(fixed_mesh, points)
-
-    def outward_dir(points):
-        # Outward push direction: normal of the closest fixed_mesh triangle (the
-        # signed-distance gradient), from one cheap closest_point query. Stepping
-        # along this -- not a correspondent vertex normal -- is what makes Phase 1
-        # converge in a few iterations even in a deep dent.
-        _, _, tri = trimesh.proximity.closest_point(fixed_mesh, points)
-        return fixed_mesh.face_normals[tri]
+    # Both primitives (and why the sign must come from signed_distance) live in
+    # parrot_common.meshops, shared with the solvers image's post-decimation repair.
+    signed_clearance = partial(_signed_clearance, fixed_mesh)
+    outward_dir = partial(_outward_dir, fixed_mesh)
 
     test_points = np.copy(moving_mesh.vertices)
     faces = np.array(moving_mesh.faces)
@@ -386,17 +379,16 @@ def report_bem_quality(shells, t1_img):
     lo, hi = world.min(0), world.max(0)
 
     for name, mesh in shells:
-        v = np.asarray(mesh.vertices)
-        out = ((v < lo) | (v > hi)).any(1)
+        escape = fov_escape_depth(mesh.vertices, lo, hi)
+        out = escape > 0
         if out.any():
-            depth = np.maximum(lo - v, v - hi).max(1)[out].max()
             print(f"[bem] WARNING: {name} has {int(out.sum())} vertices outside the T1 field of "
-                  f"view (up to {depth:.1f} mm); watershed fitted it where there is no data.")
+                  f"view (up to {escape.max():.1f} mm); watershed fitted it where there is no "
+                  f"data.")
 
     for i, (ni, mi) in enumerate(shells):
         for no, mo in shells[i+1:]:
-            ins = trimesh.proximity.signed_distance(mo, mi.vertices)
-            outv = -trimesh.proximity.signed_distance(mi, mo.vertices)
+            ins, outv = nesting_margins(mi, mo)
             if (ins < 0).any() or (outv < 0).any():
                 print(f"[bem] WARNING: {ni} is not contained in {no}: "
                       f"{int((ins < 0).sum())} {ni} vertices up to {-ins.min():.2f} mm outside it, "

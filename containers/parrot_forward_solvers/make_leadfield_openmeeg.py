@@ -8,6 +8,11 @@ import subprocess
 import pymeshlab
 import sys
 import json
+from functools import partial
+
+from parrot_common.meshops import nesting_margins
+from parrot_common.meshops import outward_dir as _outward_dir
+from parrot_common.meshops import signed_clearance as _signed_clearance
 
 # Force line buffering for standard output
 sys.stdout.reconfigure(line_buffering=True)
@@ -118,20 +123,11 @@ def enforce_nesting(inner, outer, min_clear, step, max_iter=300, smooth_rounds=3
     verts = np.array(outer.vertices, dtype=float)
     faces = np.array(outer.faces)
 
-    def signed_clearance(points):
-        # AUTHORITATIVE signed clearance: -signed_distance, +outside / -inside.
-        # The SIGN must come from signed_distance's pseudonormal test, which stays
-        # correct near edges/folds; a naive dot(point - closest, face_normal) reads
-        # a deeply-inside vertex closest to a fold as "outside" and silently leaves
-        # an intersection. embreex makes this fast (see the Dockerfile).
-        return -trimesh.proximity.signed_distance(inner, points)
-
-    def outward_dir(points):
-        # Outward push direction: normal of the closest inner triangle (also the
-        # correspondence-free direction we need, since decimation destroyed the
-        # shells' vertex correspondence), from one cheap closest_point query.
-        _, _, tri = trimesh.proximity.closest_point(inner, points)
-        return inner.face_normals[tri]
+    # Both primitives (and why the sign must come from signed_distance) live in
+    # parrot_common.meshops, shared with gather_surfaces' full-res repair. embreex makes
+    # them fast here (see the Dockerfile).
+    signed_clearance = partial(_signed_clearance, inner)
+    outward_dir = partial(_outward_dir, inner)
 
     # One full authoritative scan; then step ADAPTIVELY on the shrinking bad subset
     # only, so the repair scales with the (localized) violation, not the whole mesh.
@@ -186,8 +182,7 @@ def check_nesting(inner, outer, name_inner, name_outer):
     repair and then gets rejected by om_assemble. Detection only -- nothing is moved,
     because with no ground truth we cannot know which of the two shells is wrong.
     """
-    out = -trimesh.proximity.signed_distance(inner, outer.vertices)
-    ins = trimesh.proximity.signed_distance(outer, inner.vertices)
+    ins, out = nesting_margins(inner, outer)
     n_out, n_in = int((out < 0).sum()), int((ins < 0).sum())
     if n_out or n_in:
         parts = []
