@@ -32,10 +32,22 @@ import numpy as np
 import trimesh
 from scipy.spatial import cKDTree
 
-# Below this fraction of muscle sources surviving the warp (e.g. a scan with no neck FOV, so most
-# rays miss the subject scalp), the subject can't host the muscle sources on its own mesh and the
-# orchestrator uses HArtMuT's canned muscle leadfield instead of solving.
-MUSCLE_NECK_COVERAGE_MIN = 0.5
+# Solve the muscle group on the subject's own mesh unless the head model can't host the sources
+# at all. This is a "is the scalp mesh usable" floor, NOT a neck test: for a scalp montage the
+# neck groups carry well under 1% of the muscle-artifact energy (the lowest 10-5 electrode sits
+# ~60 mm above them), so a missing neck is no reason to give up subject-specific physics.
+MUSCLE_MIN_SOLVE_FRACTION = 0.5   # of the IN-FOV sources, fraction that must survive the ray-cast
+MUSCLE_MIN_SOLVE_SOURCES = 500    # absolute floor; guards a collapsed/failed charm scalp
+
+# Sources mapping below the subject scalp's lowest point + this margin are outside the acquired
+# FOV: there is no anatomy for them to land on, so the warp puts them on the open bottom rim.
+# Matches the margin `scalp_residual` uses to clip the registration gate -- within a few mm of
+# that rim the mesh is unreliable.
+FOV_MARGIN = 5.0
+
+# Above this fraction of sources falling outside the FOV, the head model has no neck to speak of.
+# Reported as a label so the downstream amplitude generator knows not to synthesize neck EMG.
+NECK_FOV_MAX_BELOW_FRACTION = 0.05
 
 # Minimum source-to-electrode distance (mm); sources closer than this are dropped. A point dipole's
 # potential grows as 1/r^2, so a source a millimetre under an electrode swamps that channel.
@@ -192,7 +204,25 @@ def place_muscle(output_dir, subject, hartmut_dir, generator, head_center, elect
     # skull intersection and are dropped by ray_cast_warp -- counted in n_dropped_raycast.
     subj_skull = load_mesh(os.path.join(output_dir, f"surfaces/sub-{subject}/charm_bone_compact.ply"))
     subj_scalp = load_mesh(os.path.join(output_dir, f"surfaces/sub-{subject}/charm_scalp.ply"))
+    scalp_z_min = float(subj_scalp.bounds[0][2])   # before decimation; decimation can nudge bounds
     subj_scalp = decimate_for_raycast(subj_scalp)  # 105k-face charm scalp -> ~20k for fast casting
+
+    # Flag (do NOT drop) sources whose true home is below the acquired FOV. The scalp mesh is open
+    # at the bottom, but a downward ray still crosses its jaw/nape rim, so ray_cast_warp "hosts"
+    # them on the rim -- measured on sub-MNI09b: 1729 such sources, placed up to 105 mm from home.
+    # Dropping them was tried and rejected: it costs 25% of the muscle-artifact energy and every
+    # perioral source, to fix a ~10 mm topography error and a 1.4x amplitude over-weight, with no
+    # gain in source independence (the flattened set's effective rank is 2.9 vs 2.5 at true
+    # positions -- they were already near-degenerate, all being far below the lowest electrode).
+    # The honest fix is to take these columns from the canned template leadfield instead; until
+    # then they stay, and the count below tells the amplitude generator how much to distrust.
+    fov_z = scalp_z_min + FOV_MARGIN
+    in_fov = src_pos[:, 2] >= fov_z
+    n_total, n_below_fov = len(src_pos), int((~in_fov).sum())
+    if n_below_fov:
+        print(f"  WARNING: {n_below_fov}/{n_total} muscle source(s) sit below the subject FOV "
+              f"(scalp floor {scalp_z_min:.1f} mm + {FOV_MARGIN:.0f} mm margin); the warp will "
+              f"place them on the bottom rim, not at their true depth.")
 
     warped, keep = ray_cast_warp(src_pos, tmpl_skull, tmpl_scalp, subj_skull, subj_scalp,
                                  center=head_center)
@@ -210,9 +240,12 @@ def place_muscle(output_dir, subject, hartmut_dir, generator, head_center, elect
 
     save_group(os.path.join(output_dir, f"artifacts/dipoles/sub-{subject}/muscle"),
                warped, radial, kept_lab)
-    return {"n_raycast_kept": int(keep.sum()), "n_dropped_raycast": int((~keep).sum()),
+    return {"n_total": n_total, "n_below_fov": n_below_fov, "n_in_fov": int(in_fov.sum()),
+            "n_raycast_kept": int(keep.sum()), "n_dropped_raycast": int((~keep).sum()),
+            # in-FOV only: a ray that missed because the anatomy is absent is not a warp failure
+            "n_raycast_kept_in_fov": int((keep & in_fov).sum()),
             "n_dropped_near_electrode": int((~clear).sum()), "n_kept": int(len(warped)),
-            "min_clearance_mm": round(d_min, 3)}
+            "scalp_z_min_mm": round(scalp_z_min, 2), "min_clearance_mm": round(d_min, 3)}
 
 
 def main():
@@ -252,23 +285,36 @@ def main():
         print("Placing muscle dipoles (warp)...")
         mus = place_muscle(args.output_dir, args.subject, args.hartmut_dir,
                            generator, head_center, electrodes, args.min_electrode_distance)
-        total = mus["n_raycast_kept"] + mus["n_dropped_raycast"]
-        # neck_coverage gauges the WARP only (FOV/ray-miss), not the electrode-clearance drop, so
-        # the solve-vs-canned-fallback decision keeps exactly the meaning it had before.
-        frac = mus["n_raycast_kept"] / total if total else 0.0
+        total, in_fov = mus["n_total"], mus["n_in_fov"]
+        # Ray survival is measured over the IN-FOV sources only: a source with no anatomy to land
+        # on was never the warp's to host, and counting it as a miss would conflate "this scan has
+        # no neck" (fine, expected) with "the warp failed on anatomy that is present" (not fine).
+        frac = mus["n_raycast_kept_in_fov"] / in_fov if in_fov else 0.0
+        solve = bool(frac >= MUSCLE_MIN_SOLVE_FRACTION
+                     and mus["n_kept"] >= MUSCLE_MIN_SOLVE_SOURCES)
+        has_neck = bool(mus["n_below_fov"] / total < NECK_FOV_MAX_BELOW_FRACTION) if total else False
         summary["muscle"] = {"n_kept": mus["n_kept"],
                              "n_dropped": total - mus["n_kept"],
+                             "n_below_fov": mus["n_below_fov"],
                              "n_dropped_raycast": mus["n_dropped_raycast"],
                              "n_dropped_near_electrode": mus["n_dropped_near_electrode"],
-                             "n_total": int(total),
+                             "n_total": total,
+                             "n_in_fov": in_fov,
                              "kept_fraction": round(mus["n_kept"] / total if total else 0.0, 4),
                              "raycast_fraction": round(frac, 4),
-                             "neck_coverage": bool(frac >= MUSCLE_NECK_COVERAGE_MIN),
+                             "has_neck_fov": has_neck,
+                             "scalp_z_min_mm": mus["scalp_z_min_mm"],
+                             "solve_muscle": solve,
+                             # Deprecated alias of solve_muscle: the old name claimed to measure
+                             # neck coverage but only ever counted ray hits. Kept so an orchestrator
+                             # and an image from different releases still agree on the solve path.
+                             "neck_coverage": solve,
                              "min_electrode_distance_mm": args.min_electrode_distance,
                              "min_clearance_mm": mus["min_clearance_mm"]}
-        print(f"Muscle: kept {mus['n_kept']}/{total} (dropped {mus['n_dropped_raycast']} ray-miss, "
+        print(f"Muscle: kept {mus['n_kept']}/{total} (dropped {mus['n_below_fov']} below FOV, "
+              f"{mus['n_dropped_raycast']} ray-miss of {in_fov} in-FOV, "
               f"{mus['n_dropped_near_electrode']} near-electrode); "
-              f"neck_coverage={summary['muscle']['neck_coverage']}.")
+              f"has_neck_fov={has_neck}, solve_muscle={solve}.")
 
     # Machine-readable record the orchestrator reads to pick the muscle path (solve vs fallback).
     out_json = os.path.join(args.output_dir, f"artifacts/dipoles/sub-{args.subject}/artifactsources.json")

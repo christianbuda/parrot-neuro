@@ -211,7 +211,9 @@ def run(ctx) -> StageResult:
             n_eye = src.get("eyes", {}).get("n_dipoles")
             mus = src.get("muscle", {})
             n_muscle = mus.get("n_kept")
-            neck_ok = bool(mus.get("neck_coverage", True))
+            solve_ok = bool(mus.get("solve_muscle", mus.get("neck_coverage", True)))
+            has_neck = mus.get("has_neck_fov")
+            below = mus.get("n_below_fov")
             near_el = mus.get("n_dropped_near_electrode")
             gap_mm = float(mus.get("min_electrode_distance_mm", gap_mm))
             drops = f"dropped {mus.get('n_dropped')}"
@@ -220,10 +222,17 @@ def run(ctx) -> StageResult:
                           f"{mus.get('min_electrode_distance_mm')} mm of an electrode")
             r.add(PASS, "artifactsources.json",
                   f"eyes={n_eye}, muscle kept={n_muscle}/{mus.get('n_total')} "
-                  f"({drops}), neck_coverage={neck_ok}")
-            if not neck_ok:
-                r.warn("muscle neck coverage",
-                       "too few muscle sources survived the warp -> canned-leadfield fallback used")
+                  f"({drops}), solve_muscle={solve_ok}")
+            if not solve_ok:
+                r.warn("muscle solve viability",
+                       "subject mesh could not host the muscle sources -> canned-leadfield fallback used")
+            # Not a failure: a head model that stops above the neck is a property of the
+            # acquisition. It is reported because the sources below that floor are placed on the
+            # bottom rim rather than at their true depth, which the noise generator should know.
+            if has_neck is False:
+                r.warn("muscle FOV coverage",
+                       f"head model stops at z={mus.get('scalp_z_min_mm')} mm; {below} muscle "
+                       f"source(s) lie below it and were placed on the bottom rim, not at depth")
         except Exception as e:  # noqa: BLE001
             r.warn("artifactsources.json", f"unreadable: {e}")
     else:

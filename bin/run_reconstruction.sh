@@ -790,6 +790,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
 
     # TSV Overrides (positional columns: 4=skip-T2-reg, 5=no-neck, 6=mp2rage)
     MP2RAGE_SUBJECT=false
+    NO_NECK_DECLARED=false
     if [ -f "$BIDS_DIR/participants.tsv" ]; then
         SUB_ROW=$(grep "^sub-${SUBJECT}" "$BIDS_DIR/participants.tsv" 2>/dev/null)
         if [ -n "$SUB_ROW" ]; then
@@ -798,6 +799,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
             fi
             if [ "$(echo "$SUB_ROW" | awk '{print tolower($5)}')" == "true" ]; then
                 simnibs_args+=("--noneck")
+                NO_NECK_DECLARED=true
             fi
             # col6 mp2rage: T1 is an MP2RAGE UNI -> MPRAGEise it (FastSurfer/charm can't
             # consume the raw UNI's high-intensity background). Handled by ingest below.
@@ -1957,11 +1959,26 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
                 "cd /scripts && python place_artifact_dipoles.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache --min-electrode-distance $ARTIFACT_ELECTRODE_GAP${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
         fi
 
+        # 2b. Cross-check the measured head extent against the declared no-neck column. The
+        #     pipeline now measures whether the head model reaches the neck (has_neck_fov, from the
+        #     charm scalp floor); participants.tsv col5 only ever *declared* it. A disagreement
+        #     means either a mis-set column (positional parsing -- easy to shift) or a charm run
+        #     that lost the lower head. Informational: neither value gates the artifact stage.
+        ART_JSON="$OUTPUT_DIR/artifacts/dipoles/sub-${SUBJECT}/artifactsources.json"
+        has_neck=$(python3 -c "import json;m=json.load(open('$ART_JSON')).get('muscle',{});print(m.get('has_neck_fov',''))" 2>/dev/null || echo "")
+        if [ "$has_neck" = "True" ] && [ "$NO_NECK_DECLARED" = true ]; then
+            echo "[WARN] sub-${SUBJECT}: participants.tsv declares no-neck, but the head model reaches the neck (has_neck_fov=true). Check column order in participants.tsv." | tee -a "$LOG_FILE"
+        elif [ "$has_neck" = "False" ] && [ "$NO_NECK_DECLARED" = false ]; then
+            n_below=$(python3 -c "import json;print(json.load(open('$ART_JSON')).get('muscle',{}).get('n_below_fov','?'))" 2>/dev/null || echo "?")
+            echo "[WARN] sub-${SUBJECT}: head model stops above the neck ($n_below muscle sources below the FOV) but participants.tsv does not set no-neck. Muscle sources below the floor are placed on the bottom rim, not at their true depth." | tee -a "$LOG_FILE"
+        fi
+
         # 3. artifact leadfields (solvers image). Eyes + muscle share ONE transfer matrix; muscle
-        #    falls back to HArtMuT's canned leadfield when the warp under-hosted (no neck FOV).
+        #    falls back to HArtMuT's canned leadfield when the subject mesh can't host the sources.
         if [ ! -f "$LOG_DIR/${NAME}-leadfields_log.txt" ]; then
-            # Did enough muscle sources survive the warp to solve on the subject's own mesh?
-            neck_ok=$(python3 -c "import json;print(json.load(open('$OUTPUT_DIR/artifacts/dipoles/sub-${SUBJECT}/artifactsources.json')).get('muscle',{}).get('neck_coverage',False))" 2>/dev/null || echo False)
+            # Can the subject's own mesh host enough muscle sources to be worth solving? Prefer the
+            # current key; fall back to the deprecated alias so a stale forward_model image still works.
+            neck_ok=$(python3 -c "import json;m=json.load(open('$ART_JSON')).get('muscle',{});print(m.get('solve_muscle',m.get('neck_coverage',False)))" 2>/dev/null || echo False)
 
             # Group spec written to a file to avoid shell-quoting tissue names (spaces/parens).
             SOLVE_GROUPS="$OUTPUT_DIR/artifacts/dipoles/sub-${SUBJECT}/solve_groups.json"
@@ -1980,7 +1997,7 @@ PY
 
             # Muscle fallback: interpolate HArtMuT's canned muscle leadfield onto the subject montage.
             if [ "$neck_ok" != "True" ]; then
-                echo "Muscle warp under-hosted (neck_coverage=false); using HArtMuT canned muscle leadfield fallback for sub-${SUBJECT}." | tee -a "$LOG_FILE"
+                echo "Subject mesh could not host the muscle sources (solve_muscle=false); using HArtMuT canned muscle leadfield fallback for sub-${SUBJECT}." | tee -a "$LOG_FILE"
                 run_in_docker_SOLVER "$NAME-leadfields" "$LOG_DIR/${NAME}-leadfields_log.txt" "$IMG_FORWARD_SOLVERS" \
                     "python3 /scripts/make_leadfield_hartmut_muscle.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache"
             fi
