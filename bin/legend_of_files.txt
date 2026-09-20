@@ -452,16 +452,16 @@ EEG ARTIFACT SOURCES
         │     muscle: {n_kept, n_dropped, n_total, n_in_fov, n_below_fov, n_dropped_raycast,
         │              n_raycast_kept_in_fov, n_dropped_near_electrode, kept_fraction,
         │              raycast_fraction, has_neck_fov, scalp_z_min_mm, solve_muscle,
-        │              neck_coverage, min_electrode_distance_mm, min_clearance_mm}
+        │              min_electrode_distance_mm, min_clearance_mm}
         │   Sources are dropped for two independent reasons: the ray-cast warp missed, and the
         │   source landed within --artifact-electrode-gap mm of an electrode (a point dipole's
         │   1/r^2 potential would otherwise swamp that channel).
         │   solve_muscle decides the path: true -> solve on the subject mesh, false -> interpolate
         │   the canned HArtMuT leadfield onto the montage. It requires that enough of the IN-FOV
         │   sources survived the warp AND that enough sources remain in absolute terms; it is a
-        │   "is this scalp mesh usable" test, NOT a neck test. neck_coverage is a deprecated alias
-        │   carrying the same value (its old name claimed to measure neck coverage but only ever
-        │   counted ray hits, which is why sub-MNI09b read true on a head with no neck at all).
+        │   "is this scalp mesh usable" test, NOT a neck test. (It replaces neck_coverage, which
+        │   claimed to measure neck coverage but only ever counted ray hits -- which is why
+        │   sub-MNI09b read true on a head with no neck at all.)
         │   has_neck_fov is the separate, honest label: false means the head model stops above the
         │   neck (scalp_z_min_mm), so the n_below_fov sources whose true home is below that floor
         │   are placed on the open bottom rim rather than at their real depth -- their positions

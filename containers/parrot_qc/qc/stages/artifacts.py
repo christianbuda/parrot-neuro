@@ -211,7 +211,7 @@ def run(ctx) -> StageResult:
             n_eye = src.get("eyes", {}).get("n_dipoles")
             mus = src.get("muscle", {})
             n_muscle = mus.get("n_kept")
-            solve_ok = bool(mus.get("solve_muscle", mus.get("neck_coverage", True)))
+            solve_ok = bool(mus.get("solve_muscle", True))
             has_neck = mus.get("has_neck_fov")
             below = mus.get("n_below_fov")
             near_el = mus.get("n_dropped_near_electrode")

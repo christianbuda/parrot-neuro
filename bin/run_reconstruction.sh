@@ -1976,18 +1976,17 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         # 3. artifact leadfields (solvers image). Eyes + muscle share ONE transfer matrix; muscle
         #    falls back to HArtMuT's canned leadfield when the subject mesh can't host the sources.
         if [ ! -f "$LOG_DIR/${NAME}-leadfields_log.txt" ]; then
-            # Can the subject's own mesh host enough muscle sources to be worth solving? Prefer the
-            # current key; fall back to the deprecated alias so a stale forward_model image still works.
-            neck_ok=$(python3 -c "import json;m=json.load(open('$ART_JSON')).get('muscle',{});print(m.get('solve_muscle',m.get('neck_coverage',False)))" 2>/dev/null || echo False)
+            # Can the subject's own mesh host enough muscle sources to be worth solving?
+            solve_muscle=$(python3 -c "import json;print(json.load(open('$ART_JSON')).get('muscle',{}).get('solve_muscle',False))" 2>/dev/null || echo False)
 
             # Group spec written to a file to avoid shell-quoting tissue names (spaces/parens).
             SOLVE_GROUPS="$OUTPUT_DIR/artifacts/dipoles/sub-${SUBJECT}/solve_groups.json"
-            SUBJECT="$SUBJECT" ART_EYE_TISSUE="$ART_EYE_TISSUE" NECK_OK="$neck_ok" python3 - "$SOLVE_GROUPS" <<'PY'
+            SUBJECT="$SUBJECT" ART_EYE_TISSUE="$ART_EYE_TISSUE" SOLVE_MUSCLE="$solve_muscle" python3 - "$SOLVE_GROUPS" <<'PY'
 import json, os, sys
-subj = os.environ['SUBJECT']; eye = os.environ['ART_EYE_TISSUE']; neck = os.environ['NECK_OK'] == 'True'
+subj = os.environ['SUBJECT']; eye = os.environ['ART_EYE_TISSUE']; solve = os.environ['SOLVE_MUSCLE'] == 'True'
 groups = [{"name": "eyes", "dipoles_dir": f"artifacts/dipoles/sub-{subj}/eyes",
            "valid_tissues": [eye], "out_tag": "_artifact-eyes-CGAL"}]
-if neck:  # muscle solved on the subject mesh only when the warp hosted enough sources
+if solve:  # muscle solved on the subject mesh only when it can host the sources
     groups.append({"name": "muscle", "dipoles_dir": f"artifacts/dipoles/sub-{subj}/muscle",
                    "valid_tissues": ["Muscle", "Skin"], "out_tag": "_artifact-muscle-CGAL"})
 json.dump(groups, open(sys.argv[1], "w"), indent=2)
@@ -1996,7 +1995,7 @@ PY
                 "python3 /scripts/make_leadfield_artifacts.py --subject $SUBJECT --output_dir /derivatives --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --groups_json_file /derivatives/artifacts/dipoles/sub-${SUBJECT}/solve_groups.json"
 
             # Muscle fallback: interpolate HArtMuT's canned muscle leadfield onto the subject montage.
-            if [ "$neck_ok" != "True" ]; then
+            if [ "$solve_muscle" != "True" ]; then
                 echo "Subject mesh could not host the muscle sources (solve_muscle=false); using HArtMuT canned muscle leadfield fallback for sub-${SUBJECT}." | tee -a "$LOG_FILE"
                 run_in_docker_SOLVER "$NAME-leadfields" "$LOG_DIR/${NAME}-leadfields_log.txt" "$IMG_FORWARD_SOLVERS" \
                     "python3 /scripts/make_leadfield_hartmut_muscle.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache"

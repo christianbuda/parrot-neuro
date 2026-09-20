@@ -305,10 +305,6 @@ def main():
                              "has_neck_fov": has_neck,
                              "scalp_z_min_mm": mus["scalp_z_min_mm"],
                              "solve_muscle": solve,
-                             # Deprecated alias of solve_muscle: the old name claimed to measure
-                             # neck coverage but only ever counted ray hits. Kept so an orchestrator
-                             # and an image from different releases still agree on the solve path.
-                             "neck_coverage": solve,
                              "min_electrode_distance_mm": args.min_electrode_distance,
                              "min_clearance_mm": mus["min_clearance_mm"]}
         print(f"Muscle: kept {mus['n_kept']}/{total} (dropped {mus['n_below_fov']} below FOV, "
