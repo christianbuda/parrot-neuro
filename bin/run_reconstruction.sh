@@ -1970,14 +1970,21 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
             echo "[WARN] sub-${SUBJECT}: participants.tsv declares no-neck, but the head model reaches the neck (has_neck_fov=true). Check column order in participants.tsv." | tee -a "$LOG_FILE"
         elif [ "$has_neck" = "False" ] && [ "$NO_NECK_DECLARED" = false ]; then
             n_below=$(python3 -c "import json;print(json.load(open('$ART_JSON')).get('muscle',{}).get('n_below_fov','?'))" 2>/dev/null || echo "?")
-            echo "[WARN] sub-${SUBJECT}: head model stops above the neck ($n_below muscle sources below the FOV) but participants.tsv does not set no-neck. Muscle sources below the floor are placed on the bottom rim, not at their true depth." | tee -a "$LOG_FILE"
+            echo "[WARN] sub-${SUBJECT}: head model stops above the neck ($n_below muscle sources below the FOV) but participants.tsv does not set no-neck. Muscle sources below the floor take their leadfield from the HArtMuT template block instead of a subject solve." | tee -a "$LOG_FILE"
         fi
 
         # 3. artifact leadfields (solvers image). Eyes + muscle share ONE transfer matrix; muscle
         #    falls back to HArtMuT's canned leadfield when the subject mesh can't host the sources.
+        # Can the subject's own mesh host enough muscle sources to be worth solving?
+        solve_muscle=$(python3 -c "import json;print(json.load(open('$ART_JSON')).get('muscle',{}).get('solve_muscle',False))" 2>/dev/null || echo False)
+        # Muscle sources below the head model's FOV: not warped, their columns come from the
+        # canned HArtMuT leadfield and are stacked onto the solved block in step 3b.
+        n_template=$(python3 -c "import json;print(json.load(open('$ART_JSON')).get('muscle',{}).get('n_template',0))" 2>/dev/null || echo 0)
+
         if [ ! -f "$LOG_DIR/${NAME}-leadfields_log.txt" ]; then
-            # Can the subject's own mesh host enough muscle sources to be worth solving?
-            solve_muscle=$(python3 -c "import json;print(json.load(open('$ART_JSON')).get('muscle',{}).get('solve_muscle',False))" 2>/dev/null || echo False)
+            # The solve REWRITES the muscle leadfield with solved columns only, so any template
+            # block previously stacked onto it is gone -- drop 3b's marker to force a restack.
+            rm -f "$LOG_DIR/${NAME}-muscle-template_log.txt"
 
             # Group spec written to a file to avoid shell-quoting tissue names (spaces/parens).
             SOLVE_GROUPS="$OUTPUT_DIR/artifacts/dipoles/sub-${SUBJECT}/solve_groups.json"
@@ -1998,8 +2005,20 @@ PY
             if [ "$solve_muscle" != "True" ]; then
                 echo "Subject mesh could not host the muscle sources (solve_muscle=false); using HArtMuT canned muscle leadfield fallback for sub-${SUBJECT}." | tee -a "$LOG_FILE"
                 run_in_docker_SOLVER "$NAME-leadfields" "$LOG_DIR/${NAME}-leadfields_log.txt" "$IMG_FORWARD_SOLVERS" \
-                    "python3 /scripts/make_leadfield_hartmut_muscle.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache"
+                    "python3 /scripts/make_leadfield_hartmut_muscle.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache --mode fallback"
             fi
+        fi
+
+        # 3b. Muscle template block: the sources below the head model's FOV (chin/jaw/neck, and on a
+        #     short FOV the perioral group) have no subject anatomy to be solved on, so their columns
+        #     are taken from HArtMuT's canned full-head leadfield, rescaled onto the solved block's
+        #     units, and stacked onto it -- the muscle leadfield stays a single array. A subject whose
+        #     head model reaches the neck has n_template=0 and skips this entirely.
+        if [ "$solve_muscle" = "True" ] && [ "${n_template:-0}" -gt 0 ] \
+           && [ ! -f "$LOG_DIR/${NAME}-muscle-template_log.txt" ]; then
+            echo "Stacking $n_template below-FOV muscle source(s) from the HArtMuT template onto the solved leadfield for sub-${SUBJECT}." | tee -a "$LOG_FILE"
+            run_in_docker_SOLVER "$NAME-muscle-template" "$LOG_DIR/${NAME}-muscle-template_log.txt" "$IMG_FORWARD_SOLVERS" \
+                "python3 /scripts/make_leadfield_hartmut_muscle.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache --mode template-block"
         fi
 
         step_end=$(date +%s)

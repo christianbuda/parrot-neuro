@@ -33,7 +33,7 @@ ROOT
 │       ├── parrot-reconstruction_log.txt: the subject's top-level run log (not a step marker).
 │       ├── <stage>_log.txt: success marker + log of one step. Some stages split into several
 │       │   independently-guarded sub-steps: dipoles-<spacing>mm, forwardsolvers-{openmeeg,
-│       │   simnibs,cgal,anisotropic}, artifacts-{registration,dipoles,leadfields},
+│       │   simnibs,cgal,anisotropic}, artifacts-{registration,dipoles,leadfields,muscle-template},
 │       │   connectivity-{atlas,matrices}.
 │       ├── <stage>_log.txt.partial: live output of a step still running (or killed). Never a
 │       │   success marker -- a SIGKILLed step leaves only this, so it re-runs.
@@ -412,11 +412,37 @@ FORWARD MODEL
         ├── processed_duneuro_artifact-eyes-CGAL-leadfield.npy: geometry-only eye artifact
         │   leadfield, (n_elec, 3*n_eye_sources). Same montage/reference, so it stacks directly
         │   onto a brain leadfield.
-        ├── processed_duneuro_artifact-muscle-CGAL-leadfield.npy: the same for muscle sources,
-        │   solved on the subject mesh (shares the eye solve's transfer matrix).
+        ├── processed_duneuro_artifact-muscle-CGAL-leadfield.npy: the same for muscle sources.
+        │   Normally TWO STACKED BLOCKS, in this column order:
+        │     [0, 3*n_solved)                  sources solved on the subject mesh (shares the eye
+        │                                      solve's transfer matrix)
+        │     [3*n_solved, 3*(n_solved+n_template))
+        │                                      sources below the head model's FOV, taken from
+        │                                      HArtMuT's canned full-head leadfield, interpolated
+        │                                      onto the subject montage and RESCALED into the
+        │                                      solved block's units
+        │   A subject whose head model reaches the neck has n_template = 0 and the array is the
+        │   solved block alone. The row/reference convention is identical either way, so it still
+        │   stacks directly onto a brain leadfield.
+        ├── processed_duneuro_artifact-muscle-CGAL-leadfield.json: sidecar for the above --
+        │   {n_solved, n_template, columns_solved, columns_template, calibration_scale,
+        │    calibration: {source, n_pairs, iqr_factor, p5_p95_factor}, n_template_spike_zeroed,
+        │    units, template_block_out_of_calibration_range}.
+        │   calibration_scale converts canned columns into the solved block's units. It is
+        │   measured per subject: the canned leadfield covers ALL the template's muscle sources,
+        │   including the ones we solve, so each solved source is the same source computed twice
+        │   and the median of the paired column-norm ratios is the factor. It varies ~2x between
+        │   subjects (2.8e6-5.6e6 measured), which is why it is not a shipped constant.
+        │   template_block_out_of_calibration_range is always true and says so honestly: the
+        │   factor is measured on sources 6-35 mm from an electrode and applied to sources ~75 mm
+        │   away. Extrapolating the observed distance trend instead was tested and rejected (it
+        │   barely improves the fit where measured, and changes the answer ~2x where applied).
+        │   Position and topography are exact; only the template block's loudness carries this
+        │   ~2x systematic, which the downstream amplitude generator can override with one number.
         └── processed_hartmut_muscle-leadfield.npy: FALLBACK muscle leadfield -- HArtMuT's canned
-            NYhead leadfield interpolated onto the subject montage. Present INSTEAD of the solved
-            one when too few muscle sources survived the warp (no neck FOV).
+            NYhead leadfield interpolated onto the subject montage, ALL sources, in canned units.
+            Present INSTEAD of the solved one when the subject mesh could not host the muscle
+            sources at all (solve_muscle false), so there is no solved block to calibrate against.
 
 
 EEG ARTIFACT SOURCES
@@ -442,17 +468,33 @@ EEG ARTIFACT SOURCES
         │   dipole_preferential_direction / orient_type .npy). The preferential direction stores
         │   the per-eye corneo-retinal axis -- metadata for the future EOG generator, not used
         │   by the geometry-only leadfield.
-        ├── muscle/: face/neck muscle dipoles -- HArtMuT NYhead template positions warped into
-        │   the subject (affine + ray-cast layer-normalized projection preserving skull<->scalp
-        │   depth fraction, cast against surfaces/charm_bone_compact.ply and charm_scalp.ply).
-        │   Same file contract.
+        ├── muscle/: face/neck muscle dipoles the head model can HOST -- HArtMuT NYhead template
+        │   positions warped into the subject (affine + ray-cast layer-normalized projection
+        │   preserving skull<->scalp depth fraction, cast against surfaces/charm_bone_compact.ply
+        │   and charm_scalp.ply) and solved on the subject mesh. Same file contract, plus
+        │   template_index.npy: (n,) int index of each source into the HArtMuT template's 3180
+        │   muscle sources. That index addresses muscle_leadfield.npy directly (both are built
+        │   from the same mask in fetch_hartmut.py), which is what lets the solved and canned
+        │   columns be paired for the amplitude calibration.
+        ├── muscle_template/: the muscle sources whose template home lies BELOW the head model's
+        │   FOV floor (chin, jaw, neck -- on a short-FOV scan the whole perioral group too).
+        │   Present only when such sources exist; a subject whose head model reaches the neck has
+        │   no muscle_template/ at all. These are NOT warped: there is no subject anatomy for a
+        │   ray to hit, and the scalp mesh's open bottom rim would "host" them up to 105 mm from
+        │   home. They keep their affine-mapped template positions, and their leadfield columns
+        │   come from HArtMuT's canned full-head leadfield (see leadfields/). Positions and
+        │   leadfield therefore both describe the template head -- self-consistent, just not
+        │   subject-specific. Same file contract + template_index.npy. Note there is no
+        │   dipole_positions_solved.npy here: nothing was solved, so dipole_positions.npy IS the
+        │   geometry its columns describe.
         ├── artifactsources.json: the machine-readable record of what survived, and the file the
         │   orchestrator reads to choose the muscle path (solve vs canned fallback).
         │     eyes: {n_dipoles, n_dropped_near_electrode}
-        │     muscle: {n_kept, n_dropped, n_total, n_in_fov, n_below_fov, n_dropped_raycast,
-        │              n_raycast_kept_in_fov, n_dropped_near_electrode, kept_fraction,
+        │     muscle: {n_kept, n_dropped, n_solved, n_template, n_total, n_in_fov, n_below_fov,
+        │              n_dropped_raycast, n_dropped_near_electrode, kept_fraction,
         │              raycast_fraction, has_neck_fov, scalp_z_min_mm, solve_muscle,
         │              min_electrode_distance_mm, min_clearance_mm}
+        │   n_solved / n_template are the two blocks the muscle leadfield is stacked from.
         │   Sources are dropped for two independent reasons: the ray-cast warp missed, and the
         │   source landed within --artifact-electrode-gap mm of an electrode (a point dipole's
         │   1/r^2 potential would otherwise swamp that channel).
@@ -463,10 +505,9 @@ EEG ARTIFACT SOURCES
         │   claimed to measure neck coverage but only ever counted ray hits -- which is why
         │   sub-MNI09b read true on a head with no neck at all.)
         │   has_neck_fov is the separate, honest label: false means the head model stops above the
-        │   neck (scalp_z_min_mm), so the n_below_fov sources whose true home is below that floor
-        │   are placed on the open bottom rim rather than at their real depth -- their positions
-        │   are unreliable even though their leadfield columns are numerically fine. They are kept
-        │   rather than dropped because they still carry ~25% of the muscle-artifact energy.
+        │   neck (scalp_z_min_mm), so the n_below_fov sources go to muscle_template/ instead of
+        │   being solved. They are kept rather than dropped because they are a real EMG source:
+        │   dropping them costs every perioral source for no gain in source independence.
         └── solve_groups.json: which source groups share one DUNEuro transfer matrix. The
             expensive solve depends only on mesh/conductivities/electrodes, not on the dipoles,
             so eyes and muscle are solved together.

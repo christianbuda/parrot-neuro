@@ -156,9 +156,24 @@ parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
     **needs network egress** — on egress-less HPC nodes prewarm off-cluster (set `HARTMUT_CACHE_HOST`
     to a prepared cache and pre-place the MNI template), like the hippunfold prewarm. If setup can't
     complete, the per-subject `artifacts` stage **skips gracefully** (non-fatal).
-  - **Muscle solve vs fallback.** `place_artifact_dipoles.py` warps HArtMuT muscle positions onto the
-    subject; if too few survive (no neck FOV → `neck_coverage:false` in `artifactsources.json`), the
-    orchestrator uses HArtMuT's canned muscle leadfield interpolated onto the montage instead of solving.
+  - **The muscle leadfield is two stacked blocks.** A head model is usually cut off below the mouth,
+    so the sources belonging to chin/jaw/neck (and on a short FOV the whole perioral group) have no
+    anatomy to sit on — the warp would put them on the scalp mesh's open bottom rim, up to 105 mm
+    from home. `place_artifact_dipoles.py` therefore splits the muscle sources by the FOV floor:
+    `muscle/` (in-FOV) is warped and solved on the subject mesh; `muscle_template/` (below-FOV)
+    keeps its affine-mapped template positions and takes its leadfield columns from HArtMuT's canned
+    full-head leadfield. Step 3b of the stage (`make_leadfield_hartmut_muscle.py --mode
+    template-block`) rescales those columns and **stacks them onto the solved array**, solved block
+    first — the muscle leadfield stays one file, with a `.json` sidecar giving the column ranges and
+    the calibration. Both groups store `template_index.npy` (the index into HArtMuT's 3180 sources),
+    which is what makes the calibration possible: the canned leadfield covers the solved sources
+    too, so each is computed twice and the median ratio of the paired column norms is the factor.
+    It is per-subject (it varies ~2× between subjects) and is measured on the subject montage,
+    average-referenced — comparing against HArtMuT's raw 231-channel array is off by 1.3–1.9×.
+    A full-neck subject has no `muscle_template/`, skips 3b, and gets exactly the old output.
+  - **Muscle solve vs fallback.** Separately, if the subject mesh can't host the in-FOV sources at
+    all (`solve_muscle:false` in `artifactsources.json`), there is no solve: the orchestrator uses
+    HArtMuT's canned leadfield for *all* sources, at a nominal scale, in its own file.
   - **Eyes + muscle share ONE transfer matrix** (`make_leadfield_artifacts.py`) — the expensive
     DUNEuro step depends only on mesh/conductivities/electrodes, not the dipoles.
   - **Electrode clearance (`--artifact-electrode-gap`, default 5 mm).** The warp puts muscle sources at

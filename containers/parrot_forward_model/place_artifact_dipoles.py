@@ -13,9 +13,15 @@ rather than the brain `dipoles/…/spacing…mm/` tree. Two groups:
 * **muscle** — HArtMuT's template muscle source positions warped into the subject via
   affine-bring-into-frame (`artifacts/registration/sub-<S>/mni_to_subject_affine.npy`) followed by the
   ray-cast layer-normalized projection (`hartmut_warp.ray_cast_warp`), against the subject's
-  charm compact-bone and scalp surfaces. Sources whose ray misses the subject skull/scalp shell
-  (e.g. no neck FOV) are dropped and counted, as are sources that land within
-  `--min-electrode-distance` of an electrode (see `drop_near_electrodes`).
+  charm compact-bone and scalp surfaces. Sources whose ray misses the subject skull/scalp shell are
+  dropped and counted, as are sources that land within `--min-electrode-distance` of an electrode
+  (see `drop_near_electrodes`).
+
+* **muscle_template** — the muscle sources whose template home lies *below* the subject's FOV (chin,
+  jaw, neck, and on a short-FOV scan the perioral group). The head model has no anatomy to host
+  them, so they are not warped: they keep their affine-mapped template positions and their leadfield
+  columns come from HArtMuT's canned full-head leadfield instead of a subject solve. Written only
+  when such sources exist, so a full-neck subject has no `muscle_template/` at all.
 
 Artifacts are a small, fixed source set (spacing-independent), so this runs **once** per subject,
 not per dipole spacing. Orientation/amplitude are deferred to the simulation/noise stage; here we
@@ -27,6 +33,7 @@ Reuses the pure helpers in `place_dipoles.py` (poisson-disk subsampling) and the
 import argparse
 import json
 import os
+import shutil
 
 import numpy as np
 import trimesh
@@ -40,7 +47,8 @@ MUSCLE_MIN_SOLVE_FRACTION = 0.5   # of the IN-FOV sources, fraction that must su
 MUSCLE_MIN_SOLVE_SOURCES = 500    # absolute floor; guards a collapsed/failed charm scalp
 
 # Sources mapping below the subject scalp's lowest point + this margin are outside the acquired
-# FOV: there is no anatomy for them to land on, so the warp puts them on the open bottom rim.
+# FOV: there is no anatomy for them to land on (the warp would put them on the open bottom rim),
+# so they are split off into the template group instead of being warped.
 # Matches the margin `scalp_residual` uses to clip the registration gate -- within a few mm of
 # that rim the mesh is unreliable.
 FOV_MARGIN = 5.0
@@ -102,8 +110,14 @@ def decimate_for_raycast(mesh, target_faces=20000):
         return mesh
 
 
-def save_group(out_dir, positions, directions, labels, volume=None):
-    """Write one artifact source group in the dipole contract the solver reads."""
+def save_group(out_dir, positions, directions, labels, volume=None, template_index=None):
+    """Write one artifact source group in the dipole contract the solver reads.
+
+    `template_index` (muscle groups only) records which of HArtMuT's template sources each kept
+    source is. `muscle_sources.npy` and `muscle_leadfield.npy` are built from the same mask in
+    fetch_hartmut.py, so this index addresses the canned leadfield directly -- which is what lets
+    the template block be subset and the solved/canned pairs be compared for calibration.
+    """
     os.makedirs(out_dir, exist_ok=True)
     n = len(positions)
     # Guards the drop masks below: positions/directions/labels are subset together, and a mismatch
@@ -119,6 +133,9 @@ def save_group(out_dir, positions, directions, labels, volume=None):
     # Benign non-'U' orient type: artifacts never go through neural-strength weighting, but the
     # contract expects a non-Unassigned marker.
     np.save(os.path.join(out_dir, "orient_type.npy"), np.repeat("A", n))
+    if template_index is not None:
+        assert len(template_index) == n, "template_index misaligned with positions"
+        np.save(os.path.join(out_dir, "template_index.npy"), np.asarray(template_index, dtype=np.int64))
     print(f"  wrote {n} dipoles -> {out_dir}")
 
 
@@ -182,10 +199,24 @@ def place_eyes(output_dir, subject, spacing, generator, head_center, electrodes,
 
 # ------------------------------------------------------------------ muscle (warp) --------------
 def place_muscle(output_dir, subject, hartmut_dir, generator, head_center, electrodes, min_elec_dist):
+    """Split HArtMuT's muscle sources by what the subject's head model can actually host.
+
+    Sources whose template home is inside the acquired FOV are warped onto the subject's own
+    skull->scalp shell and solved there (group `muscle/`). Sources below the FOV floor -- chin, jaw,
+    neck, and on a short-FOV scan the whole perioral group -- have no anatomy to land on: a downward
+    ray still crosses the scalp mesh's open bottom rim, so the warp "hosts" them there, up to 105 mm
+    from home (measured on sub-MNI09b: 1729 sources). They are therefore NOT warped. They keep their
+    affine-mapped template positions (group `muscle_template/`) and their leadfield columns are taken
+    from HArtMuT's canned leadfield, which models a full head with jaw and neck, calibrated onto the
+    solved block's units downstream (see make_leadfield_hartmut_muscle.py --mode template-block).
+
+    Dropping them instead was tried and rejected: it costs 25% of the muscle-artifact energy and
+    every perioral source, for a ~10 mm topography correction and no gain in source independence.
+    """
     A = np.load(os.path.join(output_dir, f"artifacts/registration/sub-{subject}/mni_to_subject_affine.npy"))
 
     src_pos = np.load(os.path.join(hartmut_dir, "muscle_sources.npy"))
-    src_lab = np.load(os.path.join(hartmut_dir, "muscle_labels.npy"), allow_pickle=True)
+    src_lab = np.asarray(np.load(os.path.join(hartmut_dir, "muscle_labels.npy"), allow_pickle=True))
 
     # Bring template geometry into the subject frame with the affine (consistent for sources AND
     # meshes, so the ray-cast depth fraction is computed in a self-consistent template geometry).
@@ -207,44 +238,60 @@ def place_muscle(output_dir, subject, hartmut_dir, generator, head_center, elect
     scalp_z_min = float(subj_scalp.bounds[0][2])   # before decimation; decimation can nudge bounds
     subj_scalp = decimate_for_raycast(subj_scalp)  # 105k-face charm scalp -> ~20k for fast casting
 
-    # Flag (do NOT drop) sources whose true home is below the acquired FOV. The scalp mesh is open
-    # at the bottom, but a downward ray still crosses its jaw/nape rim, so ray_cast_warp "hosts"
-    # them on the rim -- measured on sub-MNI09b: 1729 such sources, placed up to 105 mm from home.
-    # Dropping them was tried and rejected: it costs 25% of the muscle-artifact energy and every
-    # perioral source, to fix a ~10 mm topography error and a 1.4x amplitude over-weight, with no
-    # gain in source independence (the flattened set's effective rank is 2.9 vs 2.5 at true
-    # positions -- they were already near-degenerate, all being far below the lowest electrode).
-    # The honest fix is to take these columns from the canned template leadfield instead; until
-    # then they stay, and the count below tells the amplitude generator how much to distrust.
     fov_z = scalp_z_min + FOV_MARGIN
     in_fov = src_pos[:, 2] >= fov_z
     n_total, n_below_fov = len(src_pos), int((~in_fov).sum())
+    tmpl_idx = np.arange(n_total)
     if n_below_fov:
-        print(f"  WARNING: {n_below_fov}/{n_total} muscle source(s) sit below the subject FOV "
-              f"(scalp floor {scalp_z_min:.1f} mm + {FOV_MARGIN:.0f} mm margin); the warp will "
-              f"place them on the bottom rim, not at their true depth.")
+        print(f"  {n_below_fov}/{n_total} muscle source(s) sit below the subject FOV "
+              f"(scalp floor {scalp_z_min:.1f} mm + {FOV_MARGIN:.0f} mm margin); they go to the "
+              f"template block instead of being warped onto the bottom rim.")
 
-    warped, keep = ray_cast_warp(src_pos, tmpl_skull, tmpl_scalp, subj_skull, subj_scalp,
+    def clearance_filter(positions, idx, what):
+        clear = drop_near_electrodes(positions, electrodes, min_elec_dist)
+        if not clear.all():
+            print(f"  dropped {int((~clear).sum())} {what} source(s) within {min_elec_dist:.1f} mm "
+                  f"of an electrode.")
+        return positions[clear], idx[clear], int((~clear).sum())
+
+    def radial(positions):
+        """Placeholder outward-radial orientation (metadata only; the solve is free-orientation)."""
+        d = positions - head_center
+        return d / (np.linalg.norm(d, axis=1, keepdims=True) + 1e-12)
+
+    # ---- in-FOV: warp onto the subject's own shell, then solve there -------------------------
+    warped, keep = ray_cast_warp(src_pos[in_fov], tmpl_skull, tmpl_scalp, subj_skull, subj_scalp,
                                  center=head_center)
-    kept_lab = np.asarray(src_lab)[keep]
-
-    clear = drop_near_electrodes(warped, electrodes, min_elec_dist)
-    warped, kept_lab = warped[clear], kept_lab[clear]
+    idx_solved = tmpl_idx[in_fov][keep]
+    warped, idx_solved, n_drop_elec = clearance_filter(warped, idx_solved, "muscle")
     d_min = float(cKDTree(electrodes).query(warped, k=1)[0].min()) if len(electrodes) and len(warped) else float("nan")
-    print(f"  dropped {int((~clear).sum())} muscle source(s) within {min_elec_dist:.1f} mm of an "
-          f"electrode; closest survivor now {d_min:.2f} mm.")
-
-    # Placeholder orientation = outward radial (metadata only).
-    radial = warped - head_center
-    radial /= (np.linalg.norm(radial, axis=1, keepdims=True) + 1e-12)
-
     save_group(os.path.join(output_dir, f"artifacts/dipoles/sub-{subject}/muscle"),
-               warped, radial, kept_lab)
+               warped, radial(warped), src_lab[idx_solved], template_index=idx_solved)
+
+    # ---- below-FOV: keep the template's own geometry, affine-mapped --------------------------
+    # Positions and leadfield both come from the template head, so this group is self-consistent;
+    # no ray-cast is involved because there is no subject anatomy for a ray to hit.
+    tmpl_dir = os.path.join(output_dir, f"artifacts/dipoles/sub-{subject}/muscle_template")
+    n_template, n_drop_elec_t = 0, 0
+    if n_below_fov:
+        below_pos, idx_template = src_pos[~in_fov], tmpl_idx[~in_fov]
+        # Never fires in practice (these sit 34+ mm from the lowest electrode), but keeping the rule
+        # uniform means "no artifact source is within the gap" holds for every group.
+        below_pos, idx_template, n_drop_elec_t = clearance_filter(below_pos, idx_template, "template-block")
+        n_template = len(below_pos)
+        save_group(tmpl_dir, below_pos, radial(below_pos), src_lab[idx_template],
+                   template_index=idx_template)
+    elif os.path.isdir(tmpl_dir):
+        # A full-neck subject must leave NO template group behind: downstream keys off the group's
+        # presence, so a stale directory from an earlier run would be stacked into the leadfield.
+        shutil.rmtree(tmpl_dir)
+        print(f"  removed stale {tmpl_dir} (no sources below the FOV on this run).")
+
     return {"n_total": n_total, "n_below_fov": n_below_fov, "n_in_fov": int(in_fov.sum()),
-            "n_raycast_kept": int(keep.sum()), "n_dropped_raycast": int((~keep).sum()),
-            # in-FOV only: a ray that missed because the anatomy is absent is not a warp failure
-            "n_raycast_kept_in_fov": int((keep & in_fov).sum()),
-            "n_dropped_near_electrode": int((~clear).sum()), "n_kept": int(len(warped)),
+            "n_raycast_kept_in_fov": int(keep.sum()), "n_dropped_raycast": int((~keep).sum()),
+            "n_dropped_near_electrode": n_drop_elec + n_drop_elec_t,
+            "n_solved": int(len(warped)), "n_template": n_template,
+            "n_kept": int(len(warped)) + n_template,
             "scalp_z_min_mm": round(scalp_z_min, 2), "min_clearance_mm": round(d_min, 3)}
 
 
@@ -291,10 +338,15 @@ def main():
         # no neck" (fine, expected) with "the warp failed on anatomy that is present" (not fine).
         frac = mus["n_raycast_kept_in_fov"] / in_fov if in_fov else 0.0
         solve = bool(frac >= MUSCLE_MIN_SOLVE_FRACTION
-                     and mus["n_kept"] >= MUSCLE_MIN_SOLVE_SOURCES)
+                     and mus["n_solved"] >= MUSCLE_MIN_SOLVE_SOURCES)
         has_neck = bool(mus["n_below_fov"] / total < NECK_FOV_MAX_BELOW_FRACTION) if total else False
         summary["muscle"] = {"n_kept": mus["n_kept"],
                              "n_dropped": total - mus["n_kept"],
+                             # The two blocks the muscle leadfield is assembled from: `n_solved`
+                             # columns solved on the subject mesh, then `n_template` columns taken
+                             # from the canned HArtMuT leadfield and rescaled onto their units.
+                             "n_solved": mus["n_solved"],
+                             "n_template": mus["n_template"],
                              "n_below_fov": mus["n_below_fov"],
                              "n_dropped_raycast": mus["n_dropped_raycast"],
                              "n_dropped_near_electrode": mus["n_dropped_near_electrode"],
@@ -307,8 +359,8 @@ def main():
                              "solve_muscle": solve,
                              "min_electrode_distance_mm": args.min_electrode_distance,
                              "min_clearance_mm": mus["min_clearance_mm"]}
-        print(f"Muscle: kept {mus['n_kept']}/{total} (dropped {mus['n_below_fov']} below FOV, "
-              f"{mus['n_dropped_raycast']} ray-miss of {in_fov} in-FOV, "
+        print(f"Muscle: {mus['n_solved']} solved + {mus['n_template']} template = {mus['n_kept']}"
+              f"/{total} (dropped {mus['n_dropped_raycast']} ray-miss of {in_fov} in-FOV, "
               f"{mus['n_dropped_near_electrode']} near-electrode); "
               f"has_neck_fov={has_neck}, solve_muscle={solve}.")
 

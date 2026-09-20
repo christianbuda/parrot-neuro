@@ -5,7 +5,11 @@ subject's Eye_balls compartment) and muscle (HArtMuT template positions warped i
 and solves geometry-only artifact leadfields stackable with the brain leadfield. This validates:
   * the subject<->MNI affine (artifacts/registration/), re-measured here rather than trusted,
   * the artifact dipole sets + artifactsources.json (counts, neck coverage),
-  * the eye leadfield and the muscle leadfield (subject-mesh solve OR the canned HArtMuT fallback),
+  * the eye leadfield and the muscle leadfield. The muscle leadfield is normally two stacked
+    blocks: sources the head model can host, solved on the subject mesh, then the sources below
+    its FOV (chin/jaw/neck), whose columns come from HArtMuT's canned full-head leadfield rescaled
+    onto the solved block's units -- the per-subject calibration factor is reported here. A subject
+    whose mesh cannot host the sources at all uses the canned leadfield for all of them instead,
 and renders the source positions on the head plus sample EOG/EMG cap topographies.
 
 Optional stage: when it wasn't run (no network egress for the template fetch, or a subject without
@@ -227,12 +231,13 @@ def run(ctx) -> StageResult:
                 r.warn("muscle solve viability",
                        "subject mesh could not host the muscle sources -> canned-leadfield fallback used")
             # Not a failure: a head model that stops above the neck is a property of the
-            # acquisition. It is reported because the sources below that floor are placed on the
-            # bottom rim rather than at their true depth, which the noise generator should know.
+            # acquisition. It is reported because those sources are not solved on the subject mesh
+            # -- their leadfield columns come from the HArtMuT template -- which the noise
+            # generator should know.
             if has_neck is False:
                 r.warn("muscle FOV coverage",
                        f"head model stops at z={mus.get('scalp_z_min_mm')} mm; {below} muscle "
-                       f"source(s) lie below it and were placed on the bottom rim, not at depth")
+                       f"source(s) lie below it and take their leadfield from the template block")
         except Exception as e:  # noqa: BLE001
             r.warn("artifactsources.json", f"unreadable: {e}")
     else:
@@ -241,14 +246,20 @@ def run(ctx) -> StageResult:
     # --- dipole sets -----------------------------------------------------------------------------
     eye_pos = _load(adip / "eyes" / "dipole_positions.npy")
     mus_pos = _load(adip / "muscle" / "dipole_positions.npy")
+    # Sources below the head model's FOV: kept at their template positions, not warped, and their
+    # leadfield columns come from the canned HArtMuT leadfield. Absent on a full-neck subject.
+    tpl_pos = _load(adip / "muscle_template" / "dipole_positions.npy")
     if eye_pos is not None:
         n_eye = len(eye_pos)
         r.add(PASS, "eye dipoles", f"{n_eye} sources")
     else:
         r.fail("eye dipoles", "dipole_positions.npy missing")
     if mus_pos is not None:
-        n_muscle = len(mus_pos)
-        r.add(PASS, "muscle dipoles", f"{n_muscle} sources")
+        n_template = len(tpl_pos) if tpl_pos is not None else 0
+        n_muscle = len(mus_pos) + n_template
+        r.add(PASS, "muscle dipoles",
+              f"{n_muscle} sources ({len(mus_pos)} solved on the subject mesh"
+              + (f" + {n_template} from the template block)" if n_template else ")"))
     else:
         r.warn("muscle dipoles", "dipole_positions.npy missing")
 
@@ -258,17 +269,46 @@ def run(ctx) -> StageResult:
 
     muscle_L = None
     if (lf_dir / MUSCLE_LF).exists():
-        muscle_L = _check_leadfield(r, "muscle leadfield (solved)", lf_dir / MUSCLE_LF, n_muscle)
+        label = ("muscle leadfield (solved + template)" if tpl_pos is not None
+                 else "muscle leadfield (solved)")
+        muscle_L = _check_leadfield(r, label, lf_dir / MUSCLE_LF, n_muscle)
     elif (lf_dir / MUSCLE_FALLBACK_LF).exists():
         muscle_L = _check_leadfield(r, "muscle leadfield (HArtMuT fallback)",
                                     lf_dir / MUSCLE_FALLBACK_LF, None)
     else:
         r.fail("muscle leadfield", "neither solved nor fallback leadfield present")
 
+    # The template block is stacked onto the solved one in units derived from paired sources; the
+    # factor varies ~2x between subjects, so it is reported rather than range-checked.
+    calib_json = lf_dir / MUSCLE_LF.replace(".npy", ".json")
+    if calib_json.exists():
+        try:
+            cal = json.loads(calib_json.read_text())
+            c = cal.get("calibration", {})
+            r.add(PASS, "muscle leadfield calibration",
+                  f"{cal.get('n_solved')} solved + {cal.get('n_template')} template columns; "
+                  f"solved/canned = {cal.get('calibration_scale'):.2e} "
+                  f"({c.get('source')}, n={c.get('n_pairs')}"
+                  + (f", IQR x{c['iqr_factor']}" if "iqr_factor" in c else "") + ")")
+            if c.get("source") != "paired":
+                r.warn("muscle leadfield calibration",
+                       f"template block scaled by the nominal factor, not this subject's: "
+                       f"{c.get('reason', 'no paired sources')}")
+        except Exception as e:  # noqa: BLE001
+            r.warn("muscle leadfield calibration", f"sidecar unreadable: {e}")
+    elif tpl_pos is not None:
+        r.warn("muscle leadfield calibration",
+               f"{len(tpl_pos)} template sources placed but no calibration sidecar -- the "
+               "template block was probably never stacked onto the solved leadfield")
+
     # --- per-source sanity: clearance (cause) + outlier footprints (effect) -----------------------
     # The solve uses the SNAPPED positions when they were recorded; fall back to the placed ones.
+    # The template block is never snapped (nothing was solved), so its placed positions ARE the
+    # geometry its columns describe. Order must match the leadfield: solved block first.
     mus_solved = _load(adip / "muscle" / "dipole_positions_solved.npy")
     mus_used = mus_solved if mus_solved is not None else mus_pos
+    if mus_used is not None and tpl_pos is not None:
+        mus_used = np.vstack([mus_used, tpl_pos])
     # Geometry-only use, so read the montage directly rather than via _electrode_positions (which
     # gates on matching the leadfield row count).
     elec_csv = ctx.stage_dir("electrodes") / "landmarks_10-5-full.csv"
@@ -291,14 +331,19 @@ def run(ctx) -> StageResult:
         clouds.append((eye_pos, np.zeros(len(eye_pos))))
     if mus_pos is not None:
         clouds.append((mus_pos, np.ones(len(mus_pos))))
+    if tpl_pos is not None:
+        clouds.append((tpl_pos, np.full(len(tpl_pos), 2.0)))
     if clouds:
         pts = np.vstack([c[0] for c in clouds])
         grp = np.concatenate([c[1] for c in clouds])
+        group_caption = ("Artifact source positions (blue = eyes, teal = muscle solved on the "
+                         "subject mesh, yellow = muscle below the FOV, from the template)"
+                         if tpl_pos is not None else
+                         "Artifact source positions (blue = eyes, yellow = muscle)")
         # These sources sit inside/behind the scalp (eyes in the orbits, muscle on the
         # face/neck), so this is the one overlay that keeps a translucent scalp -- an
         # opaque one would hide the sources entirely.
-        ctx.add_figure(r, "artifact_dipoles_3d",
-                       "Artifact source positions (blue = eyes, yellow = muscle)",
+        ctx.add_figure(r, "artifact_dipoles_3d", group_caption,
                        lambda p: render3d.snapshot_points(pts, p, scalars=grp, ref_mesh=scalp,
                                                           ref_opacity=0.2,
                                                           views=("anterior", "left", "superior"),
@@ -364,7 +409,10 @@ def run(ctx) -> StageResult:
         ctx.add_figure(r, "muscle_source_strength",
                        f"Per-source cap coupling, log10(footprint / median); peak "
                        f"{10 ** float(z.max()):.0f}x the median. An isolated bright dot is a "
-                       "source too close to an electrode.",
+                       "source too close to an electrode."
+                       + (f" The lowest {len(tpl_pos)} sources are the template block, whose "
+                          "amplitude carries the calibration uncertainty."
+                          if tpl_pos is not None else ""),
                        lambda p: render3d.snapshot_points(mus_used, p, scalars=z, ref_mesh=scalp,
                                                           ref_opacity=0.2,
                                                           views=("anterior", "left", "superior"),
