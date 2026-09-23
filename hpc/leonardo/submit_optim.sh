@@ -51,6 +51,10 @@ OPTIM_ATLAS="${OPTIM_ATLAS:-1000}"
 OPTIM_SPACING="${OPTIM_SPACING:-2.0}"
 OPTIM_LEADFIELD_LABEL="${OPTIM_LEADFIELD_LABEL:-duneuroCGAL}"
 OPTIM_OPTIMIZE="${OPTIM_OPTIMIZE:-both}"
+# bold_model: "hrf" (default, linear HRF-kernel convolution) | "balloon"
+# (Friston/Deco Balloon-Windkessel hemodynamic ODE) -- see eeg_bold_fit_cli.py
+# --bold-model.
+OPTIM_BOLD_MODEL="${OPTIM_BOLD_MODEL:-hrf}"
 # schedule: "alternating" (default, original interleaved fit) | "phased"
 # (splits OPTIM_NUM_EPOCHS in half: BOLD-only then EEG-only) | "joint" (one
 # combined EEG+BOLD loss/step per epoch instead of two separate ones) -- see
@@ -63,6 +67,12 @@ OPTIM_JOINT_BOLD_WEIGHT="${OPTIM_JOINT_BOLD_WEIGHT:-1.0}"
 # weight at 0 recovers a single-mode fit.
 OPTIM_BOLD_FC_WEIGHT="${OPTIM_BOLD_FC_WEIGHT:-0.5}"
 OPTIM_BOLD_DFC_WEIGHT="${OPTIM_BOLD_DFC_WEIGHT:-0.5}"
+# dFC sliding-window length/stride in TRs (config.BoldFitConfig.dfc_window_trs/
+# dfc_step_trs) -- two of the 7 fields Optuna/wandb sweep (see
+# eeg_bold_fit_optuna.py / sweep_eeg_bold.yaml); set from a completed search's
+# best trial same as the other 5.
+OPTIM_DFC_WINDOW_TRS="${OPTIM_DFC_WINDOW_TRS:-6}"
+OPTIM_DFC_STEP_TRS="${OPTIM_DFC_STEP_TRS:-1}"
 OPTIM_NUM_EPOCHS="${OPTIM_NUM_EPOCHS:-300}"
 OPTIM_BOLD_EVERY="${OPTIM_BOLD_EVERY:-2}"
 OPTIM_EEG_TASK="${OPTIM_EEG_TASK:-eyesclosed}"
@@ -128,9 +138,9 @@ build_subjects() {
 
 # Exports every OPTIM_* + resource var so `--export=ALL` propagates them.
 export_run_vars() {
-    export OPTIM_ATLAS OPTIM_SPACING OPTIM_LEADFIELD_LABEL OPTIM_OPTIMIZE \
+    export OPTIM_ATLAS OPTIM_SPACING OPTIM_LEADFIELD_LABEL OPTIM_OPTIMIZE OPTIM_BOLD_MODEL \
            OPTIM_SCHEDULE OPTIM_JOINT_EEG_WEIGHT OPTIM_JOINT_BOLD_WEIGHT \
-           OPTIM_BOLD_FC_WEIGHT OPTIM_BOLD_DFC_WEIGHT \
+           OPTIM_BOLD_FC_WEIGHT OPTIM_BOLD_DFC_WEIGHT OPTIM_DFC_WINDOW_TRS OPTIM_DFC_STEP_TRS \
            OPTIM_NUM_EPOCHS OPTIM_BOLD_EVERY OPTIM_EEG_TASK OPTIM_FMRI_TASK OPTIM_LEARNING_RATE \
            OPTIM_LEARNING_RATE_BOLD OPTIM_BOLD_PSD_WEIGHT OPTIM_GAMMA_WEIGHT \
            OPTIM_OUTPUT_DIR OPTIM_SOLVER_BLOCK_SIZE OPTIM_T1_WARMUP \
@@ -217,8 +227,8 @@ case "$CMD" in
         N=$(build_subjects)
         echo "$N subjects -> --array=0-$((N-1))${ARRAY_THROTTLE}  (file: $SUBJ_FILE)"
         printf '  gpu:1  %sc  time=%s  mem=%s  qos=%s (part=%s)\n' "$OPTIM_CPUS" "$OPTIM_TIME" "$OPTIM_MEM" "$BOOST_QOS" "$BOOST_PART"
-        printf '  atlas=%s  optimize=%s  schedule=%s  bold_fc_weight=%s  bold_dfc_weight=%s  epochs=%s  bold_every=%s  t1_warmup=%s  solver_block_size=%s  early_stop_patience=%s\n' \
-            "$OPTIM_ATLAS" "$OPTIM_OPTIMIZE" "$OPTIM_SCHEDULE" "$OPTIM_BOLD_FC_WEIGHT" "$OPTIM_BOLD_DFC_WEIGHT" "$OPTIM_NUM_EPOCHS" "$OPTIM_BOLD_EVERY" \
+        printf '  atlas=%s  optimize=%s  bold_model=%s  schedule=%s  bold_fc_weight=%s  bold_dfc_weight=%s  dfc_window_trs=%s  dfc_step_trs=%s  epochs=%s  bold_every=%s  t1_warmup=%s  solver_block_size=%s  early_stop_patience=%s\n' \
+            "$OPTIM_ATLAS" "$OPTIM_OPTIMIZE" "$OPTIM_BOLD_MODEL" "$OPTIM_SCHEDULE" "$OPTIM_BOLD_FC_WEIGHT" "$OPTIM_BOLD_DFC_WEIGHT" "$OPTIM_DFC_WINDOW_TRS" "$OPTIM_DFC_STEP_TRS" "$OPTIM_NUM_EPOCHS" "$OPTIM_BOLD_EVERY" \
             "${OPTIM_T1_WARMUP:-off}" "${OPTIM_SOLVER_BLOCK_SIZE:-off}" "${OPTIM_EARLY_STOP_PATIENCE:-off}"
         if [ "$OPTIM_SCHEDULE" = "joint" ]; then
             printf '  joint_eeg_weight=%s  joint_bold_weight=%s\n' "$OPTIM_JOINT_EEG_WEIGHT" "$OPTIM_JOINT_BOLD_WEIGHT"
