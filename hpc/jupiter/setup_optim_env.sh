@@ -75,7 +75,7 @@ echo "[pixi] sanity-checking imports (CPU-only here; GPU devices are only visibl
 # pthread_create() starts failing partway through. This is just an import
 # check, so force single-threaded BLAS for it.
 OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
-pixi run -e optim python -c "
+pixi run python -c "
 import jax, tvboptim, optax, equinox
 print('jax', jax.__version__, '-- import OK')
 print('jax devices (CPU-only expected here, no GPU on a login node):', jax.devices())
