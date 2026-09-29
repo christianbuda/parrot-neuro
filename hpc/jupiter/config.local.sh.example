@@ -1,0 +1,116 @@
+# Personal JUPITER (JSC) config for Parrot -- COPY this to config.local.sh (gitignored) and fill in.
+#
+#   cp hpc/jupiter/config.local.sh.example hpc/jupiter/config.local.sh
+#   # then edit ACCT / WORKDIR below
+#
+# Mirrors hpc/leonardo/config.local.sh.example's role (set account/paths ONCE,
+# every script sources it) but for JUPITER -- JSC's EuroHPC exascale system,
+# GH200 Grace-Hopper nodes (aarch64, NOT x86_64 like LEONARDO) -- instead of
+# CINECA LEONARDO. Confirmed 2026-09 on this account (`sinfo` / `scontrol` /
+# `sacctmgr`, ClusterName=jupiter): partition "booster", account
+# "e-aif-2026fl01-991", Gres=gpu:gh200:4 per node (288 cores / ~878G RAM per
+# node, so ~72 cores / ~219G per GPU-share), QoS "normal" caps at
+# MaxWall=12:00:00 (NOT 24h like LEONARDO's "normal"). See hpc/jupiter/README.md
+# for the full rationale and the differences from LEONARDO's setup.
+#
+# THIS IS ONLY THE EEG+BOLD OPTIMIZATION STAGE (parrot_neuro.optimization, a
+# pixi env, no container) -- there is no JUPITER port of the reconstruction
+# pipeline (the four Docker/Apptainer images) here. This assumes subjects are
+# already reconstructed elsewhere (e.g. LEONARDO) and their derivatives are
+# staged onto JUPITER's storage before running anything in this directory.
+#
+# KNOWN BLOCKER (see README.md): JUPITER's GH200 nodes are linux-aarch64, but
+# the repo's pixi.toml currently only targets linux-64/osx-arm64 (marimo has
+# no conda-forge build for aarch64) -- `setup_optim_env.sh`'s `pixi install`
+# will NOT resolve until pixi.toml is restructured to split dev-only deps
+# (marimo/ipykernel) from the optimization-stage deps into separate pixi
+# features/environments. Not done yet as of this file's creation -- do that
+# first (see README.md), then come back here.
+#
+# An env var of the same name set at call time still wins (every line uses
+# the ${VAR:-...} "only if unset" idiom). This is plain bash; keep it to
+# variable assignments (no side effects).
+
+# BILLING/project account -- the --account value. Find yours with:
+#   jutil user projects
+ACCT="${ACCT:-<PROJECT_ACCOUNT>}"                     # this account: e-aif-2026fl01-991
+
+# STORAGE area. JUPITER mounts /p/project1, /p/scratch, /p/data1 (separate from
+# /p/home / $HOME, which is small and quota'd -- same role as LEONARDO's
+# $HOME). `ls -d /p/*/<ACCT>` did NOT find a directory named exactly after the
+# account string on this account -- find your project's actual directory name
+# with (adjust the grep to your project's short name):
+#   ls /p/project1/ | grep -i aif
+#   ls /p/scratch/   | grep -i aif
+WORKDIR="${WORKDIR:-/p/project1/<PROJECT_DIR>}"       # or /p/scratch/<PROJECT_DIR> for scratch-tier storage
+REPO="${REPO:-$HOME/parrot-neuro}"                    # clone location of this repo
+SUBJECT="${SUBJECT:-010002}"                          # default subject for check/smoke
+
+# Derived layout -- override only if yours differs:
+BIDS="${BIDS:-$WORKDIR/parrot/bids}"                  # staged BIDS dataset (+ derivatives) on JUPITER
+
+# --- SLURM resources -- JUPITER-specific facts, confirmed 2026-09 on this ----
+# account via `sinfo`/`scontrol show node`/`sacctmgr show qos`. Re-verify if
+# your account/allocation differs.
+GPU_PART="${GPU_PART:-booster}"                       # the only GPU partition seen (also "largebooster")
+GPU_GRES_TYPE="${GPU_GRES_TYPE:-gh200}"                # --gres=gpu:$GPU_GRES_TYPE:<N> (gres is TYPED here,
+                                                       # unlike LEONARDO's untyped --gres=gpu:<N>)
+GPU_QOS="${GPU_QOS:-normal}"                          # MaxWall=12:00:00 -- confirmed via sacctmgr; lowprio/
+                                                       # highprio also cap at 12h. nolimits/part_boos+/
+                                                       # part_larg+/jschealth exist cluster-wide but were NOT
+                                                       # confirmed usable by this account -- check
+                                                       # `sacctmgr show assoc user=$USER format=Account,Partition,QOS%60`
+                                                       # before assuming a longer QoS is available to you.
+
+# --- EEG+BOLD optimization (submit_optim.sh / check_optim.sh) -----------------------
+# A SEPARATE stage from reconstruction: no container, just a `pixi` env (see
+# setup_optim_env.sh) running examples/eeg_bold_fit_cli.py against each
+# subject's already-reconstructed derivatives. Fit hyperparameters below are
+# IDENTICAL in meaning to hpc/leonardo/config.local.sh.example's OPTIM_* block
+# (same underlying CLI, same defaults) -- only the SLURM resource defaults
+# differ, because JUPITER's node/QoS shape is different from LEONARDO's.
+# OPTIM_OUTPUT_DIR="$WORKDIR/parrot/eeg_bold_fit_res"  # per-subject fit results
+# OPTIM_ATLAS=1000 ; OPTIM_SPACING=2.0 ; OPTIM_LEADFIELD_LABEL=duneuroCGAL
+# OPTIM_OPTIMIZE=both
+# bold_model: "hrf" (default, linear HRF-kernel convolution) | "balloon"
+# (Friston/Deco Balloon-Windkessel hemodynamic ODE) -- see eeg_bold_fit_cli.py
+# --bold-model.
+# OPTIM_BOLD_MODEL=hrf
+# schedule: "alternating" (default) | "phased" (splits OPTIM_NUM_EPOCHS in
+# half: BOLD-only then EEG-only) | "joint" (one combined loss/step per epoch
+# instead of two separate ones) -- see eeg_bold_fit_cli.py --schedule.
+# OPTIM_SCHEDULE=alternating
+# OPTIM_JOINT_EEG_WEIGHT=1e5 ; OPTIM_JOINT_BOLD_WEIGHT=1.0   # only matter for schedule=joint
+# BOLD loss is a weighted combination of static FC + dFC/FCD (both computed
+# from the same simulated trajectory); either weight at 0 recovers a
+# single-mode fit.
+# OPTIM_BOLD_FC_WEIGHT=0.5 ; OPTIM_BOLD_DFC_WEIGHT=0.5
+# dFC sliding-window length/stride in TRs -- 2 of the 7 Optuna/wandb-swept
+# fields (see hpc/leonardo/README.md's "Hyperparameter search" section).
+# OPTIM_DFC_WINDOW_TRS=6 ; OPTIM_DFC_STEP_TRS=1
+# OPTIM_NUM_EPOCHS=300 ; OPTIM_BOLD_EVERY=2
+# OPTIM_EEG_TASK=eyesclosed ; OPTIM_FMRI_TASK=rest ; OPTIM_LEARNING_RATE=1e-2
+# OPTIM_LEARNING_RATE_BOLD=5e-3           # unset/empty (default) reuses OPTIM_LEARNING_RATE
+# OPTIM_BOLD_PSD_WEIGHT=0.1               # 0 (default) = off
+# OPTIM_GAMMA_WEIGHT=1.0                  # 0 (default) = off
+# GPU-memory fixes for atlas=1000 + the long default BOLD horizon -- ALREADY
+# THE DEFAULT in optim_cohort.sbatch/submit_optim.sh (see
+# hpc/leonardo/README.md's OOM notes for the full rationale; unverified on
+# GH200's unified-memory architecture specifically -- re-measure here, don't
+# assume LEONARDO's A100 numbers carry over exactly).
+# OPTIM_T1_WARMUP=30000
+# OPTIM_SOLVER_BLOCK_SIZE=1400
+# Early stopping (train.is_loss_stalled) -- unset/empty (default) = off.
+# OPTIM_EARLY_STOP_PATIENCE=5
+# OPTIM_EARLY_STOP_WINDOW=20
+# OPTIM_EARLY_STOP_MIN_DELTA=1e-3
+
+# Cohort-array resources -- UNMEASURED defaults; run `submit_optim.sh pilot`
+# FIRST and set these from the observed walltime/GPU-idle before `run`-ing the
+# full array. Sized conservatively against the node's real ceiling (72 cores /
+# ~219G per GPU-share) -- raise if a pilot shows headroom and a real need for
+# it. OPTIM_TIME MUST stay under GPU_QOS's 12h cap (unlike LEONARDO's 24h
+# "normal" / 4-day lprod) -- if a subject's fit doesn't fit in 12h, use
+# OPTIM_EARLY_STOP_PATIENCE, fewer epochs, or confirm a longer QoS is actually
+# usable on this account first (see the GPU_QOS comment above).
+# OPTIM_CPUS=16 ; OPTIM_MEM=128G ; OPTIM_TIME=10:00:00

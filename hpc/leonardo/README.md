@@ -191,7 +191,14 @@ bash hpc/leonardo/submit_optim.sh run          # full job array over participant
 `run` accepts explicit subject labels as extra args for a small pilot or targeted retry
 (`submit_optim.sh run 010002 010005`), mirroring `submit_cohort.sh run`. Each array task
 takes one Booster GPU (`--gres=gpu:1`); `ARRAY_THROTTLE` (default `%40`) caps how many run
-concurrently.
+concurrently. **This is also the mechanism for a final run over a subgroup once a
+hyperparameter search has picked a winner**: set the 7 Optuna/wandb-swept fields
+(`OPTIM_LEARNING_RATE`, `OPTIM_LEARNING_RATE_BOLD`, `OPTIM_BOLD_FC_WEIGHT`,
+`OPTIM_BOLD_DFC_WEIGHT`, `OPTIM_BOLD_PSD_WEIGHT`, `OPTIM_DFC_WINDOW_TRS`,
+`OPTIM_DFC_STEP_TRS`) to the best trial's values — in `config.local.sh`, or as
+call-time env vars — then `submit_optim.sh run <subject ...>` with just that subgroup's
+labels; each subject still gets its own full-GPU array task, submitted as one `sbatch`
+call, no more sequential than the full-cohort case.
 
 ### Notes / gotchas (optimization stage)
 - **BOLD loss is now always a weighted combination of static FC + dFC/FCD**
