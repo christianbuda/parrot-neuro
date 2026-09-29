@@ -161,7 +161,7 @@ set +e
 # setup_optim_env.sh's header -- pixi.toml needs restructuring for this to
 # resolve on linux-aarch64; update this flag if the feature ends up named
 # differently).
-(cd "$REPO" && "$PIXI" run -e optim python -u examples/eeg_bold_fit_cli.py "${ARGS[@]}")
+(cd "$REPO" && "$PIXI" run python -u examples/eeg_bold_fit_cli.py "${ARGS[@]}")
 rc=$?
 set -e
 echo "=== optim finished in $((SECONDS/60)) min, rc=$rc ($(date)) ==="

@@ -69,7 +69,7 @@ fi
 if [ ! -d "$REPO/.pixi" ]; then
   bad ".pixi env dir missing at $REPO/.pixi -- run: bash hpc/jupiter/setup_optim_env.sh"
 elif [ -n "$PIXI" ]; then
-  if (cd "$REPO" && "$PIXI" run -e optim python -c "import jax, tvboptim, optax, equinox" >/dev/null 2>&1); then
+  if (cd "$REPO" && "$PIXI" run python -c "import jax, tvboptim, optax, equinox" >/dev/null 2>&1); then
     ok "optim env imports jax/tvboptim/optax/equinox"
   else
     bad "optim env missing/import check failed -- re-run setup_optim_env.sh (likely the pixi.toml linux-aarch64 restructuring hasn't been done yet -- see that script's header)"
@@ -82,7 +82,7 @@ echo "== repo / driver script =="
 
 echo "== subject derivatives: sub-$SUBJECT (via parrot_neuro.Subject) =="
 if [ -n "$PIXI" ] && [ -d "$REPO/.pixi" ]; then
-  (cd "$REPO" && "$PIXI" run -e optim python - "$BIDS" "$SUBJECT" "$OPTIM_ATLAS" "$OPTIM_SPACING" \
+  (cd "$REPO" && "$PIXI" run python - "$BIDS" "$SUBJECT" "$OPTIM_ATLAS" "$OPTIM_SPACING" \
       "$OPTIM_LEADFIELD_LABEL" "$OPTIM_EEG_TASK" "$OPTIM_FMRI_TASK" "$OPTIM_OPTIMIZE" <<'PY'
 import sys
 bids, subj, atlas, spacing, lf_label, eeg_task, fmri_task, optimize = sys.argv[1:9]
