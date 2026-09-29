@@ -67,7 +67,7 @@ echo "[pixi] resolving + installing environment from pixi.toml (needs internet -
 # environment should exclude marimo/ipykernel so it can actually resolve on
 # aarch64. If pixi.toml ends up using a different environment name, update
 # this flag to match.
-pixi install -e optim
+pixi install
 
 echo "[pixi] sanity-checking imports (CPU-only here; GPU devices are only visible inside a GPU job) ..."
 # Login nodes cap per-user thread/process counts well below the node's full
