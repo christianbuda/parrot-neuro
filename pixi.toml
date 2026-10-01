@@ -31,7 +31,7 @@ python = "3.12.*"
 numpy = "*"
 scipy = "*"
 matplotlib = "*"
-mne = "*"
+mne-base = ">=1.12"
 ipykernel = ">=7.3.0,<8"
 # marimo caps jedi <0.20, but conda ipython would resolve 0.20 and pixi treats
 # the conda solve as a hard pin for the PyPI solve. Pin it here to keep them agreeable.
