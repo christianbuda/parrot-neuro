@@ -129,13 +129,13 @@ class LearnableParam:
 #: to touch; ``network.py`` and ``train.py`` both build off this same list, so
 #: they can never silently disagree about what's learnable.
 DEFAULT_LEARNABLE_PARAMS: tuple[LearnableParam, ...] = (
-    LearnableParam("P", 0.0, 2.0, "dynamics", init=0.0),
+    LearnableParam("P", 0.0, 2.0, "dynamics", init=0.5),
     LearnableParam("c_ee", 6.0, 20.0, "dynamics", init=12.0),
     LearnableParam("A", 2.0, 5.0, "dynamics", init=3.25),
     LearnableParam("B", 12.0, 35.0, "dynamics", init=22.0),
     LearnableParam("a", 0.04, 0.2, "dynamics", init=0.1),
     LearnableParam("b", 0.02, 0.1, "dynamics", init=0.05),
-    LearnableParam("mu", 0.1, 0.4, "dynamics", init=0.22),
+    LearnableParam("mu", 0.0, 0.4, "dynamics", init=0.22),
     LearnableParam("G", 0.0, 5.0, "coupling", init=0.1),
 )
 
@@ -256,6 +256,22 @@ class BoldFitConfig:
     learnable_params: tuple[LearnableParam, ...] = DEFAULT_LEARNABLE_PARAMS
 
     # --- optimization ---
+    # "adam" (default): the existing Adam(+global-norm-clip) path
+    # (train.make_optimizer). "lbfgs": train.make_lbfgs_optimizer -- a
+    # zoom-line-search quasi-Newton method instead, using
+    # train.make_lbfgs_update_steps/make_lbfgs_joint_update_step in place of
+    # the Adam ones (same call signatures, so run_alternating_fit/
+    # run_phased_fit/run_joint_fit need no changes). See make_lbfgs_optimizer's
+    # docstring: the line search re-evaluates the loss (re-runs the simulator)
+    # several times per step, so this is a local-testing option to try
+    # (expect it to be much slower per epoch than Adam, especially on the
+    # BOLD loss), not yet a validated replacement. learning_rate/
+    # learning_rate_bold/grad_clip_norm below are ignored when optimizer ==
+    # "lbfgs" (the line search picks its own step size; see
+    # make_lbfgs_optimizer's no-clipping note).
+    optimizer: str = "adam"  # "adam" | "lbfgs"
+    lbfgs_memory_size: int = 10
+    lbfgs_max_linesearch_steps: int = 20
     learning_rate: float = 1e-2
     # None (default) = reuse learning_rate for the BOLD step too (old behaviour).
     # Now that EEG and BOLD each get their own Adam state (see train.run_alternating_fit),
@@ -348,6 +364,8 @@ class BoldFitConfig:
     def __post_init__(self):
         if self.optimize not in ("eeg", "bold", "both"):
             raise ValueError(f"optimize must be 'eeg', 'bold', or 'both', got {self.optimize!r}")
+        if self.optimizer not in ("adam", "lbfgs"):
+            raise ValueError(f"optimizer must be 'adam' or 'lbfgs', got {self.optimizer!r}")
         if self.schedule not in ("alternating", "phased", "joint"):
             raise ValueError(
                 f"schedule must be 'alternating', 'phased', or 'joint', got {self.schedule!r}"
