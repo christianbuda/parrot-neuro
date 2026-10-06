@@ -400,6 +400,32 @@ def make_optimizer(learning_rate=1e-3, grad_clip_norm=1.0):
     return optax.chain(optax.clip_by_global_norm(grad_clip_norm), optax.adam(learning_rate))
 
 
+def make_lbfgs_optimizer(memory_size=10, max_linesearch_steps=20, learning_rate=None):
+    """L-BFGS quasi-Newton optimizer (``optax.lbfgs``) with a zoom line search.
+
+    A drop-in alternative to ``make_optimizer``'s Adam, but only for use with
+    ``make_lbfgs_update_steps``/``make_lbfgs_joint_update_step`` below -- NOT
+    compatible with the plain ``make_update_steps``/``make_joint_update_step``,
+    which call ``.update(grads, state, params)`` only. ``optax.lbfgs`` is a
+    ``GradientTransformationExtraArgs``: its ``.update()`` also needs the loss
+    *value* and a single-argument ``value_fn``, because the line search
+    re-evaluates the objective at several candidate step sizes per step (see
+    ``optax.lbfgs``'s own docstring/example). That means every training
+    "step" here costs several full forward simulator passes, not one --
+    expect this to be much slower per epoch than Adam, especially against the
+    (expensive, long-horizon) BOLD loss. This is a local-testing option, not
+    a validated replacement for Adam on this pipeline -- try it on the
+    (cheap, short-horizon) EEG loss first.
+
+    No gradient clipping (unlike ``make_optimizer``): clipping the gradient
+    would desync what the line search sees from the true curvature of the
+    value it's also evaluating via ``value_fn``, breaking the secant
+    condition the Hessian-inverse approximation relies on.
+    """
+    linesearch = optax.scale_by_zoom_linesearch(max_linesearch_steps=max_linesearch_steps)
+    return optax.lbfgs(learning_rate=learning_rate, memory_size=memory_size, linesearch=linesearch)
+
+
 def make_update_steps(eeg_loss_fn, bold_loss_fn, eeg_optimizer, bold_optimizer):
     """Gradient-step closures over the two loss functions, each with its own
     optimizer -- separate transforms (not just separate states), so EEG and
@@ -420,6 +446,49 @@ def make_update_steps(eeg_loss_fn, bold_loss_fn, eeg_optimizer, bold_optimizer):
     def bold_update_step(current_diff, current_static, current_opt_state):
         loss, grads = jax.value_and_grad(bold_loss_fn, argnums=0)(current_diff, current_static)
         updates, new_opt_state = bold_optimizer.update(grads, current_opt_state, current_diff)
+        new_diff = optax.apply_updates(current_diff, updates)
+        return new_diff, new_opt_state, loss
+
+    return eeg_update_step, bold_update_step
+
+
+def make_lbfgs_update_steps(eeg_loss_fn, bold_loss_fn, eeg_optimizer, bold_optimizer):
+    """L-BFGS analogs of ``make_update_steps``'s ``eeg_update_step``/
+    ``bold_update_step`` -- same call signature as those, so
+    ``run_alternating_fit``/``run_phased_fit`` work unchanged with either pair.
+
+    ``optax.lbfgs``'s ``.update()`` needs the current loss *value* and a
+    single-argument ``value_fn(diff)`` (for the line search's own trial
+    evaluations), not just the gradient. Built by closing each ``*_loss_fn``'s
+    non-diff arguments into a one-argument ``value_fn`` per call, then
+    ``optax.value_and_grad_from_state`` so the line search's own evaluation at
+    the current point is reused instead of recomputed (mirrors the usage
+    pattern in ``optax.lbfgs``'s own docstring/example).
+    """
+
+    @eqx.filter_jit
+    def eeg_update_step(current_diff, current_static, current_opt_state,
+                         target_psd, channel_indices, leadfield, smoothing_blocks, dipole_labels):
+        def value_fn(diff):
+            return eeg_loss_fn(diff, current_static, target_psd, channel_indices,
+                                leadfield, smoothing_blocks, dipole_labels)
+
+        loss, grads = optax.value_and_grad_from_state(value_fn)(current_diff, state=current_opt_state)
+        updates, new_opt_state = eeg_optimizer.update(
+            grads, current_opt_state, current_diff, value=loss, grad=grads, value_fn=value_fn,
+        )
+        new_diff = optax.apply_updates(current_diff, updates)
+        return new_diff, new_opt_state, loss
+
+    @eqx.filter_jit
+    def bold_update_step(current_diff, current_static, current_opt_state):
+        def value_fn(diff):
+            return bold_loss_fn(diff, current_static)
+
+        loss, grads = optax.value_and_grad_from_state(value_fn)(current_diff, state=current_opt_state)
+        updates, new_opt_state = bold_optimizer.update(
+            grads, current_opt_state, current_diff, value=loss, grad=grads, value_fn=value_fn,
+        )
         new_diff = optax.apply_updates(current_diff, updates)
         return new_diff, new_opt_state, loss
 
@@ -536,6 +605,46 @@ def make_joint_update_step(joint_loss_fn, joint_optimizer):
     return joint_update_step
 
 
+def make_lbfgs_joint_update_step(joint_loss_fn, joint_optimizer):
+    """L-BFGS analog of ``make_joint_update_step`` -- same call signature, so
+    ``run_joint_fit`` works unchanged.
+
+    ``joint_loss_fn`` returns ``(loss, (eeg_loss, bold_loss))`` (``has_aux``
+    style), but ``optax.value_and_grad_from_state``'s ``value_fn`` must return
+    a bare scalar (no aux) -- so the line search's own ``value_fn`` drops the
+    aux, and the ``(eeg_loss, bold_loss)`` breakdown needed for per-epoch
+    logging is recomputed with one extra ``joint_loss_fn`` call at
+    ``current_diff`` (the same point the logged ``loss`` itself is evaluated
+    at, matching ``make_joint_update_step``'s before-the-step logging
+    convention). That's one extra full EEG+BOLD forward pass per epoch purely
+    for logging, on top of however many the line search itself used --
+    acceptable for local testing, but worth knowing before treating this as a
+    fair epoch-time comparison against ``make_joint_update_step``'s Adam path.
+    """
+
+    @eqx.filter_jit
+    def joint_update_step(current_diff, current_static, current_opt_state,
+                           target_psd, channel_indices, leadfield, smoothing_blocks, dipole_labels):
+        def value_fn(diff):
+            loss, _ = joint_loss_fn(diff, current_static, target_psd, channel_indices,
+                                     leadfield, smoothing_blocks, dipole_labels)
+            return loss
+
+        loss, grads = optax.value_and_grad_from_state(value_fn)(current_diff, state=current_opt_state)
+        updates, new_opt_state = joint_optimizer.update(
+            grads, current_opt_state, current_diff, value=loss, grad=grads, value_fn=value_fn,
+        )
+        new_diff = optax.apply_updates(current_diff, updates)
+
+        _, (eeg_loss, bold_loss) = joint_loss_fn(
+            current_diff, current_static, target_psd, channel_indices,
+            leadfield, smoothing_blocks, dipole_labels,
+        )
+        return new_diff, new_opt_state, loss, eeg_loss, bold_loss
+
+    return joint_update_step
+
+
 def print_learnable_params(diff_params, learnable_params: tuple[LearnableParam, ...] = DEFAULT_LEARNABLE_PARAMS):
     """Print the current mean±std of every learnable parameter.
 
@@ -569,6 +678,50 @@ class FitResult:
     static_params: object
     loss_history_eeg: list = field(default_factory=list)
     loss_history_bold: list = field(default_factory=list)
+    # Lowest-combined-loss parameters seen during training (see BestTracker)
+    # -- ``diff_params`` above is always the LAST epoch's, which a noisy loss
+    # can leave worse than an earlier one. ``best_epoch`` is 0-based; the
+    # losses are the raw ones logged for that epoch, evaluated AT
+    # ``best_diff_params`` (each update step reports its loss before stepping).
+    best_diff_params: object = None
+    best_epoch: int | None = None
+    best_score: float = float("nan")
+    best_loss_eeg: float | None = None
+    best_loss_bold: float | None = None
+
+
+@dataclass
+class BestTracker:
+    """Keeps the parameters with the lowest combined relative loss seen so far.
+
+    Score = sum over the loss histories passed to ``update`` of
+    ``relative_final_loss`` (latest / first) -- the same scale-free "fraction of
+    the initial loss remaining" as the CLI's combined ratio, so EEG (~1e-6) and
+    BOLD (~1e-1) count equally instead of one swamping the other. Non-finite
+    scores (e.g. the BOLD loss's divergence sentinel) never win.
+    """
+    params: object = None
+    epoch: int | None = None
+    score: float = float("inf")
+    loss_eeg: float | None = None
+    loss_bold: float | None = None
+
+    def update(self, epoch, params, eeg_history=None, bold_history=None):
+        """Score ``params`` by the LAST entry of each given history (pass
+        only the histories of the losses being optimized)."""
+        ratios = [relative_final_loss(h) for h in (eeg_history, bold_history) if h is not None]
+        score = sum(r if r is not None else float("inf") for r in ratios)
+        if np.isfinite(score) and score < self.score:
+            self.params, self.epoch, self.score = params, epoch, score
+            self.loss_eeg = eeg_history[-1] if eeg_history else None
+            self.loss_bold = bold_history[-1] if bold_history else None
+
+    def into(self, result: "FitResult") -> "FitResult":
+        result.best_diff_params = self.params
+        result.best_epoch = self.epoch
+        result.best_score = self.score if self.params is not None else float("nan")
+        result.best_loss_eeg, result.best_loss_bold = self.loss_eeg, self.loss_bold
+        return result
 
 
 def relative_final_loss(history):
@@ -683,9 +836,16 @@ def run_alternating_fit(
 
     loss_history_eeg, loss_history_bold = [], []
     last_eeg_loss = last_bold_loss = float("nan")
+    # Best-params bookkeeping: each step's loss is evaluated at the params it
+    # was GIVEN, so the snapshot is the pre-step diff_params. In "both" mode
+    # the two losses are logged at slightly different points (BOLD one EEG
+    # step later), so a candidate is scored on BOLD-step epochs with the
+    # latest EEG loss and the pre-BOLD-step params -- off by one EEG step.
+    best = BestTracker()
 
     for epoch in range(num_epochs):
         if do_eeg:
+            params_before_eeg = diff_params
             diff_params, opt_state_eeg, loss_eeg = eeg_update_step(
                 diff_params, static_params, opt_state_eeg,
                 target_psd, channel_indices, leadfield, smoothing_blocks, dipole_labels,
@@ -693,14 +853,19 @@ def run_alternating_fit(
             opt_state_eeg = jax.lax.stop_gradient(opt_state_eeg)
             loss_history_eeg.append(float(loss_eeg))
             last_eeg_loss = float(loss_eeg)
+            if not do_bold:
+                best.update(epoch, params_before_eeg, eeg_history=loss_history_eeg)
 
         bold_stepped = False
         if do_bold and (epoch + 1) % bold_every == 0:
+            params_before_bold = diff_params
             diff_params, opt_state_bold, loss_bold = bold_update_step(diff_params, static_params, opt_state_bold)
             opt_state_bold = jax.lax.stop_gradient(opt_state_bold)
             loss_history_bold.append(float(loss_bold))
             last_bold_loss = float(loss_bold)
             bold_stepped = True
+            best.update(epoch, params_before_bold,
+                        eeg_history=loss_history_eeg if do_eeg else None, bold_history=loss_history_bold)
 
         eeg_str = f"EEG: {last_eeg_loss:.5f}" if do_eeg else "EEG: (not optimized)"
         if do_bold:
@@ -730,7 +895,7 @@ def run_alternating_fit(
                       f"(window={early_stop_window}, patience={early_stop_patience}).")
                 break
 
-    return FitResult(diff_params, static_params, loss_history_eeg, loss_history_bold)
+    return best.into(FitResult(diff_params, static_params, loss_history_eeg, loss_history_bold))
 
 
 def run_phased_fit(
@@ -769,6 +934,10 @@ def run_phased_fit(
     running total across both phases) -- a cosmetic simplification; the
     printed phase-boundary banner disambiguates which phase a given epoch
     number belongs to.
+
+    The returned ``best_*`` fields are phase 2's (EEG-only score, phase-local
+    epoch): phase 1's best BOLD params are only a starting point, and phase 2
+    never re-evaluates BOLD, so the two phases' scores aren't comparable.
     """
     print(f"=== Phase 1/2: BOLD-only, {bold_phase_epochs} epochs ===")
     phase1 = run_alternating_fit(
@@ -798,6 +967,10 @@ def run_phased_fit(
         phase2.diff_params, static_params,
         loss_history_eeg=phase2.loss_history_eeg,
         loss_history_bold=phase1.loss_history_bold,
+        best_diff_params=phase2.best_diff_params,
+        best_epoch=phase2.best_epoch,
+        best_score=phase2.best_score,
+        best_loss_eeg=phase2.best_loss_eeg,
     )
 
 
@@ -833,8 +1006,10 @@ def run_joint_fit(
     opt_state = joint_optimizer.init(diff_params)
 
     loss_history_eeg, loss_history_bold = [], []
+    best = BestTracker()
 
     for epoch in range(num_epochs):
+        params_before = diff_params  # both logged losses are evaluated here
         diff_params, opt_state, loss, loss_eeg, loss_bold = joint_update_step(
             diff_params, static_params, opt_state,
             target_psd, channel_indices, leadfield, smoothing_blocks, dipole_labels,
@@ -844,6 +1019,7 @@ def run_joint_fit(
         loss_bold = float(loss_bold)
         loss_history_eeg.append(loss_eeg)
         loss_history_bold.append(loss_bold)
+        best.update(epoch, params_before, eeg_history=loss_history_eeg, bold_history=loss_history_bold)
 
         print(f"Epoch {epoch + 1:04d} | joint: {float(loss):.5f} | "
               f"EEG: {loss_eeg:.5f} | BOLD FC: {loss_bold:.5f}")
@@ -864,4 +1040,4 @@ def run_joint_fit(
                       f"(window={early_stop_window}, patience={early_stop_patience}).")
                 break
 
-    return FitResult(diff_params, static_params, loss_history_eeg, loss_history_bold)
+    return best.into(FitResult(diff_params, static_params, loss_history_eeg, loss_history_bold))

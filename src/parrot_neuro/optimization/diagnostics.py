@@ -12,13 +12,17 @@ from pathlib import Path
 
 import equinox as eqx
 import jax.numpy as jnp
+import numpy as np
 
 from . import connectivity, train, viz
 from .forward import project_to_scalp
 from .signal import compute_psd
 
 
-def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> dict:
+SIMULATION_RESULTS = "simulation_results.npz"
+
+
+def run_and_save(ctx, diff_params, static_params, dataset, out_dir, params_label="final") -> dict:
     """Simulate with ``diff_params``/``static_params`` and save every diagnostic plot.
 
     ``ctx`` is a ``pipeline.ExperimentContext`` (from ``pipeline.build_context``).
@@ -28,17 +32,27 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> dict:
     ``dataset`` must already be loaded (the subject's EEG chunks): the EEG
     diagnostics always need it, regardless of whether EEG was a fit target.
 
-    Returns ``{"metrics": {...}, "figures": {...}}`` -- the same scalar
-    comparison metrics and figure paths this already prints/saves, handed
-    back for a caller that wants to log them elsewhere (e.g. wandb) without
-    duplicating this function's plotting logic. Existing callers that ignore
-    the return value are unaffected.
+    Returns ``{"metrics": {...}, "figures": {...}, "arrays": path}`` -- the
+    same scalar comparison metrics and figure paths this already prints/saves,
+    handed back for a caller that wants to log them elsewhere (e.g. wandb)
+    without duplicating this function's plotting logic. Existing callers that
+    ignore the return value are unaffected.
+
+    Every array the figures are drawn from is also saved to
+    ``out_dir/simulation_results.npz`` (simulated vs empirical EEG PSD, EEG
+    channel-correlation matrices, FC, FCD, BOLD time series, node activity --
+    fitted and, where a plot shows learning, initial params too), so figures
+    can be remade or aggregated across subjects without re-simulating.
+    ``params_label`` (e.g. ``"best"``/``"final"``) is stored with them, naming
+    which parameter set was simulated.
     """
     cfg = ctx.cfg
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     metrics: dict = {}
     figures: dict = {}
+    arrays: dict = {"params_label": params_label, "mask_cortical": np.asarray(ctx.mask_cortical),
+                    "tr_ms": cfg.tr_ms, "bold_skip_trs": cfg.bold_skip_trs}
 
     # --- simulation + BOLD (always available) ---
     combined = eqx.combine(diff_params, static_params)
@@ -48,6 +62,13 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> dict:
     fig = viz.plot_node_activity(sim_result_eeg, ctx.mask_cortical, cfg.dt)
     figures["node_activity"] = out_dir / "node_activity.png"
     fig.savefig(figures["node_activity"], dpi=150)
+    # same settle/stride as plot_node_activity: (n_nodes, T) traces
+    settle, stride = int(500.0 / cfg.dt), int(4 / cfg.dt)
+    ys = np.asarray(sim_result_eeg.ys[settle::stride])
+    arrays["node_time_ms"] = np.arange(ys.shape[0]) * stride * cfg.dt
+    arrays["node_jr_output"] = (ys[:, 1] - ys[:, 2]).T  # JR y1 - y2 (meaningful on cortical nodes)
+    arrays["node_wc_E"] = ys[:, 6].T                     # WC E (meaningful on subcortical nodes)
+    arrays["node_network_out"] = ys[:, 8].T
 
     # simulator_bold already streams the BOLD forward model (HRF convolution
     # or Balloon-Windkessel ODE integration, per cfg.bold_model -- see
@@ -57,6 +78,14 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> dict:
     # memory (the old ~23GiB-per-call trajectory this used to guard against
     # doesn't get materialized at all anymore).
     sim_bold_2d = connectivity.extract_bold_2d(sim_result_bold)
+    arrays["bold_sim"] = np.asarray(sim_bold_2d)
+    arrays["bold_emp"] = np.asarray(ctx.sc.empirical_bold)
+    arrays["fc_sim"], arrays["fc_emp"] = connectivity.fc_matrices(
+        sim_bold_2d, ctx.sc.empirical_bold, cfg.tr_ms, skip_t=cfg.bold_skip_trs)
+    if cfg.bold_dfc_weight > 0:
+        arrays["fcd_sim"], arrays["fcd_emp"] = connectivity.fcd_matrices(
+            sim_bold_2d, ctx.sc.empirical_bold, cfg.tr_ms, cfg.dfc_window_trs, cfg.dfc_step_trs,
+            skip_t=cfg.bold_skip_trs)
 
     fig = viz.plot_bold_timeseries(sim_bold_2d, ctx.sc.empirical_bold, ctx.mask_cortical,
                                     cfg.tr_ms, skip_t=cfg.bold_skip_trs)
@@ -83,6 +112,13 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> dict:
     sim_result_eeg_init = ctx.simulators.simulator_eeg(combined_init)
     sim_result_bold_init = ctx.simulators.simulator_bold(combined_init)
     sim_bold_2d_init = connectivity.extract_bold_2d(sim_result_bold_init)
+    arrays["bold_sim_init"] = np.asarray(sim_bold_2d_init)
+    arrays["fc_sim_init"], _ = connectivity.fc_matrices(
+        sim_bold_2d_init, ctx.sc.empirical_bold, cfg.tr_ms, skip_t=cfg.bold_skip_trs)
+    if cfg.bold_dfc_weight > 0:
+        arrays["fcd_sim_init"], _ = connectivity.fcd_matrices(
+            sim_bold_2d_init, ctx.sc.empirical_bold, cfg.tr_ms, cfg.dfc_window_trs, cfg.dfc_step_trs,
+            skip_t=cfg.bold_skip_trs)
 
     fig = viz.plot_bold_learning(sim_bold_2d_init, sim_bold_2d, ctx.sc.empirical_bold,
                                   ctx.mask_cortical, cfg.tr_ms, skip_t=cfg.bold_skip_trs)
@@ -112,6 +148,15 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> dict:
         source_activity, dataset.channel_indices, ctx.leadfield, ctx.smoothing_blocks, ctx.dipole_labels
     )
     sim_psd = compute_psd(simulated_eeg)
+    arrays["eeg_sim"] = np.asarray(simulated_eeg)
+    arrays["eeg_psd_sim"] = np.asarray(sim_psd)
+    arrays["eeg_psd_target"] = np.asarray(target_psd)
+    arrays["eeg_freqs"] = np.asarray(ctx.freqs)
+    arrays["eeg_idx_min"], arrays["eeg_idx_max"] = ctx.idx_min, ctx.idx_max
+    arrays["eeg_channel_indices"] = np.asarray(dataset.channel_indices)
+    # the matrices plot_eeg_corr_comparison compares (empirical = mean over chunks)
+    arrays["eeg_corr_sim"] = np.asarray(jnp.corrcoef(simulated_eeg))
+    arrays["eeg_corr_emp"] = np.asarray(jnp.stack([jnp.corrcoef(c) for c in dataset._chunks]).mean(axis=0))
 
     fig = viz.plot_eeg_psd_comparison(sim_psd, target_psd, ctx.freqs, ctx.idx_min, ctx.idx_max)
     figures["eeg_psd_comparison"] = out_dir / "eeg_psd_comparison.png"
@@ -135,6 +180,8 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> dict:
         source_activity_init, dataset.channel_indices, ctx.leadfield, ctx.smoothing_blocks, ctx.dipole_labels
     )
     sim_psd_init = compute_psd(simulated_eeg_init)
+    arrays["eeg_sim_init"] = np.asarray(simulated_eeg_init)
+    arrays["eeg_psd_sim_init"] = np.asarray(sim_psd_init)
 
     fig = viz.plot_eeg_psd_learning(sim_psd_init, sim_psd, target_psd, ctx.freqs, ctx.idx_min, ctx.idx_max)
     figures["eeg_psd_learning"] = out_dir / "eeg_psd_learning.png"
@@ -145,5 +192,8 @@ def run_and_save(ctx, diff_params, static_params, dataset, out_dir) -> dict:
     figures["eeg_psd_learning_linear"] = out_dir / "eeg_psd_learning_linear.png"
     fig.savefig(figures["eeg_psd_learning_linear"], dpi=150)
 
-    print(f"diagnostics saved to {out_dir}")
-    return {"metrics": metrics, "figures": figures}
+    arrays_path = out_dir / SIMULATION_RESULTS
+    np.savez_compressed(arrays_path, **arrays)
+
+    print(f"diagnostics saved to {out_dir} (simulated arrays: {arrays_path.name}, params={params_label})")
+    return {"metrics": metrics, "figures": figures, "arrays": arrays_path}

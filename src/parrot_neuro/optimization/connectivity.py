@@ -216,6 +216,28 @@ def soft_histogram(vals, centers, sigma=0.05, eps=1e-8):
     return h / (jnp.sum(h) + eps)
 
 
+def fc_matrices(sim_bold_2d, empirical_bold, tr_ms, skip_t=0, eps=1e-8):
+    """``(fc_sim, fc_emp)`` (N, N) numpy matrices, as compared after a fit
+    (``viz.plot_fc_comparison``, ``diagnostics.run_and_save``). Only the
+    simulated side is bandpassed (``filter_sim_bold``) -- the empirical BOLD
+    was already preprocessed in that band; both are sliced to ``skip_t:``."""
+    Xs_z = zscore_time(filter_sim_bold(jnp.array(np.asarray(sim_bold_2d)[skip_t:, :]), tr_ms), eps=eps)
+    Xe_z = zscore_time(jnp.array(np.asarray(empirical_bold)[skip_t:, :]), eps=eps)
+    return np.asarray(jnp.corrcoef(Xs_z, rowvar=False)), np.asarray(jnp.corrcoef(Xe_z, rowvar=False))
+
+
+def fcd_matrices(sim_bold_2d, empirical_bold, tr_ms, window_trs, step_trs, skip_t=0, eps=1e-8):
+    """``(fcd_sim, fcd_emp)`` numpy FCD matrices, as compared after a fit
+    (``viz.plot_fcd_comparison``, ``diagnostics.run_and_save``). The simulated
+    BOLD is sliced to ``skip_t:`` then bandpassed before windowing -- the order
+    ``make_bold_loss_fn``'s dFC term uses; the empirical side is already
+    filtered upstream. The two generally have different window counts."""
+    Xs = filter_sim_bold(jnp.array(np.asarray(sim_bold_2d))[skip_t:, :], tr_ms)
+    Xe = jnp.array(np.asarray(empirical_bold))
+    return (np.asarray(fcd_matrix(Xs, window_trs, step_trs, skip_t=0, eps=eps)),
+            np.asarray(fcd_matrix(Xe, window_trs, step_trs, skip_t=skip_t, eps=eps)))
+
+
 def wasserstein_1d_from_hist(p, q):
     """1-Wasserstein distance between two histograms sharing the same
     (equally-spaced) bin grid -- the mean absolute difference of their CDFs."""

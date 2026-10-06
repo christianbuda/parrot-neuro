@@ -11,7 +11,8 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 
-from .connectivity import fcd_matrix, fcd_values, filter_sim_bold, soft_histogram, wasserstein_1d_from_hist, zscore_time
+from .connectivity import (fc_matrices, fcd_matrices, fcd_matrix, fcd_values, filter_sim_bold, soft_histogram,
+                           wasserstein_1d_from_hist)
 from .forward import project_to_scalp
 from .signal import compute_psd
 
@@ -162,11 +163,7 @@ def plot_fc_comparison(sim_bold_2d, empirical_bold, tr_ms, skip_t=0, eps=1e-8):
     the band the empirical BOLD was already preprocessed with before FC is
     computed -- only the simulated side needs it.
     """
-    Xs_raw = jnp.array(np.asarray(sim_bold_2d)[skip_t:, :])
-    Xs_z = zscore_time(filter_sim_bold(Xs_raw, tr_ms), eps=eps)
-    fc_sim = np.asarray(jnp.corrcoef(Xs_z, rowvar=False))
-    Xe_z = np.asarray(zscore_time(jnp.array(np.asarray(empirical_bold)[skip_t:, :]), eps=eps))
-    fc_emp = np.corrcoef(Xe_z, rowvar=False)
+    fc_sim, fc_emp = fc_matrices(sim_bold_2d, empirical_bold, tr_ms, skip_t=skip_t, eps=eps)
 
     iu = np.triu_indices(fc_sim.shape[0], k=1)
     fc_sim_vec, fc_emp_vec = fc_sim[iu], fc_emp[iu]
@@ -205,10 +202,8 @@ def plot_fcd_comparison(sim_bold_2d, empirical_bold, tr_ms, window_trs, step_trs
     sliced to ``skip_t:`` and bandpassed (``connectivity.filter_sim_bold``)
     before windowing -- matching the order ``make_bold_loss_fn``'s dFC term uses --
     the empirical side is already filtered upstream."""
-    Xs = filter_sim_bold(jnp.array(np.asarray(sim_bold_2d))[skip_t:, :], tr_ms)
-    Xe = jnp.array(np.asarray(empirical_bold))
-    fcd_sim = np.asarray(fcd_matrix(Xs, window_trs, step_trs, skip_t=0, eps=eps))
-    fcd_emp = np.asarray(fcd_matrix(Xe, window_trs, step_trs, skip_t=skip_t, eps=eps))
+    fcd_sim, fcd_emp = fcd_matrices(sim_bold_2d, empirical_bold, tr_ms, window_trs, step_trs,
+                                    skip_t=skip_t, eps=eps)
 
     vals_sim = np.asarray(fcd_values(jnp.array(fcd_sim), k_min=k_min))
     vals_emp = np.asarray(fcd_values(jnp.array(fcd_emp), k_min=k_min))
