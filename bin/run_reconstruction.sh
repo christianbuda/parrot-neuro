@@ -312,14 +312,9 @@ else
     fi
 fi
 
-# Map a docker image tag to its .sif filename in SIF_DIR, e.g.
-#   christianbuda/parrot_mri_reconstruction:latest -> $SIF_DIR/parrot_mri_reconstruction_latest.sif
-# (drop the registry/namespace, turn the :tag separator into _). Used by the apptainer path.
+# Use the shared digest-qualified cache name for the apptainer path.
 sif_path() {
-    local tag=$1
-    local base=${tag##*/}     # strip registry/namespace
-    base=${base//:/_}         # tag separator -> underscore
-    echo "$SIF_DIR/${base}.sif"
+    echo "$SIF_DIR/$(image_cache_name "$1").sif"
 }
 
 # Resolve the on-disk artifact apptainer should run: the flattened .sif if present,
@@ -339,11 +334,6 @@ image_path() {
 # from bin/images.sh so build/pull/run never drift. For docker we pull tags into the local
 # daemon; for apptainer we pull each docker:// image once into a flattened .sif under SIF_DIR
 # (a plain file, reusable across subjects and SLURM array tasks).
-ALL_IMAGES=("${EXTERNAL_IMAGES[@]}")
-for entry in "${PARROT_IMAGES[@]}"; do
-    ALL_IMAGES+=("${entry%%|*}")
-done
-
 echo "Checking required container images (runtime: $RUNTIME)..."
 if [ "$RUNTIME" = "apptainer" ]; then
     mkdir -p "$SIF_DIR"
@@ -361,7 +351,7 @@ if [ "$RUNTIME" = "apptainer" ]; then
     done
 else
     for img in "${ALL_IMAGES[@]}"; do
-        if [[ -z "$(docker images -q "$img" 2> /dev/null)" ]]; then
+        if ! docker image inspect "$img" >/dev/null 2>&1; then
             echo "  Missing $img - pulling (this may take a while)..."
             if ! docker pull "$img"; then
                 echo "ERROR: Failed to pull $img"
@@ -937,7 +927,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         mkdir -p "$OUTPUT_DIR/$NAME"
 
         step_start=$(date +%s)
-        # HippUnfold (:latest) writes its derivatives to <out>/hippunfold/sub-XXX and
+        # HippUnfold 1.5.3 writes its derivatives to <out>/hippunfold/sub-XXX and
         # also litters <out> with work/, .snakemake/, config/. Pointing it straight at
         # $OUTPUT_DIR/hippunfold would double-nest (hippunfold/hippunfold/sub-XXX) and
         # leave scratch behind. So run it into a throwaway temp dir, then lift just the

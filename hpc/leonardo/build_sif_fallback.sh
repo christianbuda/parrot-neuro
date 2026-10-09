@@ -46,23 +46,15 @@ else
 fi
 echo "downloader: $DL"
 
-# Keep in sync with prepull_sifs.sh / bin/images.sh. Already-built .sif are skipped.
+source "$(dirname "${BASH_SOURCE[0]}")/../../bin/images.sh"
+# Already-built digest-qualified .sif files are skipped.
 IMAGES=( "$@" )
 if [ ${#IMAGES[@]} -eq 0 ]; then
-  IMAGES=(
-    christianbuda/parrot_mri_reconstruction:latest
-    christianbuda/parrot_forward_model:latest
-    christianbuda/parrot_forward_solvers:latest
-    christianbuda/parrot_qc:latest
-    deepmi/fastsurfer:latest
-    khanlab/hippunfold:latest
-    pennlinc/qsiprep:latest
-    pennlinc/qsirecon:latest
-  )
+  IMAGES=( "${ALL_IMAGES[@]}" )
 fi
 
 for img in "${IMAGES[@]}"; do
-  base="${img##*/}"; base="${base//:/_}"
+  base="$(image_cache_name "$img")"
   if [ -f "$SIF/$base.sif" ]; then
     echo "  have .sif     $base.sif (skip)"; continue
   fi

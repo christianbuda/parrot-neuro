@@ -13,7 +13,8 @@
 # On LEONARDO, Singularity is a SYSTEM command (/usr/bin/singularity), not a module --
 # no `module load` needed. (No `apptainer`; singularity is the binary here.)
 #
-# Re-pulls only images that CHANGED on the registry: it compares each remote
+# External images use digest-qualified filenames from bin/images.sh. For Parrot
+# tags, re-pulls only images that CHANGED on the registry: it compares each remote
 # manifest digest (via skopeo/crane, if available) against a `<sif>.digest`
 # sidecar and re-pulls just the stale ones. If no digest tool is present it
 # leaves existing .sif files alone -- set FORCE=1 to re-pull everything anyway.
@@ -55,31 +56,21 @@ remote_digest() {
   return 0   # no tool -> empty (caller falls back to keep-or-FORCE)
 }
 if ! command -v skopeo >/dev/null 2>&1 && ! command -v crane >/dev/null 2>&1; then
-  echo "NOTE: no skopeo/crane found -> cannot auto-detect updates; existing .sif kept (use FORCE=1 to re-pull)."
+  echo "NOTE: no skopeo/crane found -> cannot auto-detect Parrot tag updates; existing .sif kept (use FORCE=1 to re-pull). External images are digest-pinned."
 fi
 
-# Keep this list in sync with bin/images.sh. .sif name = <image-without-registry>
-# with ':' -> '_', matching sif_path() in bin/run_reconstruction.sh.
-IMAGES=(
-  christianbuda/parrot_mri_reconstruction:latest
-  christianbuda/parrot_forward_model:latest
-  christianbuda/parrot_forward_solvers:latest
-  christianbuda/parrot_qc:latest
-  deepmi/fastsurfer:latest
-  khanlab/hippunfold:latest
-  pennlinc/qsiprep:latest
-  pennlinc/qsirecon:latest
-)
+source "$(dirname "${BASH_SOURCE[0]}")/../../bin/images.sh"
+IMAGES=( "${ALL_IMAGES[@]}" )
 
 failed=()
 for img in "${IMAGES[@]}"; do
-  base="${img##*/}"; base="${base//:/_}"
+  base="$(image_cache_name "$img")"
   sif="$SIF/${base}.sif"
   dgf="$sif.digest"
-  remote="$(remote_digest "$img")"
+  if [[ "$img" == *@sha256:* ]]; then remote="${img##*@}"; else remote="$(remote_digest "$img")"; fi
 
   if [ -f "$sif" ] && [ "$FORCE" != 1 ]; then
-    if [ -n "$remote" ] && [ -f "$dgf" ] && [ "$(cat "$dgf")" = "$remote" ]; then
+    if [[ "$img" == *@sha256:* ]] || { [ -n "$remote" ] && [ -f "$dgf" ] && [ "$(cat "$dgf")" = "$remote" ]; }; then
       echo "  up-to-date  $base.sif"
       continue
     elif [ -z "$remote" ]; then
@@ -94,16 +85,17 @@ for img in "${IMAGES[@]}"; do
 
   # Non-fatal per image: a login-node OOM on one big image must not abort the
   # rest. Collect failures and point them at the two-phase fallback.
-  if "$APP" pull --force "$sif" "docker://$img"; then
+  if "$APP" pull --force "$sif.part" "docker://$img"; then
+    mv -f "$sif.part" "$sif"
     [ -n "$remote" ] && printf '%s\n' "$remote" > "$dgf"
   else
-    rm -f "$sif"
+    rm -f "$sif.part"
     echo "  FAILED      $base.sif (often a login-node OOM on a big image)"
     failed+=( "$img" )
   fi
 done
 
-if [ "${#failed[@]:-0}" -gt 0 ]; then
+if [ "${#failed[@]}" -gt 0 ]; then
   echo "Done WITH FAILURES (${#failed[@]}): ${failed[*]}"
   echo "Build those via the two-phase route (download on login, squashfs in a job):"
   echo "  bash hpc/leonardo/build_sif_fallback.sh $SIF ${failed[*]}"

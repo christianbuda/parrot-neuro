@@ -55,17 +55,8 @@ echo "== resolved paths (must match the job's) =="
 printf '  %-11s %s\n' WORKDIR "$WORKDIR" BIDS "$BIDS" OUTPUT_DIR "$OUTPUT_DIR" \
        TF_CACHE "$TF_CACHE" HU_CACHE "$HU_CACHE" SIF "$SIF" SUBJECT "$SUBJECT"
 
-# Keep this list in sync with prepull_sifs.sh / bin/images.sh.
-IMAGES=(
-  christianbuda/parrot_mri_reconstruction:latest
-  christianbuda/parrot_forward_model:latest
-  christianbuda/parrot_forward_solvers:latest
-  christianbuda/parrot_qc:latest
-  deepmi/fastsurfer:latest
-  khanlab/hippunfold:latest
-  pennlinc/qsiprep:latest
-  pennlinc/qsirecon:latest
-)
+source "$HERE/../../bin/images.sh"
+IMAGES=( "${ALL_IMAGES[@]}" )
 
 fail=0
 ok()   { printf '  [ OK ]  %s\n' "$1"; }
@@ -96,7 +87,7 @@ if [ ! -d "$SIF" ]; then
   bad "sif dir missing: $SIF  (run prepull_sifs.sh)"
 else
   for img in "${IMAGES[@]}"; do
-    base="${img##*/}"; base="${base//:/_}"
+    base="$(image_cache_name "$img")"
     if [ -f "$SIF/$base.sif" ]; then ok "$base.sif"
     elif [ -d "$SIF/$base" ]; then ok "$base/ (sandbox)"
     else bad "missing $base.sif  (run prepull_sifs.sh, or build_sif_fallback.sh + build_sif.sbatch)"; fi

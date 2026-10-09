@@ -5,6 +5,33 @@ images run rootless (see the `feat/leonardo-apptainer-port` work), and
 `bin/run_reconstruction.sh --runtime apptainer` drives them there. This directory
 holds the cluster glue.
 
+## Image versions
+
+`bin/images.sh` is the shared image manifest for Docker, SIF builders, preflight
+and cache prewarming. Parrot images stay on `:latest` to track the repository;
+external images are pinned to immutable registry digests.
+
+Compatibility review (2026-10-09):
+
+| Dependency | Selected version | Reason |
+|---|---|---|
+| FastSurfer | 2.5.4 | Existing image still matches upstream latest. |
+| HippUnfold | 1.5.3 | [2.x](https://github.com/khanlab/hippunfold/releases/tag/v2.0.0) changes surface names/directories; `gather_surfaces.py` and `make_atlas.py` expect the 1.x layout. |
+| QSIPrep | 26.0.0 | [26.1.0rc1](https://github.com/PennLINC/qsiprep/releases/tag/26.1.0rc1) removes `--fs-license-file`, which the orchestrator passes. |
+| QSIRecon | 26.0.1 | [Patch release](https://github.com/PennLINC/qsirecon/releases/tag/26.0.1); CLI, both Parrot reconstruction workflow graphs, output naming, rootless HOME and required MRtrix/ANTs tools checked. Full subject processing was not rerun. |
+
+Before changing an external pin, check the CLI, downstream file paths, custom
+reconstruction specs and runtime-fetch caches against the new release, then
+smoke-test the image. Update the digest and version comment together.
+
+**Existing SIF caches:** external filenames now include the digest, so an old
+`*_latest.sif` cannot silently satisfy a new pin. Rebuild the external SIFs with
+`bash hpc/leonardo/build_sif_local.sh fastsurfer hippunfold qsiprep qsirecon`
+and transfer them to the configured SIF directory. Existing files are retained.
+Parrot SIF filenames remain `parrot_*_latest.sif`. A repo upload alone does not
+update the separate SIF cache; the orchestrator checks all images at startup,
+even when the selected stages do not use every image.
+
 | File | Role |
 |------|------|
 | `prepull_sifs.sh` | Pull the 8 images into `<work>/parrot_sif` as `.sif` (run on a login/data-mover node). Re-pulls only images that changed on the registry (`FORCE=1` to re-pull all). |

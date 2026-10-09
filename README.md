@@ -14,6 +14,13 @@ Parrot is a modular brain simulation tool that performs MRI reconstruction, elec
 * **Docker:** Must be installed and running.
 * **Linux Bash**
 
+### Container versions
+
+External dependencies are pinned by digest in `bin/images.sh` so upstream
+`:latest` releases cannot silently break the pipeline. Parrot's own images
+remain on `:latest`. Docker and the LEONARDO SIF helpers share this manifest;
+see [image compatibility and SIF cache migration](hpc/leonardo/README.md#image-versions).
+
 ## Installation
 
 1.  **Clone the repository** (recursive is needed for submodules):

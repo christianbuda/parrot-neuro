@@ -37,7 +37,8 @@ done
 CACHE="${1:-${OUTPUT_DIR:+$OUTPUT_DIR/.hippunfold_cache}}"; CACHE="${CACHE:-$PWD/hippunfold_cache}"  # populate <output_dir>/.hippunfold_cache by default when configured
 RUNTIME="${RUNTIME:-auto}"              # auto-detect | docker (workstation) | apptainer (login node, uses SIF_DIR)
 SIF_DIR="${SIF_DIR:-${SIF:-}}"          # .sif cache dir (apptainer only); falls back to $SIF from config
-IMG="${HIPPUNFOLD_IMAGE:-khanlab/hippunfold:latest}"   # docker image ref (docker runtime)
+source "$(dirname "${BASH_SOURCE[0]}")/../../bin/images.sh"
+IMG="${HIPPUNFOLD_IMAGE:-$IMG_HIPPUNFOLD}"
 ATLASES="${ATLASES:-multihist7}"        # space-separated
 TEMPLATES="${TEMPLATES:-upenn CITI168}" # upenn = nnU-Net T1w train space; CITI168 = default output template
 MODELS="${MODELS:-T1w}"                 # nnU-Net model(s); MODELS="" to skip (Zenodo is reachable on-node)
@@ -69,7 +70,7 @@ run_in_hippunfold() {   # $1 = bash -c command string; stdout is the caller's
       local app sif
       app="$(command -v apptainer || command -v singularity || true)"
       [ -n "$app" ] || { echo "ERROR: RUNTIME=apptainer but no apptainer/singularity on PATH." >&2; return 1; }
-      sif="$SIF_DIR/hippunfold_latest.sif"
+      sif="$SIF_DIR/$(image_cache_name "$IMG").sif"
       [ -f "$sif" ] || { echo "ERROR: $sif not found (set SIF_DIR to your .sif cache)." >&2; return 1; }
       "$app" exec "$sif" bash -c "$1" ;;
     *) echo "ERROR: RUNTIME must be 'docker' or 'apptainer' (got '$RUNTIME')." >&2; return 1 ;;
