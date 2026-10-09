@@ -99,7 +99,7 @@ set_chunk() {
         b)  STAGES="qsiprep,qsirecon,connectivity,dwitensor,dwi2t1"
             GPUS="none"; PART="$BOOST_PART"; QOS="$BOOST_QOS"
             CPUS=32;  TIME="10:00:00"; MEM="240G" ;;                     # ~4.2h measured @32c, GPU-idle
-        c)  STAGES="electrodes,dipoles,tetmesh"
+        c)  STAGES="fiducials,electrodes,dipoles,tetmesh"
             GPUS="none"; PART="$BOOST_PART"; QOS="$BOOST_QOS"
             CPUS=4;   TIME="16:00:00"; MEM="32G" ;;                      # ~9.8h, dipoles single-threaded -> min cores (dcgp shares nodes)
         d)  STAGES="anisotropy,forwardsolvers,artifacts,qc"
