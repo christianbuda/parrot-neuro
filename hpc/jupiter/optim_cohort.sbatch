@@ -1,13 +1,12 @@
 #!/bin/bash
 ###############################################################################
-# EEG+BOLD optimization runner for CINECA LEONARDO -- ONE subject, ONE fit.
+# EEG+BOLD optimization runner for JUPITER (JSC) -- ONE subject, ONE fit.
 #
-# A THIN, resource-agnostic runner (mirrors hpc/leonardo/cohort.sbatch for the
-# reconstruction pipeline): it just runs examples/eeg_bold_fit_cli.py for one
-# subject with whatever fit hyperparameters it's told (`$OPTIM_*`). It does
-# NOT know about partitions/QoS/walltime -- all of that lives in
-# submit_optim.sh, the single source of truth. This file should almost never
-# need editing.
+# A THIN, resource-agnostic runner (mirrors hpc/leonardo/optim_cohort.sbatch):
+# it just runs examples/eeg_bold_fit_cli.py for one subject with whatever fit
+# hyperparameters it's told (`$OPTIM_*`). It does NOT know about
+# partitions/QoS/walltime -- all of that lives in submit_optim.sh, the single
+# source of truth. This file should almost never need editing.
 #
 # It is submitted three ways, all by submit_optim.sh:
 #   - as a job ARRAY over the cohort -> subject = line ($SLURM_ARRAY_TASK_ID+1)
@@ -25,16 +24,16 @@
 set -euo pipefail
 
 # --- personal config (gitignored): ACCT/WORKDIR/REPO/BIDS shared with the ----
-# reconstruction scripts. sbatch spools this script, so $BASH_SOURCE isn't the
-# repo copy -- resolve via $SLURM_SUBMIT_DIR or the default clone at $HOME.
+# rest of the JUPITER scripts. sbatch spools this script, so $BASH_SOURCE isn't
+# the repo copy -- resolve via $SLURM_SUBMIT_DIR or the default clone at $HOME.
 for _c in "${PARROT_CONFIG:-}" \
-          "${SLURM_SUBMIT_DIR:-}/hpc/leonardo/config.local.sh" \
-          "$HOME/parrot-neuro/hpc/leonardo/config.local.sh"; do
+          "${SLURM_SUBMIT_DIR:-}/hpc/jupiter/config.local.sh" \
+          "$HOME/parrot-neuro/hpc/jupiter/config.local.sh"; do
   [ -n "$_c" ] && [ -f "$_c" ] && { . "$_c"; echo "[config] loaded $_c"; break; }
 done
 
 REPO="${REPO:-$HOME/parrot-neuro}"
-: "${WORKDIR:?set WORKDIR in config.local.sh (e.g. /leonardo_work/<ACCT>)}"
+: "${WORKDIR:?set WORKDIR in config.local.sh (e.g. /p/project1/<PROJECT_DIR>)}"
 BIDS="${BIDS:-$WORKDIR/parrot/bids}"
 OPTIM_OUTPUT_DIR="${OPTIM_OUTPUT_DIR:-$WORKDIR/parrot/eeg_bold_fit_res}"
 
@@ -71,30 +70,14 @@ OPTIM_LEARNING_RATE="${OPTIM_LEARNING_RATE:-1e-2}"
 # Empty (default) = reuse OPTIM_LEARNING_RATE for the BOLD step too -- EEG and
 # BOLD each get their own Adam state, so they can also use different rates.
 OPTIM_LEARNING_RATE_BOLD="${OPTIM_LEARNING_RATE_BOLD:-}"
-# Optional BOLD spectral-shape term (connectivity.bold_psd_band, restricted to
-# the 0.01-0.1Hz bandpass) -- 0 (default) = off. fc_vector's time-averaged
-# correlation has no sensitivity at all to each signal's own temporal/spectral
-# shape; this adds a gradient for it.
 OPTIM_BOLD_PSD_WEIGHT="${OPTIM_BOLD_PSD_WEIGHT:-0}"
-# Optional EEG gamma-band term: log(PSD) MSE over 15-40Hz, alongside the
-# existing normalized-linear PSD MSE over 1-15Hz -- 0 (default) = off.
 OPTIM_GAMMA_WEIGHT="${OPTIM_GAMMA_WEIGHT:-0}"
 OPTIM_SKIP_DIAGNOSTICS="${OPTIM_SKIP_DIAGNOSTICS:-0}"
-# GPU-memory fixes for atlas=1000 + the long default BOLD horizon (validated
-# locally on GPU 2026-07-29: without these, even an 80G card OOMs; with both,
-# peak usage is ~31GiB -- comfortable headroom under the A100's 64G). See
-# train.build_simulators' and network.build_network's docstrings for why each
-# is needed (they fix two DIFFERENT OOM sites -- the one-time warm-up solve
-# vs. the actual training gradient step -- neither alone is sufficient).
+# GPU-memory fixes carried over from LEONARDO's A100 tuning (see
+# hpc/leonardo/README.md's OOM notes) -- UNVERIFIED on GH200's unified-memory
+# architecture; re-measure with `pilot` before trusting these numbers here.
 OPTIM_T1_WARMUP="${OPTIM_T1_WARMUP:-30000}"
-# 1400 (one TR per block), not just sqrt(n_steps) -- the BOLD simulator streams
-# its HRF convolution through this same block scan (train.build_simulators),
-# which requires an exact multiple of the BOLD period in raw steps (tr_ms/dt).
 OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-1400}"
-# Early stopping (train.is_loss_stalled): stop once every actively-optimized
-# loss's trend has stayed flat/increasing for OPTIM_EARLY_STOP_PATIENCE
-# consecutive OPTIM_EARLY_STOP_WINDOW-sized checks. Empty (default) = off,
-# matching config.BoldFitConfig's own default -- set an int to opt in.
 OPTIM_EARLY_STOP_PATIENCE="${OPTIM_EARLY_STOP_PATIENCE:-}"
 OPTIM_EARLY_STOP_WINDOW="${OPTIM_EARLY_STOP_WINDOW:-20}"
 OPTIM_EARLY_STOP_MIN_DELTA="${OPTIM_EARLY_STOP_MIN_DELTA:-1e-3}"
@@ -114,25 +97,23 @@ fi
 PIXI="$(command -v pixi || true)"
 [ -z "$PIXI" ] && [ -x "$HOME/.pixi/bin/pixi" ] && PIXI="$HOME/.pixi/bin/pixi"
 [ -n "$PIXI" ] || { echo "ERROR: pixi not found (on PATH or at \$HOME/.pixi/bin) -- run setup_optim_env.sh"; exit 1; }
-[ -d "$REPO/.pixi" ] || { echo "ERROR: $REPO/.pixi missing -- run setup_optim_env.sh on a login node"; exit 1; }
+[ -d "$REPO/.pixi" ] || { echo "ERROR: $REPO/.pixi missing -- run setup_optim_env.sh on the login node"; exit 1; }
 
-# Keep the JAX compilation cache off LEONARDO's small, quota'd $HOME, and give
+# Keep the JAX compilation cache off JUPITER's small, quota'd $HOME, and give
 # each subject its own subdir -- a job array writing one shared cache
 # concurrently risks lock contention / a corrupt shared entry.
 export PARROT_JAX_CACHE_DIR="$WORKDIR/parrot/.jax_cache/sub-$SUBJECT"
 mkdir -p "$PARROT_JAX_CACHE_DIR" "$OPTIM_OUTPUT_DIR"
 
 # JAX's default preallocates ~75% of the GPU upfront regardless of actual
-# need, which inflates nvidia-smi readings and (on a tighter-memory node)
-# needlessly risks OOM before the real working set is even known. Validated
-# locally: disabling this doesn't change results (bit-identical losses),
-# just reports/uses memory honestly (measured ~31GiB actual peak vs. ~70GiB
-# with default preallocation on the same run).
+# need -- same rationale as hpc/leonardo/optim_cohort.sbatch. Unverified
+# whether this matters the same way on GH200's unified CPU/GPU memory, but
+# harmless either way (config.apply_jax_env() already sets these via
+# setdefault, so this is belt-and-suspenders).
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_ALLOCATOR=platform
 
-# Anchor CWD on the robust work FS (same rationale as cohort.sbatch: avoid any
-# lstat/identity blip on the home FS at process start).
+# Anchor CWD on the robust work FS (same rationale as the LEONARDO script).
 cd "$WORKDIR" || { echo "ERROR: cannot cd to WORKDIR=$WORKDIR"; exit 1; }
 
 echo "=== Parrot optim: job ${SLURM_JOB_ID:-?} (array ${SLURM_ARRAY_JOB_ID:--}_${SLURM_ARRAY_TASK_ID:--}) on $(hostname), $(date) ==="
@@ -140,8 +121,7 @@ echo "subject=$SUBJECT  atlas=$OPTIM_ATLAS  optimize=$OPTIM_OPTIMIZE  bold_model
 nvidia-smi -L 2>/dev/null || echo "(no GPU visible -- this stage always needs one)"
 
 # --- optional GPU-utilisation sampling (submit_optim.sh sets this for `pilot`
-# only -- it's the measurement run whose job is to answer "is the A100 idle
-# most of the time"; the cohort array skips the overhead once that's known).
+# only -- see hpc/leonardo/optim_cohort.sbatch for the same rationale).
 GPULOG=""
 if [ "${OPTIM_GPU_UTIL_LOG:-0}" = 1 ]; then
     GPULOG="${SLURM_SUBMIT_DIR:-$WORKDIR}/gpu_util-${SLURM_JOB_ID:-$$}.csv"
@@ -176,9 +156,11 @@ fi
 
 SECONDS=0
 set +e
-# -u: unbuffered stdout. Without it, Python block-buffers stdout once it's not
-# a TTY (i.e. redirected to the .out file), so the epoch-by-epoch progress
-# prints can sit invisible for the whole job instead of showing up live.
+# -u: unbuffered stdout, same rationale as hpc/leonardo/optim_cohort.sbatch.
+# -e optim: the optimization-stage pixi environment/feature (see
+# setup_optim_env.sh's header -- pixi.toml needs restructuring for this to
+# resolve on linux-aarch64; update this flag if the feature ends up named
+# differently).
 (cd "$REPO" && "$PIXI" run python -u examples/eeg_bold_fit_cli.py "${ARGS[@]}")
 rc=$?
 set -e

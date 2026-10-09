@@ -155,7 +155,9 @@ def main() -> None:
             diff_params["coupling"]["delayed"][lp.name] = new_param
     print(f"Reconstructed {len(cfg.learnable_params)} learnable parameters from {npz_path}")
 
-    diagnostics.run_and_save(ctx, diff_params, ctx.static_params, dataset, out_dir)
+    # best_params.npz (eeg_bold_fit_cli.py's best epoch) vs optimized_params.npz (final epoch)
+    params_label = "best" if npz_path.stem.startswith("best") else "final"
+    diagnostics.run_and_save(ctx, diff_params, ctx.static_params, dataset, out_dir, params_label=params_label)
 
 
 if __name__ == "__main__":

@@ -1,23 +1,31 @@
 #!/bin/bash
 ###############################################################################
-# EEG+BOLD optimization submitter for CINECA LEONARDO.
+# EEG+BOLD optimization submitter for JUPITER (JSC).
 #
 # Single source of truth for the SLURM resources (partition / QoS / GPU /
 # cores / walltime / mem) of the optimization stage, and for building the
-# subject-index job array. optim_cohort.sbatch is a thin runner that just
-# does what it's told (same split as submit_cohort.sh / cohort.sbatch for the
-# reconstruction pipeline).
+# subject-index job array. Mirrors hpc/leonardo/submit_optim.sh -- same
+# commands/semantics -- with JUPITER-specific differences:
+#   - typed gres (--gres=gpu:gh200:N, not LEONARDO's untyped --gres=gpu:N)
+#   - a single confirmed QoS ("normal", 12h wall cap) instead of LEONARDO's
+#     normal(24h)/boost_qos_dbg(30m)/boost_qos_lprod(4d) trio -- see
+#     config.local.sh.example's GPU_QOS comment before assuming a longer QoS
+#     is usable on your account
+#   - `pixi run -e optim` (the optim feature/environment -- see
+#     setup_optim_env.sh's header for why: pixi.toml needs restructuring
+#     before this resolves on JUPITER's linux-aarch64 nodes)
 #
 # This is a SEPARATE stage from reconstruction: it runs in a `pixi` env (no
-# container), reads a subject's EEG+fMRI+leadfield derivatives, and writes
-# fitted-parameter results -- it does not touch the .sif cache.
+# container), reads a subject's EEG+fMRI+leadfield derivatives (assumed
+# already staged onto JUPITER -- there is no JUPITER port of the
+# reconstruction pipeline here), and writes fitted-parameter results.
 #
 # Usage (run each step in order the first time you use this):
-#   ./submit_optim.sh smoke [subject]     # ~2 epochs, debug QoS, no diagnostics
-#                                          #   -- "does the env + pipeline even run on a GPU node"
+#   ./submit_optim.sh smoke [subject]     # ~2 epochs, no diagnostics -- quick sanity check
 #   ./submit_optim.sh pilot [subject]     # full hyperparameters, ONE subject, timed + GPU-util logged
 #                                          #   -- "how long does a real fit take" (read this before `run`)
 #   ./submit_optim.sh run                 # full job array over the cohort
+#   ./submit_optim.sh run <subj ...>      # job array over an explicit subgroup (see subj_id.txt)
 #   ./submit_optim.sh list                # show the array + resource matrix, submit nothing
 #
 #   PARROT_DRYRUN=1 ./submit_optim.sh run   # print the sbatch command, submit nothing
@@ -25,28 +33,27 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-[ -f "$SCRIPT_DIR/config.local.sh" ] || { echo "ERROR: hpc/leonardo/config.local.sh not found -- cp it from config.local.sh.example"; exit 1; }
+[ -f "$SCRIPT_DIR/config.local.sh" ] || { echo "ERROR: hpc/jupiter/config.local.sh not found -- cp it from config.local.sh.example"; exit 1; }
 . "$SCRIPT_DIR/config.local.sh"
 
 : "${ACCT:?set ACCT in config.local.sh}"
 : "${WORKDIR:?set WORKDIR in config.local.sh}"
 BIDS="${BIDS:-$WORKDIR/parrot/bids}"
 PARTICIPANTS="${PARTICIPANTS:-$BIDS/participants.tsv}"
-# Reuses the SAME subject list as the reconstruction cohort (per-account
-# choice: only reconstructed subjects are candidates for the fit anyway).
 SUBJ_FILE="${SUBJ_FILE:-$WORKDIR/parrot/cohort_subjects.txt}"
 OPTIM_OUTPUT_DIR="${OPTIM_OUTPUT_DIR:-$WORKDIR/parrot/eeg_bold_fit_res}"
 
-BOOST_PART="${BOOST_PART:-boost_usr_prod}"
-BOOST_QOS="${BOOST_QOS:-normal}"
-DEBUG_QOS="${DEBUG_QOS:-boost_qos_dbg}"
-PILOT_QOS="${PILOT_QOS:-boost_qos_lprod}"    # 4-day wall: unmeasured, so start generous
+GPU_PART="${GPU_PART:-booster}"
+GPU_GRES_TYPE="${GPU_GRES_TYPE:-gh200}"
+GPU_QOS="${GPU_QOS:-normal}"
+DEBUG_QOS="${DEBUG_QOS:-$GPU_QOS}"     # no dedicated debug QoS confirmed on this account -- see config example
+PILOT_QOS="${PILOT_QOS:-$GPU_QOS}"     # no dedicated long QoS confirmed either -- normal's 12h cap applies
 ARRAY_THROTTLE="${ARRAY_THROTTLE:-%40}"
 MAX_SUBMIT="${MAX_SUBMIT:-1000}"
 
-# --- fit hyperparameters -- defaults mirror examples/eeg_bold_fit_new.py ----
-# (and eeg_bold_fit_cli.py's own argparse defaults); override any of these in
-# config.local.sh (OPTIM_ATLAS=..., etc.) or as a call-time env var.
+# --- fit hyperparameters -- IDENTICAL semantics/defaults to
+# hpc/leonardo/submit_optim.sh (same eeg_bold_fit_cli.py); override any of
+# these in config.local.sh (OPTIM_ATLAS=..., etc.) or as a call-time env var.
 OPTIM_ATLAS="${OPTIM_ATLAS:-1000}"
 OPTIM_SPACING="${OPTIM_SPACING:-2.0}"
 OPTIM_LEADFIELD_LABEL="${OPTIM_LEADFIELD_LABEL:-duneuroCGAL}"
@@ -68,9 +75,7 @@ OPTIM_JOINT_BOLD_WEIGHT="${OPTIM_JOINT_BOLD_WEIGHT:-1.0}"
 OPTIM_BOLD_FC_WEIGHT="${OPTIM_BOLD_FC_WEIGHT:-0.5}"
 OPTIM_BOLD_DFC_WEIGHT="${OPTIM_BOLD_DFC_WEIGHT:-0.5}"
 # dFC sliding-window length/stride in TRs (config.BoldFitConfig.dfc_window_trs/
-# dfc_step_trs) -- two of the 7 fields Optuna/wandb sweep (see
-# eeg_bold_fit_optuna.py / sweep_eeg_bold.yaml); set from a completed search's
-# best trial same as the other 5.
+# dfc_step_trs) -- two of the 7 Optuna/wandb-swept fields.
 OPTIM_DFC_WINDOW_TRS="${OPTIM_DFC_WINDOW_TRS:-6}"
 OPTIM_DFC_STEP_TRS="${OPTIM_DFC_STEP_TRS:-1}"
 OPTIM_NUM_EPOCHS="${OPTIM_NUM_EPOCHS:-300}"
@@ -81,45 +86,30 @@ OPTIM_LEARNING_RATE="${OPTIM_LEARNING_RATE:-1e-2}"
 # Empty (default) = reuse OPTIM_LEARNING_RATE for the BOLD step too -- EEG and
 # BOLD each get their own Adam state, so they can also use different rates.
 OPTIM_LEARNING_RATE_BOLD="${OPTIM_LEARNING_RATE_BOLD:-}"
-# Optional BOLD spectral-shape term (connectivity.bold_psd_band, restricted to
-# the 0.01-0.1Hz bandpass) -- 0 (default) = off.
+# Optional BOLD spectral-shape term -- 0 (default) = off.
 OPTIM_BOLD_PSD_WEIGHT="${OPTIM_BOLD_PSD_WEIGHT:-0}"
-# Optional EEG gamma-band term: log(PSD) MSE over 15-40Hz, alongside the
-# existing normalized-linear PSD MSE over 1-15Hz -- 0 (default) = off.
+# Optional EEG gamma-band term -- 0 (default) = off.
 OPTIM_GAMMA_WEIGHT="${OPTIM_GAMMA_WEIGHT:-0}"
-# GPU-memory fixes for atlas=1000 + the long default BOLD horizon (t1_bold=
-# 320000ms). Validated on GPU locally (2026-07-29): WITHOUT both of these,
-# atlas=1000 OOMs even on an 80G card -- they fix two DIFFERENT OOM sites
-# (the one-time warm-up solve vs. the actual training gradient step), so
-# both are needed together, not either alone. WITH both, measured peak was
-# ~31GiB -- comfortable headroom under the A100's 64G. See
-# train.build_simulators' / network.build_network's docstrings for why.
-#   t1_warmup:         duration (ms) of the one-time BOLD history warm-up,
-#                       independent of t1_bold -- does NOT shorten the BOLD
-#                       signal your FC/dFC loss actually sees.
-#   solver_block_size: checkpoints the integration scan; ~1.3-1.7x more
-#                       compute, exact gradient either way. Also the BOLD
-#                       simulator's streaming HRF convolution block size (see
-#                       train.build_simulators) -- must be an exact multiple
-#                       of the BOLD period in raw steps (tr_ms/dt), not just
-#                       ~sqrt(n_steps); 1400 (one TR/block) is the default.
+# GPU-memory fixes carried over from LEONARDO's tuning (see
+# hpc/leonardo/README.md's OOM notes) -- UNVERIFIED on GH200's unified-memory
+# architecture specifically; re-measure with `pilot` before trusting these.
 OPTIM_T1_WARMUP="${OPTIM_T1_WARMUP:-30000}"
 OPTIM_SOLVER_BLOCK_SIZE="${OPTIM_SOLVER_BLOCK_SIZE:-1400}"
-# Early stopping (train.is_loss_stalled): stop once every actively-optimized
-# loss's trend has stayed flat/increasing for OPTIM_EARLY_STOP_PATIENCE
-# consecutive OPTIM_EARLY_STOP_WINDOW-sized checks. Empty (default) = off,
-# matching config.BoldFitConfig's own default -- set an int to opt in.
+# Early stopping (train.is_loss_stalled) -- empty (default) = off. Worth
+# enabling here more than on LEONARDO: JUPITER's confirmed QoS caps at 12h
+# wall, so a fit that would exceed it needs either this, fewer epochs, or a
+# confirmed longer QoS (see config.local.sh.example's GPU_QOS comment).
 OPTIM_EARLY_STOP_PATIENCE="${OPTIM_EARLY_STOP_PATIENCE:-}"
 OPTIM_EARLY_STOP_WINDOW="${OPTIM_EARLY_STOP_WINDOW:-20}"
 OPTIM_EARLY_STOP_MIN_DELTA="${OPTIM_EARLY_STOP_MIN_DELTA:-1e-3}"
 
 # Cohort-array resources. TIME/MEM/CPUS are UNMEASURED defaults -- run `pilot`
-# first and set these (in config.local.sh) from what you actually observe;
-# see the README "read the pilot" section. Billing is per-GPU on Booster, so
-# this always takes exactly one.
-OPTIM_CPUS="${OPTIM_CPUS:-8}"
-OPTIM_MEM="${OPTIM_MEM:-64G}"
-OPTIM_TIME="${OPTIM_TIME:-08:00:00}"
+# first and set these (in config.local.sh) from what you actually observe.
+# Sized conservatively against one GH200 GPU-share's ceiling (~72 cores /
+# ~219G out of the node's 288 cores / ~878G across 4 GPUs).
+OPTIM_CPUS="${OPTIM_CPUS:-16}"
+OPTIM_MEM="${OPTIM_MEM:-128G}"
+OPTIM_TIME="${OPTIM_TIME:-10:00:00}"    # MUST stay under GPU_QOS's 12h cap -- see config example
 
 DRYRUN="${PARROT_DRYRUN:-0}"
 
@@ -156,8 +146,8 @@ case "$CMD" in
         unset OPTIM_SUBJECTS_FILE || true
         echo "[smoke] subject=$subject  qos=$DEBUG_QOS  epochs=2 (diagnostics skipped) -- sanity check only"
         cmd=( sbatch --account="$ACCT" --job-name=parrot-optim-smoke
-              --partition="$BOOST_PART" --qos="$DEBUG_QOS" --gres=gpu:1
-              --cpus-per-task=4 --time=00:30:00 --mem=32G --export=ALL
+              --partition="$GPU_PART" --qos="$DEBUG_QOS" --gres=gpu:"$GPU_GRES_TYPE":1
+              --cpus-per-task=8 --time=00:30:00 --mem=32G --export=ALL
               "$SCRIPT_DIR/optim_cohort.sbatch" )
         if [ "$DRYRUN" = 1 ]; then printf '%q ' "${cmd[@]}"; echo; else "${cmd[@]}"; fi
         ;;
@@ -168,10 +158,13 @@ case "$CMD" in
         export OPTIM_SUBJECT="$subject" OPTIM_SKIP_DIAGNOSTICS=0 OPTIM_GPU_UTIL_LOG=1
         unset OPTIM_SUBJECTS_FILE || true
         echo "[pilot] subject=$subject  qos=$PILOT_QOS  epochs=$OPTIM_NUM_EPOCHS  atlas=$OPTIM_ATLAS  optimize=$OPTIM_OPTIMIZE  schedule=$OPTIM_SCHEDULE"
-        echo "[pilot] this is a MEASUREMENT run -- read its walltime + GPU-idle before sizing 'run'"
+        echo "[pilot] this is a MEASUREMENT run -- read its walltime + GPU-idle before sizing 'run'."
+        echo "[pilot] NOTE: $PILOT_QOS caps at 12h wall on this account -- if the job hits the time"
+        echo "        limit before finishing, that IS the measurement: shorten via early stopping /"
+        echo "        fewer epochs, or confirm a longer QoS is actually usable first."
         cmd=( sbatch --account="$ACCT" --job-name=parrot-optim-pilot
-              --partition="$BOOST_PART" --qos="$PILOT_QOS" --gres=gpu:1
-              --cpus-per-task="$OPTIM_CPUS" --time=2-00:00:00 --mem="$OPTIM_MEM" --export=ALL
+              --partition="$GPU_PART" --qos="$PILOT_QOS" --gres=gpu:"$GPU_GRES_TYPE":1
+              --cpus-per-task="$OPTIM_CPUS" --time=12:00:00 --mem="$OPTIM_MEM" --export=ALL
               "$SCRIPT_DIR/optim_cohort.sbatch" )
         if [ "$DRYRUN" = 1 ]; then printf '%q ' "${cmd[@]}"; echo; else "${cmd[@]}"; fi
         ;;
@@ -180,9 +173,9 @@ case "$CMD" in
         shift || true
         subjects=( "$@" )
 
-        # Same live-array footgun guard as submit_cohort.sh: a targeted retry
-        # racing a still-draining full-cohort array can corrupt the shared
-        # subjects-file / double-process a subject.
+        # Same live-array footgun guard as hpc/leonardo/submit_optim.sh: a
+        # targeted retry racing a still-draining full-cohort array can
+        # corrupt the shared subjects-file / double-process a subject.
         if [ "${#subjects[@]}" -gt 0 ] && command -v squeue >/dev/null 2>&1; then
             live=$(squeue --me -h -o '%j' 2>/dev/null | grep -c '^parrot-optim' || true)
             if [ "${live:-0}" -gt 0 ] && [ "${PARROT_FORCE:-0}" != 1 ]; then
@@ -194,7 +187,7 @@ case "$CMD" in
 
         N=$(build_subjects "${subjects[@]+"${subjects[@]}"}")
         if [ "$N" -gt "$MAX_SUBMIT" ]; then
-            echo "ERROR: $N subjects > MAX_SUBMIT=$MAX_SUBMIT (QOS submit cap). Submit a subset, or raise MAX_SUBMIT in config.local.sh if the real cap is higher." >&2
+            echo "ERROR: $N subjects > MAX_SUBMIT=$MAX_SUBMIT (submit cap). Submit a subset, or raise MAX_SUBMIT in config.local.sh if the real cap is higher." >&2
             exit 1
         fi
         ARR="0-$((N - 1))${ARRAY_THROTTLE}"
@@ -209,9 +202,9 @@ case "$CMD" in
 
         src=$([ "${#subjects[@]}" -gt 0 ] && echo "subset (${subjects[*]})" || echo "$PARTICIPANTS")
         echo "[run] $N subjects from $src  ->  --array=$ARR"
-        echo "[run] resources: gpu:1  ${OPTIM_CPUS}c  time=$OPTIM_TIME  mem=$OPTIM_MEM  qos=$BOOST_QOS"
+        echo "[run] resources: gpu:gh200:1  ${OPTIM_CPUS}c  time=$OPTIM_TIME  mem=$OPTIM_MEM  qos=$GPU_QOS"
         cmd=( sbatch --account="$ACCT" --job-name=parrot-optim
-              --partition="$BOOST_PART" --qos="$BOOST_QOS" --gres=gpu:1
+              --partition="$GPU_PART" --qos="$GPU_QOS" --gres=gpu:"$GPU_GRES_TYPE":1
               --cpus-per-task="$OPTIM_CPUS" --time="$OPTIM_TIME" --mem="$OPTIM_MEM"
               --array="$ARR" --export=ALL --parsable
               "$SCRIPT_DIR/optim_cohort.sbatch" )
@@ -226,7 +219,7 @@ case "$CMD" in
     list)
         N=$(build_subjects)
         echo "$N subjects -> --array=0-$((N-1))${ARRAY_THROTTLE}  (file: $SUBJ_FILE)"
-        printf '  gpu:1  %sc  time=%s  mem=%s  qos=%s (part=%s)\n' "$OPTIM_CPUS" "$OPTIM_TIME" "$OPTIM_MEM" "$BOOST_QOS" "$BOOST_PART"
+        printf '  gpu:gh200:1  %sc  time=%s  mem=%s  qos=%s (part=%s)\n' "$OPTIM_CPUS" "$OPTIM_TIME" "$OPTIM_MEM" "$GPU_QOS" "$GPU_PART"
         printf '  atlas=%s  optimize=%s  bold_model=%s  schedule=%s  bold_fc_weight=%s  bold_dfc_weight=%s  dfc_window_trs=%s  dfc_step_trs=%s  epochs=%s  bold_every=%s  t1_warmup=%s  solver_block_size=%s  early_stop_patience=%s\n' \
             "$OPTIM_ATLAS" "$OPTIM_OPTIMIZE" "$OPTIM_BOLD_MODEL" "$OPTIM_SCHEDULE" "$OPTIM_BOLD_FC_WEIGHT" "$OPTIM_BOLD_DFC_WEIGHT" "$OPTIM_DFC_WINDOW_TRS" "$OPTIM_DFC_STEP_TRS" "$OPTIM_NUM_EPOCHS" "$OPTIM_BOLD_EVERY" \
             "${OPTIM_T1_WARMUP:-off}" "${OPTIM_SOLVER_BLOCK_SIZE:-off}" "${OPTIM_EARLY_STOP_PATIENCE:-off}"
@@ -242,20 +235,21 @@ case "$CMD" in
         cat >&2 <<'EOF'
 usage: submit_optim.sh <command>
 
-  smoke [subject]   ONE subject, 2 epochs, debug QoS, no diagnostics
+  smoke [subject]   ONE subject, 2 epochs, no diagnostics
                      ("does the env + pipeline run on a GPU node") -- subject
                      defaults to $SUBJECT (config.local.sh)
   pilot [subject]    ONE subject, full hyperparameters, timed + GPU-util
                      logged -- read this before `run` (see README)
   run [subject ...]  full dependency-free job array over the cohort. No args
                      = every subject in participants.tsv; positional args =
-                     just those subjects (small pilot / targeted retry)
+                     just those subjects (small pilot / targeted retry,
+                     e.g. `run $(cat subj_id.txt)`)
   list               print the cohort array + resource matrix; submit nothing
 
   PARROT_DRYRUN=1 ...   print the sbatch command instead of submitting
 
 Config (account/paths/partitions/fit hyperparameters) is read from
-hpc/leonardo/config.local.sh.
+hpc/jupiter/config.local.sh.
 EOF
         exit 1 ;;
 esac

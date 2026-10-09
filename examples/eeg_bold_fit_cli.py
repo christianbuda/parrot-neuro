@@ -76,7 +76,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--learning-rate-bold", type=float, default=None,
                     help="learning rate for the BOLD step -- default None reuses --learning-rate "
                          "(EEG and BOLD each get their own Adam state, so they can also use "
-                         "different step sizes).")
+                         "different step sizes). Ignored when --optimizer=lbfgs.")
+    p.add_argument("--optimizer", default="adam", choices=("adam", "lbfgs"),
+                    help="'adam' (default): train.make_optimizer. 'lbfgs': train.make_lbfgs_optimizer "
+                         "(optax.lbfgs with a zoom line search) -- a local-testing alternative, not yet "
+                         "a validated replacement; expect it much slower per epoch than Adam (the line "
+                         "search re-runs the simulator several times per step), especially against the "
+                         "BOLD loss. See make_lbfgs_optimizer's docstring.")
+    p.add_argument("--lbfgs-memory-size", type=int, default=10,
+                    help="number of past (param, grad) pairs kept for the L-BFGS Hessian-inverse "
+                         "approximation. Ignored when --optimizer=adam.")
+    p.add_argument("--lbfgs-max-linesearch-steps", type=int, default=20,
+                    help="max candidate step sizes the zoom line search tries per L-BFGS step -- "
+                         "each one is a full extra simulator forward pass. Ignored when --optimizer=adam.")
     p.add_argument("--bold-psd-weight", type=float, default=0.0,
                     help="weight of an optional Welch-PSD spectral-shape term (restricted to the "
                          "0.01-0.1Hz BOLD bandpass) added to the combined BOLD loss -- 0 (default) "
@@ -178,6 +190,9 @@ def main() -> None:
         fmri_task=args.fmri_task,
         learning_rate=args.learning_rate,
         learning_rate_bold=args.learning_rate_bold,
+        optimizer=args.optimizer,
+        lbfgs_memory_size=args.lbfgs_memory_size,
+        lbfgs_max_linesearch_steps=args.lbfgs_max_linesearch_steps,
         bold_psd_weight=args.bold_psd_weight,
         gamma_weight=args.gamma_weight,
         noise_seed=args.noise_seed,
@@ -222,6 +237,19 @@ def main() -> None:
               bold_loss_ratio=np.nan if bold_ratio is None else bold_ratio,
               combined_loss_ratio=combined_ratio)
 
+    # Lowest-combined-loss epoch (train.BestTracker) -- same keys as
+    # optimized_params.npz, so it drops into postfit_diagnostics_cli.py /
+    # params_report_cli.py unchanged. The final-epoch set above is kept as-is.
+    if result.best_diff_params is not None:
+        best_values = train.extract_learnable_values(result.best_diff_params, cfg.learnable_params)
+        np.savez(out_dir / "best_params.npz", **best_values,
+                  loss_eeg=np.array(result.loss_history_eeg), loss_bold=np.array(result.loss_history_bold),
+                  best_epoch=result.best_epoch, best_score=result.best_score,
+                  best_loss_eeg=np.nan if result.best_loss_eeg is None else result.best_loss_eeg,
+                  best_loss_bold=np.nan if result.best_loss_bold is None else result.best_loss_bold)
+        print(f"Best epoch: {result.best_epoch + 1} (combined loss ratio {result.best_score:.4f} "
+              f"vs final {combined_ratio:.4f}) -> best_params.npz")
+
     if result.loss_history_eeg:
         print(f"Final EEG loss:  {result.loss_history_eeg[-1]:.5f}  (ratio to first: {eeg_ratio:.4f})")
     if result.loss_history_bold:
@@ -242,13 +270,23 @@ def main() -> None:
         dataset = data.load_subject_eeg(subject, cfg.eeg_task, cfg.chunk_length)
         print(f"Loaded {subject.subj} EEG for visualization only (still not used as a fit target)")
 
-    diag = diagnostics.run_and_save(ctx, result.diff_params, result.static_params, dataset, out_dir)
+    # Diagnostics (figures + simulation_results.npz) are simulated from the
+    # best-epoch params when there are any, else the final ones.
+    if result.best_diff_params is not None:
+        diag_params, diag_label = result.best_diff_params, "best"
+    else:
+        diag_params, diag_label = result.diff_params, "final"
+    diag = diagnostics.run_and_save(ctx, diag_params, result.static_params, dataset, out_dir,
+                                    params_label=diag_label)
     # Saved (not just printed) so a caller that ran this as a subprocess --
     # e.g. eeg_bold_fit_sweep.py's --gpus parallel-worker mode -- can read the
     # metrics back after this process exits, without this script needing to
     # know anything about wandb itself.
     (out_dir / "diagnostics_metrics.json").write_text(
-        json.dumps({k: float(v) for k, v in diag["metrics"].items()}, indent=2)
+        # numeric only (eeg_bold_fit_sweep.py float()s every value); which
+        # params were simulated is recorded in simulation_results.npz
+        json.dumps({k: float(v) for k, v in diag["metrics"].items()}
+                   | ({"best_epoch": float(result.best_epoch)} if diag_label == "best" else {}), indent=2)
     )
 
 

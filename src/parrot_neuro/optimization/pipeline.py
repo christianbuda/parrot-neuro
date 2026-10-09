@@ -46,6 +46,9 @@ from .train import (
     make_eeg_loss_fn,
     make_joint_loss_fn,
     make_joint_update_step,
+    make_lbfgs_joint_update_step,
+    make_lbfgs_optimizer,
+    make_lbfgs_update_steps,
     make_optimizer,
     make_update_steps,
     print_learnable_params,
@@ -199,12 +202,18 @@ def build_context(cfg: config.BoldFitConfig, dataset=None) -> ExperimentContext:
     gamma_idx_max = int(np.searchsorted(freqs, cfg.gamma_fmax))
 
     # Separate optimizer per loss (see train.run_alternating_fit) -- also lets
-    # EEG and BOLD use different learning rates.
-    eeg_optimizer = make_optimizer(cfg.learning_rate, cfg.grad_clip_norm)
-    bold_optimizer = make_optimizer(
-        cfg.learning_rate_bold if cfg.learning_rate_bold is not None else cfg.learning_rate,
-        cfg.grad_clip_norm,
-    )
+    # EEG and BOLD use different learning rates (Adam only -- see
+    # make_lbfgs_optimizer's docstring for why lbfgs ignores learning_rate/
+    # learning_rate_bold/grad_clip_norm).
+    if cfg.optimizer == "lbfgs":
+        eeg_optimizer = make_lbfgs_optimizer(cfg.lbfgs_memory_size, cfg.lbfgs_max_linesearch_steps)
+        bold_optimizer = make_lbfgs_optimizer(cfg.lbfgs_memory_size, cfg.lbfgs_max_linesearch_steps)
+    else:
+        eeg_optimizer = make_optimizer(cfg.learning_rate, cfg.grad_clip_norm)
+        bold_optimizer = make_optimizer(
+            cfg.learning_rate_bold if cfg.learning_rate_bold is not None else cfg.learning_rate,
+            cfg.grad_clip_norm,
+        )
 
     return ExperimentContext(
         cfg=cfg, mask_cortical=mask_cortical, leadfield=leadfield,
@@ -272,7 +281,8 @@ def fit(ctx: ExperimentContext, on_epoch=None) -> FitResult:
         psd_nperseg=ctx.cfg.bold_psd_nperseg_trs, psd_noverlap=ctx.cfg.bold_psd_noverlap_trs,
     )
 
-    eeg_update_step, bold_update_step = make_update_steps(
+    update_steps_fn = make_lbfgs_update_steps if ctx.cfg.optimizer == "lbfgs" else make_update_steps
+    eeg_update_step, bold_update_step = update_steps_fn(
         eeg_loss_fn, bold_loss_fn, ctx.eeg_optimizer, ctx.bold_optimizer
     )
 
@@ -341,8 +351,12 @@ def _fit_joint(ctx: ExperimentContext, on_epoch=None) -> FitResult:
         joint_eeg_weight=ctx.cfg.joint_eeg_weight, joint_bold_weight=ctx.cfg.joint_bold_weight,
     )
 
-    joint_optimizer = make_optimizer(ctx.cfg.learning_rate, ctx.cfg.grad_clip_norm)
-    joint_update_step = make_joint_update_step(joint_loss_fn, joint_optimizer)
+    if ctx.cfg.optimizer == "lbfgs":
+        joint_optimizer = make_lbfgs_optimizer(ctx.cfg.lbfgs_memory_size, ctx.cfg.lbfgs_max_linesearch_steps)
+        joint_update_step = make_lbfgs_joint_update_step(joint_loss_fn, joint_optimizer)
+    else:
+        joint_optimizer = make_optimizer(ctx.cfg.learning_rate, ctx.cfg.grad_clip_norm)
+        joint_update_step = make_joint_update_step(joint_loss_fn, joint_optimizer)
 
     channel_indices = ctx.dataset.channel_indices
     return run_joint_fit(
