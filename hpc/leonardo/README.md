@@ -5,6 +5,24 @@ images run rootless (see the `feat/leonardo-apptainer-port` work), and
 `bin/run_reconstruction.sh --runtime apptainer` drives them there. This directory
 holds the cluster glue.
 
+## Resuming a reconstructed cohort in one job
+
+```bash
+bash hpc/leonardo/submit_cohort.sh run --chunks all
+```
+
+This submits one CPU-only job per subject (32 cores, 240 GB memory, 8-hour
+limit), selecting every pipeline stage. Existing completion logs skip finished
+steps. Use this for cohorts like LEMON with reconstruction, DWI, dipoles and
+meshing already complete, not for fresh subjects: missing logs can trigger heavy
+reconstruction steps, with no GPU and insufficient walltime. Do not run it while
+other jobs are processing the same subjects.
+
+Preview with `PARROT_DRYRUN=1`, or test one subject with
+`bash hpc/leonardo/submit_cohort.sh smoke all 010002`.
+The default `run` still uses the split A1/A2/B/C/D chain; `all` cannot be
+combined with those chunks.
+
 ## Image versions
 
 `bin/images.sh` is the shared image manifest for Docker, SIF builders, preflight

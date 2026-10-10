@@ -75,8 +75,8 @@ DRYRUN="${PARROT_DRYRUN:-0}"
 # that its outputs exist), so the successor is submitted with NO dependency. That
 # is what lets you PHASE the DAG under the submit cap: e.g. `run --chunks a1,a2,b,c`
 # (908 tasks), wait for B+C to finish, then `run --chunks d` (D finds its inputs).
-CHUNK_ORDER=(a1 a2 b c d)
-declare -A DEP=( [a1]="" [a2]="a1" [b]="a2" [c]="a2" [d]="b c" )
+CHUNK_ORDER=(a1 a2 b c d all)
+declare -A DEP=( [a1]="" [a2]="a1" [b]="a2" [c]="a2" [d]="b c" [all]="" )
 
 # --- chunk matrix -------------------------------------------------------------
 # Sets STAGES/GPUS/PART/QOS/GRES/CPUS/TIME/MEM for a chunk. Walltimes are grounded
@@ -105,7 +105,11 @@ set_chunk() {
         d)  STAGES="anisotropy,forwardsolvers,artifacts,qc"
             GPUS="none"; PART="$BOOST_PART"; QOS="$BOOST_QOS"
             CPUS=32;  TIME="12:00:00"; MEM="240G" ;;                     # forwardsolvers ~3.9h @32c
-        *)  echo "ERROR: unknown chunk '$1' (want a1|a2|b|c|d)"; exit 1 ;;
+        # CPU-only resume of an already-reconstructed cohort, not a fresh full run.
+        all) STAGES="all"
+             GPUS="none"; PART="$BOOST_PART"; QOS="$BOOST_QOS"
+             CPUS=32; TIME="08:00:00"; MEM="240G" ;;
+        *)  echo "ERROR: unknown chunk '$1' (want a1|a2|b|c|d|all)"; exit 1 ;;
     esac
 }
 
@@ -182,11 +186,15 @@ case "$CMD" in
             esac
         done
         # Selection: default is the full chain. Validate against the known chunks.
-        if [ -n "$CHUNKS_CSV" ]; then IFS=',' read -r -a sel <<< "$CHUNKS_CSV"; else sel=( "${CHUNK_ORDER[@]}" ); fi
+        if [ -n "$CHUNKS_CSV" ]; then IFS=',' read -r -a sel <<< "$CHUNKS_CSV"; else sel=(a1 a2 b c d); fi
         declare -A SELECTED=()
         for ch in "${sel[@]}"; do
-            case "$ch" in a1|a2|b|c|d) SELECTED[$ch]=1 ;; *) echo "ERROR: unknown chunk '$ch' in --chunks (want a1|a2|b|c|d)" >&2; exit 1 ;; esac
+            case "$ch" in a1|a2|b|c|d|all) SELECTED[$ch]=1 ;; *) echo "ERROR: unknown chunk '$ch' in --chunks (want a1|a2|b|c|d|all)" >&2; exit 1 ;; esac
         done
+        if [ -n "${SELECTED[all]:-}" ] && [ "${#SELECTED[@]}" -gt 1 ]; then
+            echo "ERROR: --chunks all cannot be combined with split chunks (they would race on the same outputs)." >&2
+            exit 1
+        fi
 
         # Footgun guard: cohort.sbatch resolves its subject from the subjects file at RUNTIME,
         # so a targeted retry (subject subset) submitted WHILE the original full-cohort arrays are
@@ -261,7 +269,7 @@ case "$CMD" in
     list)
         N=$(build_subjects)
         echo "$N subjects -> --array=0-$((N-1))${ARRAY_THROTTLE}  (file: $SUBJ_FILE)"
-        for ch in a1 a2 b c d; do
+        for ch in "${CHUNK_ORDER[@]}"; do
             set_chunk "$ch"
             printf '  %-3s %-9s %-6s gres=%-6s %3sc %-9s %-5s  %s\n' \
                 "$ch" "$PART" "$QOS" "${GRES:-none}" "$CPUS" "$TIME" "$MEM" "$STAGES"
@@ -273,7 +281,7 @@ case "$CMD" in
 usage: submit_cohort.sh <command>
 
   smoke <chunk> [subject]   submit ONE subject, ONE chunk, no dependencies
-                            chunk = a1|a2|b|c|d  (subject defaults to $SUBJECT)
+                            chunk = a1|a2|b|c|d|all  (subject defaults to $SUBJECT)
   run [--chunks LIST] [subject ...]
                             submit dependency-chained arrays (A1 -> A2 -> {B,C} -> D,
                             per-subject aftercorr). No args = full cohort from
@@ -284,6 +292,11 @@ usage: submit_cohort.sh <command>
                             assumed already complete on disk). Use it to PHASE the DAG
                             under the QOS submit cap -- see below.
   list                      print the cohort array + chunk/resource matrix; submit nothing
+
+  # Resume a reconstructed cohort in ONE CPU-only job per subject:
+  #   run --chunks all              # 32 cores, 240G, 8h limit; completed steps skip
+  # Requires existing reconstruction/DWI logs; use split chunks for fresh subjects.
+  # 'all' cannot be combined with split chunks. Default 'run' remains the split chain.
 
   # Phasing a big cohort under the ~1000-task submit cap (5*227 > 1000):
   #   run --chunks a1,a2,b,c          # phase 1 (908 tasks)
