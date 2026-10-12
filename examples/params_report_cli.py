@@ -27,7 +27,8 @@ glass-brain maps -- see ``write_glass_brain_plots``).
         --results-dir "eeg_bold_fit_res_balloon/atlas-100/010002_both"
 
 The subject, bids_root and atlas are all read back out of that run's own
-``config.json`` -- no need to pass them again.
+``config.json`` -- no need to pass them again. Pass ``--bids-dir`` to override
+the recorded bids_root (e.g. when the fit ran on another machine).
 """
 from __future__ import annotations
 
@@ -153,14 +154,16 @@ def classify(name: str) -> dict:
     }
 
 
-def load_run(results_dir: Path) -> tuple[dict, Subject]:
+def load_run(results_dir: Path, bids_dir: Path | None = None) -> tuple[dict, Subject]:
     """Read everything a prior eeg_bold_fit_cli.py run saved into
     results_dir, plus the region labels via the (jax-free) Subject API.
     Returns ``(data, subject)`` -- ``subject`` isn't JSON-serializable so it
     travels separately from ``data`` (which does get json.dumps'd, for the
-    interactive artifact)."""
+    interactive artifact). ``bids_dir``, if given, overrides the bids_root
+    recorded in config.json (e.g. a fit run on another machine)."""
     config = json.loads((results_dir / "config.json").read_text())
-    subject = Subject(config["subject"]["bids_root"], config["subject"]["subject"])
+    bids_root = str(bids_dir) if bids_dir is not None else config["subject"]["bids_root"]
+    subject = Subject(bids_root, config["subject"]["subject"])
     atlas = config["atlas"]
     labels = subject.load.connectivity_labels(atlas, fmri_aligned=True)
 
@@ -997,6 +1000,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--results-dir", required=True,
                     help="a prior eeg_bold_fit_cli.py run's output dir (contains optimized_params.npz, config.json)")
+    p.add_argument("--bids-dir", default=None,
+                    help="BIDS root to load labels/dipoles from (default: the bids_root in the run's config.json)")
     p.add_argument("--no-static", action="store_true", help="skip the matplotlib PNGs + params_report.md")
     p.add_argument("--no-artifact", action="store_true", help="skip artifact.html")
     args = p.parse_args()
@@ -1006,7 +1011,7 @@ def main() -> None:
         raise SystemExit(f"{results_dir} has no optimized_params.npz -- not a fit results dir?")
 
     print(f"Loading {results_dir} ...")
-    data, subject = load_run(results_dir)
+    data, subject = load_run(results_dir, Path(args.bids_dir) if args.bids_dir else None)
     print(f"  sub-{data['subject']} atlas-{data['atlas']}: {len(data['nodes'])} nodes, "
           f"{data['num_epochs']} epochs")
 
