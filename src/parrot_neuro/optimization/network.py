@@ -28,7 +28,18 @@ from .model import CustomStateNetwork, HeterogeneousModel
 _COUPLING_PARAM_NAMES = frozenset(DelayedLinearCoupling.DEFAULT_PARAMS.keys())
 
 
-def _make_learnable(brain_model, name: str, low: float, high: float, init: float | None, num_nodes: int):
+def random_init(lp: LearnableParam, index: int, init_seed: int, init_spread: float, size: int) -> np.ndarray:
+    """Seeded per-node start for one learnable param: uniform over the central
+    ``init_spread`` fraction of [low, high]. Seeded by (init_seed, index) so a
+    param's draw does not depend on which other params are learnable."""
+    if not 0 < init_spread <= 1:
+        raise ValueError(f"init_spread must be in (0, 1], got {init_spread}")
+    rng = np.random.default_rng([init_seed, index])
+    mid, half = 0.5 * (lp.low + lp.high), 0.5 * init_spread * (lp.high - lp.low)
+    return rng.uniform(mid - half, mid + half, size=size)
+
+
+def _make_learnable(brain_model, name: str, low: float, high: float, init, num_nodes: int):
     if name not in HeterogeneousModel.DEFAULT_PARAMS:
         raise ValueError(
             f"Unknown dynamics parameter {name!r}; must be one of "
@@ -36,8 +47,9 @@ def _make_learnable(brain_model, name: str, low: float, high: float, init: float
         )
     if init is None:
         init = HeterogeneousModel.DEFAULT_PARAMS[name]
+    init = np.broadcast_to(np.asarray(init, dtype=np.float64), (num_nodes,))
     brain_model.params[name] = SigmoidBoundedParameter(
-        jnp.full((num_nodes,), init, dtype=jnp.float64), low, high
+        jnp.array(init, dtype=jnp.float64), low, high
     )
 
 
@@ -50,6 +62,9 @@ def build_network(
     base_sigma: float = 0.048,
     noise_seed: int = 69,
     solver_block_size: int | None = None,
+    init_seed: int | None = None,
+    init_spread: float = 0.5,
+    init_keep: Sequence[str] = (),
 ):
     """Build the JR-cortex/WC-subcortex network, wrapping each parameter
     named in ``learnable_params`` as a ``SigmoidBoundedParameter``.
@@ -76,6 +91,12 @@ def build_network(
     unlike ``grad_horizon`` (truncated BPTT, not exposed here since it biases
     the gradient toward fast timescales).
 
+    ``init_seed`` (default ``None``: every node starts at ``LearnableParam.init``)
+    draws each learnable parameter's start per node from the central
+    ``init_spread`` fraction of its bounds -- see ``random_init``; names in
+    ``init_keep`` keep ``LearnableParam.init``. Used to test how stable the
+    fitted parameters are across initializations.
+
     This ``solver`` is shared by both the EEG and BOLD ``prepare()`` calls in
     ``train.build_simulators`` -- the BOLD one also streams its BOLD forward
     model (HRF convolution or Balloon-Windkessel ODE integration, per
@@ -86,24 +107,28 @@ def build_network(
     ``config.BoldFitConfig.solver_block_size`` for the full rationale.
     """
     print(f"Building network with {num_nodes} nodes, {len(learnable_params)} learnable params, "
-          f"base_sigma={base_sigma}, noise_seed={noise_seed}, solver_block_size={solver_block_size}")
+          f"base_sigma={base_sigma}, noise_seed={noise_seed}, solver_block_size={solver_block_size}, "
+          f"init_seed={init_seed}" + ("" if init_seed is None else f" (spread {init_spread})"))
     brain_model = HeterogeneousModel(mask_cortical=mask_cortical)
 
     # Each stays a plain float (not learnable) unless a "coupling"
     # LearnableParam below wraps it as a SigmoidBoundedParameter.
     coupling_values = dict(DelayedLinearCoupling.DEFAULT_PARAMS)
 
-    for lp in learnable_params:
+    for i, lp in enumerate(learnable_params):
+        size = num_nodes if lp.location == "dynamics" else 1
+        randomize = init_seed is not None and lp.name not in init_keep
+        start = random_init(lp, i, init_seed, init_spread, size) if randomize else lp.init
         if lp.location == "dynamics":
-            _make_learnable(brain_model, lp.name, lp.low, lp.high, lp.init, num_nodes)
+            _make_learnable(brain_model, lp.name, lp.low, lp.high, start, num_nodes)
         elif lp.location == "coupling":
             if lp.name not in _COUPLING_PARAM_NAMES:
                 raise ValueError(
                     f"Unknown coupling parameter {lp.name!r}; must be one of {sorted(_COUPLING_PARAM_NAMES)}"
                 )
-            init = coupling_values[lp.name] if lp.init is None else lp.init
+            init = coupling_values[lp.name] if start is None else start
             coupling_values[lp.name] = SigmoidBoundedParameter(
-                jnp.array([init], dtype=jnp.float64), lp.low, lp.high
+                jnp.array(np.ravel(init), dtype=jnp.float64), lp.low, lp.high
             )
         else:
             raise ValueError(f"Unknown location {lp.location!r} for learnable param {lp.name!r}")

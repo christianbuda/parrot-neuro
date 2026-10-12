@@ -99,6 +99,17 @@ def parse_args() -> argparse.Namespace:
                          "loss, alongside the existing normalized-linear PSD MSE over 1-15Hz -- "
                          "0 (default) = off.")
     p.add_argument("--noise-seed", type=int, default=69)
+    p.add_argument("--init-seed", type=int, default=None,
+                    help="draw every node's starting value of every learnable param (and G) "
+                         "uniformly from the central --init-spread fraction of its bounds, with this "
+                         "seed -- for initialization-stability replicates. Default: off (homogeneous "
+                         "LearnableParam.init). The actual starts are saved to init_params.npz.")
+    p.add_argument("--init-spread", type=float, default=0.5,
+                    help="fraction of each param's [low, high] range --init-seed draws from, centred "
+                         "on the midpoint (default 0.5)")
+    p.add_argument("--init-keep", nargs="*", default=[],
+                    help="learnable params that keep their default homogeneous init even with "
+                         "--init-seed (e.g. --init-keep G)")
     p.add_argument("--t1-warmup", type=float, default=30_000.0,
                     help="duration (ms) of the one-time BOLD warm-up solve, separate from "
                          "--num-epochs's t1_bold. Defaults to a short warm-up (comfortable margin "
@@ -196,6 +207,9 @@ def main() -> None:
         bold_psd_weight=args.bold_psd_weight,
         gamma_weight=args.gamma_weight,
         noise_seed=args.noise_seed,
+        init_seed=args.init_seed,
+        init_spread=args.init_spread,
+        init_keep=tuple(args.init_keep),
         solver_block_size=solver_block_size,
         t1_warmup=t1_warmup,
         early_stop_patience=args.early_stop_patience,
@@ -213,10 +227,15 @@ def main() -> None:
         print(f"optimize={args.optimize!r}: EEG not loaded (not a fit target).")
 
     ctx = pipeline.build_context(cfg, dataset)
-    result = pipeline.fit(ctx)
 
     out_dir = Path(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # starting values actually used (homogeneous or --init-seed draws) -- what
+    # the stability report compares the fitted values against
+    np.savez(out_dir / "init_params.npz",
+             **train.extract_learnable_values(ctx.diff_params_init, cfg.learnable_params))
+
+    result = pipeline.fit(ctx)
 
     np.save(out_dir / "loss_history_eeg.npy", np.array(result.loss_history_eeg))
     np.save(out_dir / "loss_history_bold.npy", np.array(result.loss_history_bold))
