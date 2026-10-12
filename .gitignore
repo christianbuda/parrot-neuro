@@ -1,12 +1,22 @@
 # parrot development
 development/
 eeg_bold_fit_res/
+eeg_bold_fit_res_balloon\ copy/
+eeg_bold_fit_res_hrf/
 eeg_bold_fit_res_summary/
+eeg_bold_fit_sweep_res/
 eeg_channel_qc_res/
 eeg_bold_fit_sweep_res/
+fit_test_pop/
+fit_test_pop_2/
+fit_test_pop_3_eo/
+fit_test_pop_3/
+best_leonardo/
 # parrot specific
 .temp_pipeline*
-
+examples/eeg_bold_fit_new.py
+examples/eeg_bold_fit.ipynb
+examples/print_loss_history.py
 # cohort analyses (git-ignored: large caches + result artifacts, not shipped code)
 analyses/
 
@@ -85,6 +95,7 @@ template_data/hartmut/assets/
 !.pixi/config.toml
 templateflow_cache/
 hpc/leonardo/config.local.sh
+hpc/jupiter/config.local.sh
 
 # W&B sweep operator state (submit_sweep.sh) -- run-specific, not portable across machines.
 # Namespaced (SWEEP_NAME=<tag>) variants use a .<tag> suffix / -<tag> suffix -- glob them too.
