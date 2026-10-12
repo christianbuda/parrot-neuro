@@ -121,6 +121,33 @@ OPTIM_CPUS="${OPTIM_CPUS:-8}"
 OPTIM_MEM="${OPTIM_MEM:-64G}"
 OPTIM_TIME="${OPTIM_TIME:-08:00:00}"
 
+# Noise / initialization seeds (eeg_bold_fit_cli.py --noise-seed / --init-seed).
+# Empty = the CLI defaults (noise seed 69, homogeneous LearnableParam.init).
+OPTIM_NOISE_SEED="${OPTIM_NOISE_SEED:-}"
+OPTIM_INIT_SEED="${OPTIM_INIT_SEED:-}"
+OPTIM_INIT_SPREAD="${OPTIM_INIT_SPREAD:-0.5}"
+OPTIM_INIT_KEEP="${OPTIM_INIT_KEEP:-}"       # space-separated params kept at default init, e.g. "G"
+OPTIM_RUN_TAG="${OPTIM_RUN_TAG:-}"           # suffixes the per-subject JAX cache dir
+
+# `replicates` design (stability across initialization AND noise): one job
+# array per (init seed x noise seed) cell, each into its own output root
+# ${REPLICATE_OUTPUT_PREFIX}_init-<i>_noise-<n>. "default" = homogeneous init.
+# The (default, 69) cell is the plain `run` output, so it is skipped unless
+# REPLICATE_INCLUDE_BASE=1. Full crossing separates init from noise variance.
+REPLICATE_INIT_SEEDS="${REPLICATE_INIT_SEEDS:-default 1 2 3}"
+REPLICATE_NOISE_SEEDS="${REPLICATE_NOISE_SEEDS:-69 1001}"
+REPLICATE_INCLUDE_BASE="${REPLICATE_INCLUDE_BASE:-0}"
+REPLICATE_OUTPUT_PREFIX="${REPLICATE_OUTPUT_PREFIX:-$OPTIM_OUTPUT_DIR}"
+# Whole-node packing: each array element takes a node and runs this many fits
+# at once, one per GPU (optim_pack.sbatch). CPUs/mem default to that many
+# times the single-fit OPTIM_CPUS/OPTIM_MEM; override if the node is smaller.
+REPLICATE_GPUS_PER_NODE="${REPLICATE_GPUS_PER_NODE:-4}"
+REPLICATE_NODE_CPUS="${REPLICATE_NODE_CPUS:-}"
+REPLICATE_NODE_MEM="${REPLICATE_NODE_MEM:-}"
+# Subjects when none are given on the command line (one per line or
+# tab-separated; see hpc/pick_replicate_subjects.py).
+REPLICATE_SUBJECTS_FILE="${REPLICATE_SUBJECTS_FILE:-}"
+
 DRYRUN="${PARROT_DRYRUN:-0}"
 
 build_subjects() {
@@ -144,7 +171,8 @@ export_run_vars() {
            OPTIM_NUM_EPOCHS OPTIM_BOLD_EVERY OPTIM_EEG_TASK OPTIM_FMRI_TASK OPTIM_LEARNING_RATE \
            OPTIM_LEARNING_RATE_BOLD OPTIM_BOLD_PSD_WEIGHT OPTIM_GAMMA_WEIGHT \
            OPTIM_OUTPUT_DIR OPTIM_SOLVER_BLOCK_SIZE OPTIM_T1_WARMUP \
-           OPTIM_EARLY_STOP_PATIENCE OPTIM_EARLY_STOP_WINDOW OPTIM_EARLY_STOP_MIN_DELTA
+           OPTIM_EARLY_STOP_PATIENCE OPTIM_EARLY_STOP_WINDOW OPTIM_EARLY_STOP_MIN_DELTA \
+           OPTIM_NOISE_SEED OPTIM_INIT_SEED OPTIM_INIT_SPREAD OPTIM_INIT_KEEP OPTIM_RUN_TAG
 }
 
 CMD="${1:-}"
@@ -223,6 +251,58 @@ case "$CMD" in
         fi
         ;;
 
+    replicates)
+        shift || true
+        subjects=( "$@" )
+        if [ "${#subjects[@]}" -eq 0 ] && [ -n "$REPLICATE_SUBJECTS_FILE" ]; then
+            [ -f "$REPLICATE_SUBJECTS_FILE" ] || { echo "ERROR: REPLICATE_SUBJECTS_FILE=$REPLICATE_SUBJECTS_FILE not found" >&2; exit 1; }
+            # one id per line or tab/space-separated (subj_id.txt style); "sub-" optional
+            mapfile -t subjects < <(tr '\t ' '\n\n' < "$REPLICATE_SUBJECTS_FILE" | sed '/^$/d')
+        fi
+        [ "${#subjects[@]}" -gt 0 ] || { echo "ERROR: no subjects -- pass them (./submit_optim.sh replicates <subj ...>) or set REPLICATE_SUBJECTS_FILE (e.g. from hpc/pick_replicate_subjects.py)" >&2; exit 1; }
+        G="$REPLICATE_GPUS_PER_NODE"
+        TASKS="${SUBJ_FILE%.txt}.replicates.$(date +%Y%m%d-%H%M%S)-$$.tasks"
+        mkdir -p "$(dirname "$TASKS")"
+        : > "$TASKS"
+        roots=()
+        for init in $REPLICATE_INIT_SEEDS; do
+            for noise in $REPLICATE_NOISE_SEEDS; do
+                if [ "$init" = default ] && [ "$noise" = 69 ] && [ "$REPLICATE_INCLUDE_BASE" != 1 ]; then continue; fi
+                roots+=( "${REPLICATE_OUTPUT_PREFIX}_init-${init}_noise-${noise}/atlas-$OPTIM_ATLAS" )
+            done
+        done
+        # subject-major: a node mostly runs one subject's refits (similar runtimes, less idle GPU)
+        for subj in "${subjects[@]}"; do
+            subj="${subj#sub-}"
+            for init in $REPLICATE_INIT_SEEDS; do
+                for noise in $REPLICATE_NOISE_SEEDS; do
+                    if [ "$init" = default ] && [ "$noise" = 69 ] && [ "$REPLICATE_INCLUDE_BASE" != 1 ]; then continue; fi
+                    echo "$subj $init $noise ${REPLICATE_OUTPUT_PREFIX}_init-${init}_noise-${noise}" >> "$TASKS"
+                done
+            done
+        done
+        NT=$(wc -l < "$TASKS")
+        NN=$(( (NT + G - 1) / G ))
+        CPUS="${REPLICATE_NODE_CPUS:-$(( G * OPTIM_CPUS ))}"
+        MEM="${REPLICATE_NODE_MEM:-$(( G * ${OPTIM_MEM%G} ))G}"
+        echo "[replicates] ${#subjects[@]} subjects x $(( NT / ${#subjects[@]} )) refits = $NT fits; $G per node -> $NN node jobs"
+        echo "[replicates] init seeds {$REPLICATE_INIT_SEEDS} x noise seeds {$REPLICATE_NOISE_SEEDS}; tasks: $TASKS"
+        echo "[replicates] per node: gpu x$G  ${CPUS}c  mem=$MEM  time=$OPTIM_TIME"
+        export_run_vars
+        export OPTIM_TASKS_FILE="$TASKS" OPTIM_GPUS_PER_NODE="$G" OPTIM_RUNNER="$SCRIPT_DIR/optim_cohort.sbatch" \
+               OPTIM_SKIP_DIAGNOSTICS=0 OPTIM_GPU_UTIL_LOG=0
+        unset OPTIM_SUBJECT OPTIM_SUBJECTS_FILE || true
+        cmd=( sbatch --account="$ACCT" --job-name=parrot-optim-rep
+              --partition="$BOOST_PART" --qos="$BOOST_QOS" --gres=gpu:$G
+              --cpus-per-task="$CPUS" --time="$OPTIM_TIME" --mem="$MEM"
+              --array="0-$((NN - 1))${ARRAY_THROTTLE}" --export=ALL --parsable
+              "$SCRIPT_DIR/optim_pack.sbatch" )
+        if [ "$DRYRUN" = 1 ]; then printf '%q ' "${cmd[@]}"; echo; head -n "$G" "$TASKS" | sed 's/^/    node 0: /'
+        else echo "[replicates] submitted: $("${cmd[@]}")  (per-fit logs: ./parrot-optim-rep-logs/)"; fi
+        echo "[replicates] when done, add to the population report:"
+        echo "    --replicate-roots ${roots[*]}"
+        ;;
+
     list)
         N=$(build_subjects)
         echo "$N subjects -> --array=0-$((N-1))${ARRAY_THROTTLE}  (file: $SUBJ_FILE)"
@@ -236,6 +316,8 @@ case "$CMD" in
         printf '  learning_rate_bold=%s  bold_psd_weight=%s  gamma_weight=%s\n' \
             "${OPTIM_LEARNING_RATE_BOLD:-off}" "$OPTIM_BOLD_PSD_WEIGHT" "$OPTIM_GAMMA_WEIGHT"
         echo "  output: $OPTIM_OUTPUT_DIR"
+        printf '  seeds: noise=%s  init=%s (spread %s, keep: %s)\n' "${OPTIM_NOISE_SEED:-69}" "${OPTIM_INIT_SEED:-default}" "$OPTIM_INIT_SPREAD" "${OPTIM_INIT_KEEP:-none}"
+        printf '  replicates design: init {%s} x noise {%s} -> %s_init-<i>_noise-<n>; %s fits/node; subjects file: %s\n' "$REPLICATE_INIT_SEEDS" "$REPLICATE_NOISE_SEEDS" "$REPLICATE_OUTPUT_PREFIX" "$REPLICATE_GPUS_PER_NODE" "${REPLICATE_SUBJECTS_FILE:-none}"
         ;;
 
     *)
@@ -250,6 +332,12 @@ usage: submit_optim.sh <command>
   run [subject ...]  full dependency-free job array over the cohort. No args
                      = every subject in participants.tsv; positional args =
                      just those subjects (small pilot / targeted retry)
+  replicates [subj ...]
+                     stability refits: every subject x (REPLICATE_INIT_SEEDS x
+                     REPLICATE_NOISE_SEEDS) cell, packed REPLICATE_GPUS_PER_NODE
+                     (default 4) fits per node, one per GPU; each cell writes to
+                     ${REPLICATE_OUTPUT_PREFIX}_init-<i>_noise-<n>. Subjects from
+                     the args, else REPLICATE_SUBJECTS_FILE
   list               print the cohort array + resource matrix; submit nothing
 
   PARROT_DRYRUN=1 ...   print the sbatch command instead of submitting

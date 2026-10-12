@@ -143,3 +143,52 @@ fields plus whatever else your search fixed -- `OPTIM_ATLAS`,
   the ~31GiB peak LEONARDO measured) carry over.
 - **`jutil user projects`** lists your project/budget name(s) -- use this
   instead of LEONARDO's `saldo -b` wherever these scripts check the account.
+
+## Stability replicates (init + noise)
+
+To test how stable the fitted parameters are, refit a subset of subjects with
+other initializations and noise realizations: every subject x every cell of
+`REPLICATE_INIT_SEEDS` x `REPLICATE_NOISE_SEEDS` (default `default 1 2 3` x
+`69 1001`). Each cell writes to `${REPLICATE_OUTPUT_PREFIX}_init-<i>_noise-<n>`
+(default prefix: `OPTIM_OUTPUT_DIR`).
+
+**Which subjects.** Nothing is chosen automatically: pass the IDs, or set
+`REPLICATE_SUBJECTS_FILE`. To pick a balanced subset of subjects with a
+finished fit in every listed run:
+
+```bash
+pixi run python hpc/pick_replicate_subjects.py --participants $BIDS/participants.tsv \
+    --require-root <EC run>/atlas-100 --require-root <EO run>/atlas-100 \
+    --n 32 --out replicate_subjects.txt      # half young / half old, seeded
+REPLICATE_SUBJECTS_FILE=replicate_subjects.txt PARROT_DRYRUN=1 ./submit_optim.sh replicates   # check
+REPLICATE_SUBJECTS_FILE=replicate_subjects.txt ./submit_optim.sh replicates
+```
+
+**Whole-node packing.** Each array element takes one node and runs
+`REPLICATE_GPUS_PER_NODE` (default 4) fits at once, one per GPU
+(`optim_pack.sbatch` -> `optim_cohort.sbatch` with `CUDA_VISIBLE_DEVICES=<g>`).
+The default design is 32 subjects x 7 refits = 224 fits = 56 node jobs. Tasks
+are ordered subject-first, so a node mostly runs one subject's refits, which
+take similar time. The node request is 4x `OPTIM_CPUS` / `OPTIM_MEM`; override
+with `REPLICATE_NODE_CPUS` / `REPLICATE_NODE_MEM`. Per-fit logs go to
+`./parrot-optim-rep-logs/`, and a node job fails if any of its fits failed.
+
+- `init-<i>` with i = an int passes `--init-seed i`: every node starts at a
+  random value in the central `OPTIM_INIT_SPREAD` (default 0.5) fraction of the
+  parameter's bounds. `default` keeps the usual homogeneous init.
+  `OPTIM_INIT_KEEP="G"` keeps the listed params at their default start (random
+  G starts at 1.25-3.75, far above typical fitted values -- smoke-test first).
+- `noise-<n>` passes `--noise-seed n`.
+- The `(default, 69)` cell is the plain `run` output, so it is skipped. Use the
+  same fit hyperparameters (config.local.sh) as that run, otherwise the refits
+  are not comparable. Set `REPLICATE_INCLUDE_BASE=1` to refit it too.
+- Each fit saves the starting values it actually used to `init_params.npz`.
+
+When the jobs finish, pass the printed roots to the population report, with
+`--results-root` set to the base run:
+
+```bash
+pixi run python examples/population_params_report_cli.py \
+    --results-root <base>/atlas-100 --replicate-roots <root1>/atlas-100 <root2>/atlas-100 ... \
+    [--compare-root <EO run>/atlas-100] --bids-dir <bids>
+```

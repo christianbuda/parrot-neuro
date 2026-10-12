@@ -82,6 +82,16 @@ OPTIM_EARLY_STOP_PATIENCE="${OPTIM_EARLY_STOP_PATIENCE:-}"
 OPTIM_EARLY_STOP_WINDOW="${OPTIM_EARLY_STOP_WINDOW:-20}"
 OPTIM_EARLY_STOP_MIN_DELTA="${OPTIM_EARLY_STOP_MIN_DELTA:-1e-3}"
 
+# --- per-fit overrides from optim_pack.sbatch (several fits per node, one per
+# GPU). Applied AFTER config.local.sh so a config that sets OPTIM_OUTPUT_DIR etc.
+# unconditionally cannot redirect a packed fit. ${VAR+x}: an empty value is
+# meaningful (OPTIM_TASK_INIT_SEED="" = default init).
+[ -n "${OPTIM_TASK_SUBJECT:-}" ] && OPTIM_SUBJECT="$OPTIM_TASK_SUBJECT"
+[ -n "${OPTIM_TASK_OUTPUT_DIR:-}" ] && OPTIM_OUTPUT_DIR="$OPTIM_TASK_OUTPUT_DIR"
+[ -n "${OPTIM_TASK_RUN_TAG+x}" ] && OPTIM_RUN_TAG="$OPTIM_TASK_RUN_TAG"
+[ -n "${OPTIM_TASK_NOISE_SEED+x}" ] && OPTIM_NOISE_SEED="$OPTIM_TASK_NOISE_SEED"
+[ -n "${OPTIM_TASK_INIT_SEED+x}" ] && OPTIM_INIT_SEED="$OPTIM_TASK_INIT_SEED"
+
 # --- which subject: array element, or an explicit smoke/pilot subject -------
 if [ -n "${OPTIM_SUBJECT:-}" ]; then
     SUBJECT="$OPTIM_SUBJECT"
@@ -102,7 +112,8 @@ PIXI="$(command -v pixi || true)"
 # Keep the JAX compilation cache off JUPITER's small, quota'd $HOME, and give
 # each subject its own subdir -- a job array writing one shared cache
 # concurrently risks lock contention / a corrupt shared entry.
-export PARROT_JAX_CACHE_DIR="$WORKDIR/parrot/.jax_cache/sub-$SUBJECT"
+# (+ run tag: concurrent replicate arrays of one subject get separate caches)
+export PARROT_JAX_CACHE_DIR="$WORKDIR/parrot/.jax_cache/sub-$SUBJECT${OPTIM_RUN_TAG:+-$OPTIM_RUN_TAG}"
 mkdir -p "$PARROT_JAX_CACHE_DIR" "$OPTIM_OUTPUT_DIR"
 
 # JAX's default preallocates ~75% of the GPU upfront regardless of actual
@@ -118,6 +129,7 @@ cd "$WORKDIR" || { echo "ERROR: cannot cd to WORKDIR=$WORKDIR"; exit 1; }
 
 echo "=== Parrot optim: job ${SLURM_JOB_ID:-?} (array ${SLURM_ARRAY_JOB_ID:--}_${SLURM_ARRAY_TASK_ID:--}) on $(hostname), $(date) ==="
 echo "subject=$SUBJECT  atlas=$OPTIM_ATLAS  optimize=$OPTIM_OPTIMIZE  bold_model=$OPTIM_BOLD_MODEL  schedule=$OPTIM_SCHEDULE  bold_fc_weight=$OPTIM_BOLD_FC_WEIGHT  bold_dfc_weight=$OPTIM_BOLD_DFC_WEIGHT  dfc_window_trs=$OPTIM_DFC_WINDOW_TRS  dfc_step_trs=$OPTIM_DFC_STEP_TRS  epochs=$OPTIM_NUM_EPOCHS  early_stop_patience=${OPTIM_EARLY_STOP_PATIENCE:-off}"
+echo "noise_seed=${OPTIM_NOISE_SEED:-69 (default)}  init_seed=${OPTIM_INIT_SEED:-default}  init_spread=${OPTIM_INIT_SPREAD:-0.5}  init_keep=${OPTIM_INIT_KEEP:-none}  run_tag=${OPTIM_RUN_TAG:-none}"
 nvidia-smi -L 2>/dev/null || echo "(no GPU visible -- this stage always needs one)"
 
 # --- optional GPU-utilisation sampling (submit_optim.sh sets this for `pilot`
@@ -152,6 +164,12 @@ if [ -n "$OPTIM_EARLY_STOP_PATIENCE" ]; then
     ARGS+=( --early-stop-patience "$OPTIM_EARLY_STOP_PATIENCE"
             --early-stop-window "$OPTIM_EARLY_STOP_WINDOW"
             --early-stop-min-delta "$OPTIM_EARLY_STOP_MIN_DELTA" )
+fi
+[ -n "${OPTIM_NOISE_SEED:-}" ] && ARGS+=( --noise-seed "$OPTIM_NOISE_SEED" )
+if [ -n "${OPTIM_INIT_SEED:-}" ]; then
+    ARGS+=( --init-seed "$OPTIM_INIT_SEED" --init-spread "${OPTIM_INIT_SPREAD:-0.5}" )
+    # shellcheck disable=SC2206  # intentional word split of a space-separated list
+    [ -n "${OPTIM_INIT_KEEP:-}" ] && ARGS+=( --init-keep $OPTIM_INIT_KEEP )
 fi
 
 SECONDS=0
