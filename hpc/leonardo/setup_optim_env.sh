@@ -24,6 +24,16 @@ for _c in "${PARROT_CONFIG:-}" "$SCRIPT_DIR/config.local.sh"; do
   [ -n "$_c" ] && [ -f "$_c" ] && { . "$_c"; echo "[config] loaded $_c"; break; }
 done
 REPO="${REPO:-$HOME/parrot-neuro}"
+# Package cache OFF $HOME: it holds every downloaded .conda (many GB), which
+# overflows the small home quota ("Quota exceeded (os error 122)"). Same
+# filesystem as $REPO/.pixi when WORKDIR is the project space, so pixi can
+# hardlink instead of copy. Override with PIXI_CACHE_DIR.
+if [ -n "${WORKDIR:-}" ]; then
+  export PIXI_CACHE_DIR="${PIXI_CACHE_DIR:-$WORKDIR/.pixi_cache}"
+  export RATTLER_CACHE_DIR="${RATTLER_CACHE_DIR:-$PIXI_CACHE_DIR}"
+  mkdir -p "$PIXI_CACHE_DIR"
+  echo "[pixi] package cache: $PIXI_CACHE_DIR"
+fi
 
 if ! command -v pixi >/dev/null 2>&1; then
   if [ -x "$HOME/.pixi/bin/pixi" ]; then
