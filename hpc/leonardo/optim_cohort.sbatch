@@ -197,7 +197,11 @@ set +e
 # -u: unbuffered stdout. Without it, Python block-buffers stdout once it's not
 # a TTY (i.e. redirected to the .out file), so the epoch-by-epoch progress
 # prints can sit invisible for the whole job instead of showing up live.
-(cd "$REPO" && "$PIXI" run python -u examples/eeg_bold_fit_cli.py "${ARGS[@]}")
+# --as-is: use the env exactly as installed -- never re-solve the lock or
+# download (compute nodes are offline; several packed fits would also race to
+# install the same env). If pixi.lock changed (e.g. after a git pull), re-run
+# setup_optim_env.sh on the LOGIN node first.
+(cd "$REPO" && "$PIXI" run --as-is python -u examples/eeg_bold_fit_cli.py "${ARGS[@]}")
 rc=$?
 set -e
 echo "=== optim finished in $((SECONDS/60)) min, rc=$rc ($(date)) ==="
