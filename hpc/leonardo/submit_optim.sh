@@ -284,6 +284,21 @@ case "$CMD" in
                 done
             done
         done
+        # Create every output root NOW (login node): a wrong prefix -- typically
+        # $WORKDIR used on the command line, where the login shell doesn't have
+        # it, giving "/<dir>/..." -- fails here, not after the queue wait.
+        case "$REPLICATE_OUTPUT_PREFIX" in
+            /*) ;;
+            *) echo "ERROR: REPLICATE_OUTPUT_PREFIX must be an absolute path, got '$REPLICATE_OUTPUT_PREFIX'" >&2; exit 1 ;;
+        esac
+        for root in "${roots[@]}"; do
+            if ! mkdir -p "${root%/atlas-*}" 2>/dev/null; then
+                echo "ERROR: cannot create output dir ${root%/atlas-*}" >&2
+                echo "       REPLICATE_OUTPUT_PREFIX='$REPLICATE_OUTPUT_PREFIX' -- if you set it on the command line" >&2
+                echo "       with \$WORKDIR, note that WORKDIR only exists inside config.local.sh: use the literal path." >&2
+                exit 1
+            fi
+        done
         NT=$(wc -l < "$TASKS")
         NN=$(( (NT + G - 1) / G ))
         CPUS="${REPLICATE_NODE_CPUS:-$(( G * OPTIM_CPUS ))}"
