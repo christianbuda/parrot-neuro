@@ -34,7 +34,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 [ -f "$SCRIPT_DIR/config.local.sh" ] || { echo "ERROR: hpc/jupiter/config.local.sh not found -- cp it from config.local.sh.example"; exit 1; }
+# Values already in the environment (call-time overrides like
+# OPTIM_NUM_EPOCHS=5 ./submit_optim.sh ..., or what submit_optim.sh exported to
+# this job) win over config.local.sh, even if it assigns them plainly.
+_env_overrides="$(declare -px | grep -E '^declare -x (OPTIM|REPLICATE)_[A-Za-z0-9_]*=' || true)"
 . "$SCRIPT_DIR/config.local.sh"
+eval "$_env_overrides"; unset _env_overrides
 
 : "${ACCT:?set ACCT in config.local.sh}"
 : "${WORKDIR:?set WORKDIR in config.local.sh}"

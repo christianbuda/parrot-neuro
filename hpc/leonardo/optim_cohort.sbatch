@@ -27,11 +27,16 @@ set -euo pipefail
 # --- personal config (gitignored): ACCT/WORKDIR/REPO/BIDS shared with the ----
 # reconstruction scripts. sbatch spools this script, so $BASH_SOURCE isn't the
 # repo copy -- resolve via $SLURM_SUBMIT_DIR or the default clone at $HOME.
+# Values already in the environment (call-time overrides like
+# OPTIM_NUM_EPOCHS=5 ./submit_optim.sh ..., or what submit_optim.sh exported to
+# this job) win over config.local.sh, even if it assigns them plainly.
+_env_overrides="$(declare -px | grep -E '^declare -x (OPTIM|REPLICATE)_[A-Za-z0-9_]*=' || true)"
 for _c in "${PARROT_CONFIG:-}" \
           "${SLURM_SUBMIT_DIR:-}/hpc/leonardo/config.local.sh" \
           "$HOME/parrot-neuro/hpc/leonardo/config.local.sh"; do
   [ -n "$_c" ] && [ -f "$_c" ] && { . "$_c"; echo "[config] loaded $_c"; break; }
 done
+eval "$_env_overrides"; unset _env_overrides
 
 REPO="${REPO:-$HOME/parrot-neuro}"
 : "${WORKDIR:?set WORKDIR in config.local.sh (e.g. /leonardo_work/<ACCT>)}"
