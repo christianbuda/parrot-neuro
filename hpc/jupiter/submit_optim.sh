@@ -137,6 +137,9 @@ REPLICATE_NODE_MEM="${REPLICATE_NODE_MEM:-}"
 # Subjects when none are given on the command line (one per line or
 # tab-separated; see hpc/pick_replicate_subjects.py).
 REPLICATE_SUBJECTS_FILE="${REPLICATE_SUBJECTS_FILE:-}"
+# Where the packed jobs' SLURM .out/.err and per-fit logs go -- on WORKDIR,
+# not the submit dir (usually the clone in $HOME, whose quota is tiny).
+REPLICATE_LOG_DIR="${REPLICATE_LOG_DIR:-$WORKDIR/parrot/logs/optim-rep}"
 
 DRYRUN="${PARROT_DRYRUN:-0}"
 
@@ -282,16 +285,19 @@ case "$CMD" in
         echo "[replicates] init seeds {$REPLICATE_INIT_SEEDS} x noise seeds {$REPLICATE_NOISE_SEEDS}; tasks: $TASKS"
         echo "[replicates] per node: gpu x$G  ${CPUS}c  mem=$MEM  time=$OPTIM_TIME"
         export_run_vars
+        mkdir -p "$REPLICATE_LOG_DIR"
         export OPTIM_TASKS_FILE="$TASKS" OPTIM_GPUS_PER_NODE="$G" OPTIM_RUNNER="$SCRIPT_DIR/optim_cohort.sbatch" \
-               OPTIM_SKIP_DIAGNOSTICS=0 OPTIM_GPU_UTIL_LOG=0
+               OPTIM_PACK_LOGDIR="$REPLICATE_LOG_DIR" OPTIM_SKIP_DIAGNOSTICS=0 OPTIM_GPU_UTIL_LOG=0
         unset OPTIM_SUBJECT OPTIM_SUBJECTS_FILE || true
         cmd=( sbatch --account="$ACCT" --job-name=parrot-optim-rep
               --partition="$GPU_PART" --qos="$GPU_QOS" --gres=gpu:"$GPU_GRES_TYPE":$G
               --cpus-per-task="$CPUS" --time="$OPTIM_TIME" --mem="$MEM"
               --array="0-$((NN - 1))${ARRAY_THROTTLE}" --export=ALL --parsable
+              --output="$REPLICATE_LOG_DIR/parrot-optim-rep-%A_%a.out"
+              --error="$REPLICATE_LOG_DIR/parrot-optim-rep-%A_%a.err"
               "$SCRIPT_DIR/optim_pack.sbatch" )
         if [ "$DRYRUN" = 1 ]; then printf '%q ' "${cmd[@]}"; echo; head -n "$G" "$TASKS" | sed 's/^/    node 0: /'
-        else echo "[replicates] submitted: $("${cmd[@]}")  (per-fit logs: ./parrot-optim-rep-logs/)"; fi
+        else echo "[replicates] submitted: $("${cmd[@]}")  (job + per-fit logs: $REPLICATE_LOG_DIR)"; fi
         echo "[replicates] when done, add to the population report:"
         echo "    --replicate-roots ${roots[*]}"
         ;;

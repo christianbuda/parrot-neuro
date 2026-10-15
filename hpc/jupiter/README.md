@@ -170,8 +170,8 @@ REPLICATE_SUBJECTS_FILE=replicate_subjects.txt ./submit_optim.sh replicates
 The default design is 32 subjects x 7 refits = 224 fits = 56 node jobs. Tasks
 are ordered subject-first, so a node mostly runs one subject's refits, which
 take similar time. The node request is 4x `OPTIM_CPUS` / `OPTIM_MEM`; override
-with `REPLICATE_NODE_CPUS` / `REPLICATE_NODE_MEM`. Per-fit logs go to
-`./parrot-optim-rep-logs/`, and a node job fails if any of its fits failed.
+with `REPLICATE_NODE_CPUS` / `REPLICATE_NODE_MEM`. SLURM and per-fit logs go
+to `$WORKDIR/parrot/logs/optim-rep/` (`REPLICATE_LOG_DIR`), and a node job fails if any of its fits failed.
 
 - `init-<i>` with i = an int passes `--init-seed i`: every node starts at a
   random value in the central `OPTIM_INIT_SPREAD` (default 0.5) fraction of the
