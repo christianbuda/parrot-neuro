@@ -131,7 +131,7 @@ class LearnableParam:
 DEFAULT_LEARNABLE_PARAMS: tuple[LearnableParam, ...] = (
     LearnableParam("P", 0.0, 2.0, "dynamics", init=0.5),
     LearnableParam("c_ee", 6.0, 20.0, "dynamics", init=12.0),
-    # LearnableParam("c_ei", 2.0, 20.0, "dynamics", init=10.0),
+    LearnableParam("c_ei", 2.0, 20.0, "dynamics", init=10.0),
     LearnableParam("A", 2.0, 5.0, "dynamics", init=3.25),
     LearnableParam("B", 12.0, 35.0, "dynamics", init=22.0),
     LearnableParam("a", 0.04, 0.2, "dynamics", init=0.1),
