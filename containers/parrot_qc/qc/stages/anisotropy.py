@@ -1,7 +1,6 @@
 """Anisotropy QC (optional): WM conductivity tensors fed to the FEM leadfield.
 
-Confirms the tensors are SPD with bounded anisotropy, and -- reusing the logic of
-utils/qc_anisotropy.py -- that the principal direction points the anatomically
+Confirms the tensors are SPD with bounded anisotropy, and that the principal direction points the anatomically
 correct way (corpus callosum L-R, brainstem S-I). Also renders the pipeline's DEC
 map (CC should be red, cortico-spinal tract blue).
 """
@@ -58,7 +57,7 @@ def run(ctx) -> StageResult:
     r.add(PASS, "anisotropic fraction",
           f"{int(aniso.sum())}/{len(tensors)} tets anisotropic")
 
-    # principal-direction-by-region (reuses qc_anisotropy approach)
+    # Check principal directions against anatomical regions.
     pev = v[:, :, 2]
     mesh_f = ctx.stage_dir("tetmesh") / "tetrahedral_mesh.mesh"
     wm_f = d / "wm_element_indices.npy"

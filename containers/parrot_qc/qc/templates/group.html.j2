@@ -12,6 +12,8 @@
   main { padding:20px 24px 60px; }
   .badge { display:inline-block; padding:2px 9px; border-radius:10px; color:#fff; font-size:12px; font-weight:600; text-transform:uppercase; }
   .pass{background:var(--pass)} .warn{background:var(--warn)} .fail{background:var(--fail)} .skip{background:var(--skip)}
+  .critical{background:#8b0000}
+  .guide { background:white; border:1px solid #ddd; padding:12px 18px; margin-bottom:20px; max-width:1100px; font-size:14px; }
   table { border-collapse:collapse; font-size:12px; background:#fff; }
   th, td { border:1px solid #e0e0e0; padding:5px 7px; text-align:center; white-space:nowrap; }
   th.stage { writing-mode:vertical-rl; transform:rotate(180deg); height:140px; font-weight:500; }
@@ -23,10 +25,11 @@
 <body>
 <header>
   <h1>Parrot reconstruction QC — group
-      <span class="badge {{ overall }}">{{ overall }}</span></h1>
+      <span class="badge {{ overall }}">{{ 'CRITICAL FAILURE' if overall == 'critical' else overall }}</span></h1>
   <div class="meta">{{ subjects|length }} subject(s) · generated {{ generated }}</div>
 </header>
 <main>
+  {% include 'guide.html.j2' %}
   <table>
     <tr>
       <th class="sub" style="writing-mode:horizontal-tb">subject</th>
@@ -35,8 +38,10 @@
     </tr>
     {% for s in subjects %}
     <tr>
-      <td class="sub"><a href="{{ s.href }}">{{ s.subject }}</a></td>
-      <td><span class="badge {{ s.overall }}">{{ s.overall }}</span></td>
+      <td class="sub">{% if s.href %}<a href="{{ s.href }}">{{ s.subject }}</a>{% else %}{{ s.subject }}{% endif %}
+        {% if s.execution_failure %}<br>Stopped: {{ s.execution_failure.stage }} (exit {{ s.execution_failure.exit_code }})
+        <br><small>{{ s.execution_failure.log }}</small>{% endif %}</td>
+      <td><span class="badge {{ s.overall }}">{{ 'CRITICAL FAILURE' if s.overall == 'critical' else s.overall }}</span></td>
       {% for st in stage_order %}
         {% set status = s.stages.get(st, 'skip') %}
         <td title="{{ st }}: {{ status }}"><span class="cell {{ status }}"></span></td>

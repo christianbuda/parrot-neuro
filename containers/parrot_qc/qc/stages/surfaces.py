@@ -73,7 +73,7 @@ def run(ctx) -> StageResult:
         ctx.add_figure(r, "bem_nesting", "BEM layer nesting (scalp ⊃ skull ⊃ brain)",
                        lambda p: _render_bem(r, bem, p))
     else:
-        r.warn("BEM layers", "no bem/ directory found")
+        r.add(SKIP, "BEM layers", "optional BEM surfaces unavailable; FEM outputs unaffected")
     return r
 
 
@@ -106,10 +106,8 @@ _FOV_CHECKED = ("brain", "inner_skull")
 # the edge). Threshold is a heuristic: observed 1-4 mm on a head whose BEM solves fine vs
 # 18-29 mm on one whose brain shell ran away.
 _FOV_TOL_MM = 5.0
-# The solver re-repairs the decimated shells before solving, which clears small
-# violations; only larger ones actually cost the BEM leadfield. Also a heuristic,
-# calibrated the same way (2.3 mm repaired successfully, 15 mm did not).
-_NEST_FAIL_MM = 5.0
+# Describe the original-shell violation, not the outcome of solver-side repair.
+_NEST_LARGE_MM = 5.0
 
 
 def _check_bem_nesting(result, surf_dir, ctx):
@@ -165,10 +163,11 @@ def _check_bem_nesting(result, surf_dir, ctx):
     if not bad:
         result.add(PASS, "BEM layer nesting",
                    f"{len(shells)} shells strictly nested (all pairs, both directions)")
-    elif worst < _NEST_FAIL_MM:
+    elif worst < _NEST_LARGE_MM:
         result.add(WARN, "BEM layer nesting", "; ".join(bad) +
-                   " -- small enough that the solver's post-decimation repair should clear it")
+                   " -- original shells intersect; solver repair may resolve this. "
+                   "See OpenMEEG availability for the actual outcome; FEM outputs unaffected.")
     else:
-        result.add(FAIL, "BEM layer nesting", "; ".join(bad) +
-                   " -- too large to repair, so OpenMEEG refuses the geometry and the "
-                   "BEM leadfield is skipped (FEM leadfields unaffected)")
+        result.add(WARN, "BEM layer nesting", "; ".join(bad) +
+                   " -- substantial intersections in the original optional BEM shells. "
+                   "See OpenMEEG availability for the actual outcome; FEM outputs unaffected.")

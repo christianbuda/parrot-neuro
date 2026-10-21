@@ -40,6 +40,8 @@ jedi = "<0.20"
 # conda-forge so pixi resolves them against the same numpy as everything else.
 nibabel = "*"
 trimesh = "*"
+nilearn = "*"   # QC plotting imports used by reporting tests
+pyvista = "*"   # QC 3D rendering imports (includes VTK)
 pytest = "*"     # runs tests/ (the Subject API smoke test)
 
 [pypi-dependencies]

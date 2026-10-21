@@ -111,7 +111,7 @@ def _check_source_outliers(r, name, L):
 
 
 SNAP_TOLERANCE_MM = 1.5   # see _check_electrode_clearance
-CLEARANCE_FAIL_MM = 3.0   # below this the 1/r^2 growth is steep enough to distort the column
+CLOSE_SOURCE_MM = 3.0    # report these separately; leadfield outliers determine failure
 
 
 def _check_electrode_clearance(r, name, positions, elec, gap):
@@ -126,12 +126,12 @@ def _check_electrode_clearance(r, name, positions, elec, gap):
     if positions is None or elec is None or gap is None:
         return
     d, _ = cKDTree(elec).query(positions, k=1)
-    st = (PASS if d.min() >= gap - SNAP_TOLERANCE_MM
-          else WARN if d.min() >= CLEARANCE_FAIL_MM else FAIL)
+    # Distance is a risk indicator; the measured leadfield determines numerical failure.
+    st = PASS if d.min() >= gap - SNAP_TOLERANCE_MM else WARN
     r.add(st, f"{name} electrode clearance",
           f"closest source {d.min():.2f} mm from an electrode (target {gap:g} mm at placement, "
           f"{SNAP_TOLERANCE_MM:g} mm snap tolerance); {int((d < gap).sum())} below target, "
-          f"{int((d < CLEARANCE_FAIL_MM).sum())} under {CLEARANCE_FAIL_MM:g} mm; "
+           f"{int((d < CLOSE_SOURCE_MM).sum())} under {CLOSE_SOURCE_MM:g} mm; "
           f"median {np.median(d):.1f} mm")
 
 
@@ -235,9 +235,10 @@ def run(ctx) -> StageResult:
             # -- their leadfield columns come from the HArtMuT template -- which the noise
             # generator should know.
             if has_neck is False:
-                r.warn("muscle FOV coverage",
-                       f"head model stops at z={mus.get('scalp_z_min_mm')} mm; {below} muscle "
-                       f"source(s) lie below it and take their leadfield from the template block")
+                r.notes.append(
+                    f"Limited neck coverage: head model stops at z={mus.get('scalp_z_min_mm')} mm; "
+                    f"{below} muscle sources use the template block. This is an expected "
+                    "acquisition limitation; template calibration is checked below.")
         except Exception as e:  # noqa: BLE001
             r.warn("artifactsources.json", f"unreadable: {e}")
     else:
@@ -266,6 +267,8 @@ def run(ctx) -> StageResult:
     # --- leadfields ------------------------------------------------------------------------------
     lf_dir = ctx.stage_dir("leadfields")
     eye_L = _check_leadfield(r, "eye leadfield", lf_dir / EYE_LF, n_eye)
+    if not (lf_dir / EYE_LF).exists():
+        r.fail("eye leadfield", "missing despite artifact sources being present")
 
     muscle_L = None
     if (lf_dir / MUSCLE_LF).exists():

@@ -11,6 +11,7 @@
   header .meta { font-size:13px; opacity:.8; margin-top:4px; }
   .badge { display:inline-block; padding:2px 9px; border-radius:10px; color:#fff; font-size:12px; font-weight:600; text-transform:uppercase; }
   .pass{background:var(--pass)} .warn{background:var(--warn)} .fail{background:var(--fail)} .skip{background:var(--skip)}
+  .critical{background:#8b0000} .failure{border:3px solid #8b0000}
   main { padding: 16px 24px 60px; }
   .toc { columns: 3; font-size:14px; margin-bottom:20px; }
   .toc a { text-decoration:none; color:#1565c0; }
@@ -30,10 +31,20 @@
 <body>
 <header>
   <h1>Parrot reconstruction QC — {{ report.subject }}
-      <span class="badge {{ report.overall_status }}">{{ report.overall_status }}</span></h1>
+       <span class="badge {{ report.overall_status }}">{{ 'CRITICAL FAILURE' if report.overall_status == 'critical' else report.overall_status }}</span></h1>
   <div class="meta">generated {{ report.generated }}</div>
 </header>
 <main>
+  {% if report.execution_failure %}
+  <section class="failure">
+    <h2>CRITICAL FAILURE — reconstruction stopped</h2>
+    <p>Stage: <b>{{ report.execution_failure.stage }}</b> · exit code {{ report.execution_failure.exit_code }}
+       · {{ report.execution_failure.timestamp }}</p>
+    <p>Log: <code>{{ report.execution_failure.log }}</code></p>
+    <p>Requested outputs may be incomplete. Resolve the failed stage and rerun the pipeline, then refresh QC.</p>
+  </section>
+  {% endif %}
+  {% include 'guide.html.j2' %}
   <div class="toc">
     {% for s in report.stages %}
       <div><span class="badge {{ s.status }}">{{ s.status }}</span>

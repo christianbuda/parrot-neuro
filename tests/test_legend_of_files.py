@@ -95,7 +95,8 @@ def layout_stages() -> set[str]:
 def orchestrator_folders() -> set[str]:
     """Folders bin/run_reconstruction.sh writes, derived from its NAME= steps."""
     steps = re.findall(r'(?m)^\s*NAME="([a-z0-9_-]+)"', _read(ORCHESTRATOR))
-    return {STEP_FOLDER.get(step, step) for step in steps}
+    # Initialization labels failures before a stage starts; it owns no output folder.
+    return {STEP_FOLDER.get(step, step) for step in steps if step != "initialization"}
 
 
 def test_layout_constants_are_documented():

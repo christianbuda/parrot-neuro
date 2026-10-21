@@ -30,6 +30,7 @@ check_step() {
     local partial="${log_file}.partial"  # live output lives here until finalised
 
     if [ "$exit_code" -ne 0 ]; then
+        FAILURE_EXIT_CODE="$exit_code"
         echo "[ERROR] $description failed! (Exit Code: $exit_code)"
         echo "Check log file for more info: $log_file"
 
@@ -47,6 +48,7 @@ check_step() {
             local failed_log
             failed_log="$(dirname "$log_file")/FAILED_$(date '+%Y%m%d-%H%M%S')_$(basename "$log_file")"
             mv "$src" "$failed_log"
+            FAILURE_LOG="$failed_log"
             echo "Renamed failed log to: $failed_log"
         fi
 
@@ -377,7 +379,19 @@ WORK_DIR_DOCKER="/derivatives/$(basename "$WORK_DIR")"
 # the old root-ownership normalization (a chown from inside a root container) is gone.
 CURRENT_SUBJECT=""
 cleanup() {
+    local rc=$?
+    if [ "$rc" -ne 0 ] && [ -n "$CURRENT_SUBJECT" ]; then
+        local failure_dir="$OUTPUT_DIR/logs/sub-${CURRENT_SUBJECT}"
+        mkdir -p "$failure_dir"
+        # Persist first: reporting may itself be unavailable after a container failure.
+        printf '%s\n' "${NAME:-initialization}" "${FAILURE_EXIT_CODE:-$rc}" \
+            "$(date -Iseconds)" "${FAILURE_LOG:-${LOG_FILE:-unknown}}" > "$failure_dir/pipeline_failure.txt.tmp"
+        mv "$failure_dir/pipeline_failure.txt.tmp" "$failure_dir/pipeline_failure.txt"
+        run_in_docker_QC "qc-failure" "$failure_dir/qc-failure_log.txt" \
+            "python /qc/run_qc.py --subject $CURRENT_SUBJECT --output_dir /derivatives --failure-only"
+    fi
     [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR"
+    return "$rc"
 }
 # Graceful stop: previously `trap cleanup EXIT INT TERM` ran cleanup but, since cleanup
 # does not exit, the script RESUMED after SIGINT/SIGTERM -- so the only way to stop it was
@@ -590,6 +604,8 @@ cp /pipeline/geometry.geom /pipeline/conductivities.cond /pipeline/neuronal_stre
             return 0
         fi
         echo "[ERROR] $step_name failed for sub-${SUBJECT} (Exit Code: $rc). Log: $failed" | tee -a "${LOG_FILE:-/dev/stderr}"
+        FAILURE_EXIT_CODE="$rc"
+        FAILURE_LOG="$failed"
         return "$rc"
     fi
     mv -f "${log_file}.partial" "$log_file"   # SUCCESS: commit this solver's own marker
@@ -679,6 +695,8 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     echo "====================================================================="
 
     CURRENT_SUBJECT="$SUBJECT"
+    NAME="initialization"
+    unset FAILURE_EXIT_CODE FAILURE_LOG
 
     # Per-subject writable HOME for rootless containers (see container_exec). Lives in the
     # ephemeral work dir (swept on exit) on the derivatives filesystem; bound at /parrot_home.
@@ -2028,6 +2046,14 @@ PY
     # NON-FATAL -- informational, must never block the pipeline. Quick
     # (~2-3 min/subject) relative to the heavy stages.
     # ---------------------------------------------------------------------
+    # A successful retry clears only a failure belonging to a stage selected in this run.
+    # A QC-only invocation must never erase evidence of a reconstruction failure.
+    if [ -f "$LOG_DIR/pipeline_failure.txt" ]; then
+        read -r failed_stage < "$LOG_DIR/pipeline_failure.txt"
+        if want_stage "$failed_stage" || { [ "$failed_stage" = "initialization" ] && want_stage ingest; }; then
+            rm -f "$LOG_DIR/pipeline_failure.txt"
+        fi
+    fi
     NAME="qc"
     if want_stage "$NAME"; then
         log_step "Running final $NAME for subject $SUBJECT..."
