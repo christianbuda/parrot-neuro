@@ -43,18 +43,8 @@ SUDO="${SUDO:-sudo}"
 [ "$(id -u)" -eq 0 ] && SUDO=""          # already root -> no sudo needed
 mkdir -p "$OUT"
 
-# Keep this list in sync with prepull_sifs.sh / check_leonardo.sh / bin/images.sh.
-# .sif name = <image-without-registry> with ':' -> '_', matching sif_path().
-IMAGES=(
-  christianbuda/parrot_mri_reconstruction:latest
-  christianbuda/parrot_forward_model:latest
-  christianbuda/parrot_forward_solvers:latest
-  christianbuda/parrot_qc:latest
-  deepmi/fastsurfer:latest
-  khanlab/hippunfold:latest
-  pennlinc/qsiprep:latest
-  pennlinc/qsirecon:latest
-)
+source "$(dirname "${BASH_SOURCE[0]}")/../../bin/images.sh"
+IMAGES=( "${ALL_IMAGES[@]}" )
 
 # Optional subset: positional args match against the image basenames, e.g.
 # `... parrot_mri_reconstruction qsiprep` builds only those two.
@@ -63,7 +53,7 @@ if [ "$#" -gt 0 ]; then
   for a in "$@"; do
     hit=""
     for img in "${IMAGES[@]}"; do
-      b="${img##*/}"; b="${b%%:*}"
+      b="${img##*/}"; b="${b%%@*}"; b="${b%%:*}"
       [ "$b" = "$a" ] && { want+=( "$img" ); hit=1; break; }
     done
     [ -n "$hit" ] || miss+=( "$a" )
@@ -75,7 +65,7 @@ fi
 echo "== local .sif build -> $OUT  (runtime: $APP, root: ${SUDO:-yes(already)}) =="
 built=(); failed=()
 for img in "${IMAGES[@]}"; do
-  base="${img##*/}"; base="${base//:/_}"
+  base="$(image_cache_name "$img")"
   sif="$OUT/${base}.sif"
   if [ -f "$sif" ] && [ "$FORCE" != 1 ]; then
     echo "  have    $base.sif (skip; FORCE=1 to rebuild)"; built+=( "$sif" ); continue
@@ -85,7 +75,9 @@ for img in "${IMAGES[@]}"; do
   # the images you just built/pushed. Fall back to Docker Hub for anything not on
   # this machine (typically the external fastsurfer/hippunfold/qsiprep/qsirecon).
   if docker image inspect "$img" >/dev/null 2>&1; then
-    src="docker-daemon://$img"; echo "  build   $base.sif  <- local docker  ($img)"
+    # docker-daemon transport accepts an image ID, not every digest reference form.
+    id="$(docker image inspect --format '{{.Id}}' "$img")"
+    src="docker-daemon://$id"; echo "  build   $base.sif  <- local docker  ($img)"
   else
     src="docker://$img";        echo "  build   $base.sif  <- Docker Hub    ($img)"
   fi

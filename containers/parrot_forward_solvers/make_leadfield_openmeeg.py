@@ -8,6 +8,11 @@ import subprocess
 import pymeshlab
 import sys
 import json
+from functools import partial
+
+from parrot_common.meshops import nesting_margins
+from parrot_common.meshops import outward_dir as _outward_dir
+from parrot_common.meshops import signed_clearance as _signed_clearance
 
 # Force line buffering for standard output
 sys.stdout.reconfigure(line_buffering=True)
@@ -118,20 +123,11 @@ def enforce_nesting(inner, outer, min_clear, step, max_iter=300, smooth_rounds=3
     verts = np.array(outer.vertices, dtype=float)
     faces = np.array(outer.faces)
 
-    def signed_clearance(points):
-        # AUTHORITATIVE signed clearance: -signed_distance, +outside / -inside.
-        # The SIGN must come from signed_distance's pseudonormal test, which stays
-        # correct near edges/folds; a naive dot(point - closest, face_normal) reads
-        # a deeply-inside vertex closest to a fold as "outside" and silently leaves
-        # an intersection. embreex makes this fast (see the Dockerfile).
-        return -trimesh.proximity.signed_distance(inner, points)
-
-    def outward_dir(points):
-        # Outward push direction: normal of the closest inner triangle (also the
-        # correspondence-free direction we need, since decimation destroyed the
-        # shells' vertex correspondence), from one cheap closest_point query.
-        _, _, tri = trimesh.proximity.closest_point(inner, points)
-        return inner.face_normals[tri]
+    # Both primitives (and why the sign must come from signed_distance) live in
+    # parrot_common.meshops, shared with gather_surfaces' full-res repair. embreex makes
+    # them fast here (see the Dockerfile).
+    signed_clearance = partial(_signed_clearance, inner)
+    outward_dir = partial(_outward_dir, inner)
 
     # One full authoritative scan; then step ADAPTIVELY on the shrinking bad subset
     # only, so the repair scales with the (localized) violation, not the whole mesh.
@@ -176,6 +172,27 @@ def enforce_nesting(inner, outer, min_clear, step, max_iter=300, smooth_rounds=3
         print(f"WARNING: {int(residual.sum())} vertices of '{name}' remain within "
               f"{relax * min_clear * 1000:.2f} mm of the inner surface after repair.")
     return out, ok
+
+def check_nesting(inner, outer, name_inner, name_outer):
+    """Verify `inner` is contained in `outer`, testing BOTH directions.
+
+    enforce_nesting only guarantees "every vertex of `outer` sits outside `inner`".
+    That is not containment: `inner` can bulge through a large `outer` triangle while
+    all of `outer`'s vertices stay clear, which is how a badly deformed shell passes
+    repair and then gets rejected by om_assemble. Detection only -- nothing is moved,
+    because with no ground truth we cannot know which of the two shells is wrong.
+    """
+    ins, out = nesting_margins(inner, outer)
+    n_out, n_in = int((out < 0).sum()), int((ins < 0).sum())
+    if n_out or n_in:
+        parts = []
+        if n_in:
+            parts.append(f"{n_in} {name_inner} vertices up to {-ins.min() * 1000:.2f} mm outside it")
+        if n_out:
+            parts.append(f"{n_out} {name_outer} vertices up to {-out.min() * 1000:.2f} mm inside {name_inner}")
+        print(f"WARNING: {name_inner} is not contained in {name_outer}: " + "; ".join(parts) + ".")
+    return n_out == 0 and n_in == 0
+
 
 def run_openmeeg_pipeline():
     # Define the commands as lists of strings (best practice for subprocess)
@@ -319,14 +336,25 @@ if __name__ == "__main__":
     nesting_ok = nesting_ok and ok
     outer_skin, ok = enforce_nesting(outer_skull, outer_skin, MIN_CLEAR, STEP, name="scalp")
     nesting_ok = nesting_ok and ok
+    # Independent check of the repaired shells. enforce_nesting's own residual is
+    # one-directional, so it can report success on geometry om_assemble rejects;
+    # this is what actually decides whether the BEM is solvable. Every pair is
+    # checked, not just adjacent ones -- the chain assumes transitivity, which
+    # does not hold when containment was never established.
+    shells = [(brain, "brain"), (inner_skull, "inner_skull"),
+              (outer_skull, "outer_skull"), (outer_skin, "scalp")]
+    for i, (inner, ni) in enumerate(shells):
+        for outer, no in shells[i + 1:]:
+            nesting_ok = check_nesting(inner, outer, ni, no) and nesting_ok
+
     if not nesting_ok:
         # Fail fast with a clear message instead of letting om_assemble crash
         # cryptically downstream. The orchestrator runs this step non-fatally, so
         # this becomes a logged skip of the BEM leadfield for this subject; the
         # FEM leadfields (DUNEuro) are unaffected.
         raise RuntimeError(
-            "BEM surfaces could not be made strictly nested after post-decimation "
-            "repair; skipping OpenMEEG BEM leadfield for this subject.")
+            "BEM surfaces are not strictly nested after post-decimation repair; "
+            "skipping OpenMEEG BEM leadfield for this subject.")
 
     # dump BEM surfaces
     write_brainvisa_tri('brain.tri', brain)

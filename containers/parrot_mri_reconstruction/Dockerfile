@@ -128,6 +128,11 @@ RUN wget -qO /home/bigbrain_scans/full16_100um_2009b_sym.nii.gz "https://ftp.big
 COPY Schaefer2018_LocalGlobal /home/Schaefer2018_LocalGlobal
 COPY scripts /scripts
 
+# Code shared with the other Parrot images. It lives outside this build context, so bin/build.sh
+# passes containers/_shared as the BuildKit named context "shared". Edit it there, rebuild here.
+COPY --from=shared parrot_common /opt/parrot_shared/parrot_common
+ENV PYTHONPATH="/opt/parrot_shared"
+
 # set fs license and make it so that freesurfer and fsl are sourced in non interactive shells
 ENV FS_LICENSE=/SUBJECTS/license.txt
 

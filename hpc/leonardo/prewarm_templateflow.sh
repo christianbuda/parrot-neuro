@@ -39,7 +39,8 @@ CACHE="${1:-${OUTPUT_DIR:+$OUTPUT_DIR/.templateflow}}"; CACHE="${CACHE:-$PWD/tem
 SRC="${SRC:-}"                            # existing cache to COPY from; empty => BUILD via the container
 RUNTIME="${RUNTIME:-auto}"                # auto-detect | docker (workstation) | apptainer (login node, uses SIF_DIR)
 SIF_DIR="${SIF_DIR:-${SIF:-}}"            # .sif cache dir (apptainer only); falls back to $SIF from config
-IMG="${QSIPREP_IMAGE:-pennlinc/qsiprep:latest}"   # docker image ref (docker runtime)
+source "$(dirname "${BASH_SOURCE[0]}")/../../bin/images.sh"
+IMG="${QSIPREP_IMAGE:-$IMG_QSIPREP}"
 # Template superset for BUILD: QSIPrep outputs to MNI152NLin2009cAsym and skull-strips via
 # MNI152NLin6Asym/OASIS30ANTs; QSIRecon surface work uses fsLR/fsaverage. Override with TEMPLATES=.
 TEMPLATES="${TEMPLATES:-MNI152NLin2009cAsym MNI152NLin6Asym OASIS30ANTs fsLR fsaverage}"
@@ -74,7 +75,7 @@ run_in_qsiprep() {   # $1 = bash -c command string
       local app sif
       app="$(command -v apptainer || command -v singularity || true)"
       [ -n "$app" ] || { echo "ERROR: RUNTIME=apptainer but no apptainer/singularity on PATH."; return 1; }
-      sif="$SIF_DIR/qsiprep_latest.sif"
+      sif="$SIF_DIR/$(image_cache_name "$IMG").sif"
       [ -f "$sif" ] || { echo "ERROR: $sif not found (set SIF_DIR to your .sif cache)."; return 1; }
       "$app" exec --env TEMPLATEFLOW_HOME=/tf --bind "$CACHE:/tf" "$sif" bash -c "$1" ;;
     *) echo "ERROR: RUNTIME must be 'docker' or 'apptainer' (got '$RUNTIME')."; return 1 ;;

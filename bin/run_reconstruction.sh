@@ -30,6 +30,7 @@ check_step() {
     local partial="${log_file}.partial"  # live output lives here until finalised
 
     if [ "$exit_code" -ne 0 ]; then
+        FAILURE_EXIT_CODE="$exit_code"
         echo "[ERROR] $description failed! (Exit Code: $exit_code)"
         echo "Check log file for more info: $log_file"
 
@@ -47,6 +48,7 @@ check_step() {
             local failed_log
             failed_log="$(dirname "$log_file")/FAILED_$(date '+%Y%m%d-%H%M%S')_$(basename "$log_file")"
             mv "$src" "$failed_log"
+            FAILURE_LOG="$failed_log"
             echo "Renamed failed log to: $failed_log"
         fi
 
@@ -81,6 +83,8 @@ usage() {
     echo "  --spacing-duneuro-simnibs  Dipole spacing (mm) for DUNEuro FEM with SimNIBS mesh (Default: 3)."
     echo "  --spacing-duneuro-cgal     Dipole spacing (mm) for DUNEuro FEM with CGAL mesh (Default: 2)."
     echo "  --dipole-seed              Integer seed for reproducible dipole sampling (Default: unset = random)."
+    echo "  --artifact-electrode-gap   Minimum artifact source-to-electrode distance in mm; closer sources are"
+    echo "                             dropped (Default: 5). Guards the 1/r^2 point-dipole singularity."
     echo "  --dwi-preprocessed FORMAT  DWI is already preprocessed; skip QSIPrep. FORMAT is 'qsiprep' (a qsiprep-"
     echo "                             derivatives tree already at <output_dir>/qsiprep/) or 'hcp' (HCP-YA, staged under"
     echo "                             <bids_dir>/sourcedata/hcp/<ID>/; uses QSIRecon --input-type hcpya)."
@@ -93,7 +97,7 @@ usage() {
     echo "                             cohort be split into walltime-bounded, dependency-chained SLURM jobs. Known stages:"
     echo "                             ingest,fastsurfer,hippunfold,freesurfer,mne,schaefer,freesurfersubcortical,simnibscharm,"
     echo "                             fslfirst,synthstrip,cerebellum,bigbrain,surfaces,atlas,tissuelabels,qsiprep,qsirecon,"
-    echo "                             connectivity,dwitensor,dwi2t1,electrodes,dipoles,tetmesh,anisotropy,forwardsolvers,artifacts,qc."
+    echo "                             connectivity,dwitensor,dwi2t1,fiducials,electrodes,dipoles,tetmesh,anisotropy,forwardsolvers,artifacts,qc."
     exit 1
 }
 
@@ -130,6 +134,7 @@ SPACING_OPENMEEG=4
 SPACING_DUNEURO_SIMNIBS=3
 SPACING_DUNEURO_CGAL=2
 DIPOLE_SEED=""
+ARTIFACT_ELECTRODE_GAP=5
 DWI_FORMAT=""           # "" = raw DWI in BIDS dwi/ (run QSIPrep); else a preprocessed format
 FIX_INPUTS=false
 RECON_BACKEND=fastsurfer
@@ -169,6 +174,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dipole-seed)
             DIPOLE_SEED="$2"
+            shift 2
+            ;;
+        --artifact-electrode-gap)
+            ARTIFACT_ELECTRODE_GAP="$2"
             shift 2
             ;;
         --dwi-preprocessed)
@@ -250,7 +259,7 @@ fi
 # ANTs heavies), not here -- the orchestrator only needs the per-stage on/off gate.
 KNOWN_STAGES=(ingest fastsurfer hippunfold freesurfer mne schaefer freesurfersubcortical
               simnibscharm fslfirst synthstrip cerebellum bigbrain surfaces atlas tissuelabels
-              qsiprep qsirecon connectivity dwitensor dwi2t1 electrodes dipoles tetmesh
+              qsiprep qsirecon connectivity dwitensor dwi2t1 fiducials electrodes dipoles tetmesh
               anisotropy forwardsolvers artifacts qc)
 if [ "$STAGES_ARG" = "all" ]; then
     STAGE_SET=("${KNOWN_STAGES[@]}")
@@ -305,14 +314,9 @@ else
     fi
 fi
 
-# Map a docker image tag to its .sif filename in SIF_DIR, e.g.
-#   christianbuda/parrot_mri_reconstruction:latest -> $SIF_DIR/parrot_mri_reconstruction_latest.sif
-# (drop the registry/namespace, turn the :tag separator into _). Used by the apptainer path.
+# Use the shared digest-qualified cache name for the apptainer path.
 sif_path() {
-    local tag=$1
-    local base=${tag##*/}     # strip registry/namespace
-    base=${base//:/_}         # tag separator -> underscore
-    echo "$SIF_DIR/${base}.sif"
+    echo "$SIF_DIR/$(image_cache_name "$1").sif"
 }
 
 # Resolve the on-disk artifact apptainer should run: the flattened .sif if present,
@@ -332,11 +336,6 @@ image_path() {
 # from bin/images.sh so build/pull/run never drift. For docker we pull tags into the local
 # daemon; for apptainer we pull each docker:// image once into a flattened .sif under SIF_DIR
 # (a plain file, reusable across subjects and SLURM array tasks).
-ALL_IMAGES=("${EXTERNAL_IMAGES[@]}")
-for entry in "${PARROT_IMAGES[@]}"; do
-    ALL_IMAGES+=("${entry%%|*}")
-done
-
 echo "Checking required container images (runtime: $RUNTIME)..."
 if [ "$RUNTIME" = "apptainer" ]; then
     mkdir -p "$SIF_DIR"
@@ -354,7 +353,7 @@ if [ "$RUNTIME" = "apptainer" ]; then
     done
 else
     for img in "${ALL_IMAGES[@]}"; do
-        if [[ -z "$(docker images -q "$img" 2> /dev/null)" ]]; then
+        if ! docker image inspect "$img" >/dev/null 2>&1; then
             echo "  Missing $img - pulling (this may take a while)..."
             if ! docker pull "$img"; then
                 echo "ERROR: Failed to pull $img"
@@ -380,7 +379,19 @@ WORK_DIR_DOCKER="/derivatives/$(basename "$WORK_DIR")"
 # the old root-ownership normalization (a chown from inside a root container) is gone.
 CURRENT_SUBJECT=""
 cleanup() {
+    local rc=$?
+    if [ "$rc" -ne 0 ] && [ -n "$CURRENT_SUBJECT" ]; then
+        local failure_dir="$OUTPUT_DIR/logs/sub-${CURRENT_SUBJECT}"
+        mkdir -p "$failure_dir"
+        # Persist first: reporting may itself be unavailable after a container failure.
+        printf '%s\n' "${NAME:-initialization}" "${FAILURE_EXIT_CODE:-$rc}" \
+            "$(date -Iseconds)" "${FAILURE_LOG:-${LOG_FILE:-unknown}}" > "$failure_dir/pipeline_failure.txt.tmp"
+        mv "$failure_dir/pipeline_failure.txt.tmp" "$failure_dir/pipeline_failure.txt"
+        run_in_docker_QC "qc-failure" "$failure_dir/qc-failure_log.txt" \
+            "python /qc/run_qc.py --subject $CURRENT_SUBJECT --output_dir /derivatives --failure-only"
+    fi
     [ -n "${WORK_DIR:-}" ] && rm -rf "$WORK_DIR"
+    return "$rc"
 }
 # Graceful stop: previously `trap cleanup EXIT INT TERM` ran cleanup but, since cleanup
 # does not exit, the script RESUMED after SIGINT/SIGTERM -- so the only way to stop it was
@@ -395,6 +406,13 @@ trap 'exit 143' TERM
 # them across subjects/runs.
 TEMPLATEFLOW_DIR="$OUTPUT_DIR/.templateflow"
 mkdir -p "$TEMPLATEFLOW_DIR"
+
+# Ship the derivatives-layout legend with the outputs, so a derivatives tree stays
+# self-documenting once it is detached from this checkout. Refreshed every run (the
+# repo copy is the source of truth) and non-fatal: a read-only or already-correct
+# copy must never abort a reconstruction.
+cp -f "$PARROT_SCRIPT_DIR/bin/legend_of_files.txt" "$OUTPUT_DIR/legend_of_files.txt" 2>/dev/null \
+    || echo "WARNING: could not copy legend_of_files.txt into $OUTPUT_DIR"
 
 # Auto-discover participants if none were provided
 if [ ${#PARTICIPANTS[@]} -eq 0 ]; then
@@ -586,6 +604,8 @@ cp /pipeline/geometry.geom /pipeline/conductivities.cond /pipeline/neuronal_stre
             return 0
         fi
         echo "[ERROR] $step_name failed for sub-${SUBJECT} (Exit Code: $rc). Log: $failed" | tee -a "${LOG_FILE:-/dev/stderr}"
+        FAILURE_EXIT_CODE="$rc"
+        FAILURE_LOG="$failed"
         return "$rc"
     fi
     mv -f "${log_file}.partial" "$log_file"   # SUCCESS: commit this solver's own marker
@@ -675,6 +695,8 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
     echo "====================================================================="
 
     CURRENT_SUBJECT="$SUBJECT"
+    NAME="initialization"
+    unset FAILURE_EXIT_CODE FAILURE_LOG
 
     # Per-subject writable HOME for rootless containers (see container_exec). Lives in the
     # ephemeral work dir (swept on exit) on the derivatives filesystem; bound at /parrot_home.
@@ -776,6 +798,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
 
     # TSV Overrides (positional columns: 4=skip-T2-reg, 5=no-neck, 6=mp2rage)
     MP2RAGE_SUBJECT=false
+    NO_NECK_DECLARED=false
     if [ -f "$BIDS_DIR/participants.tsv" ]; then
         SUB_ROW=$(grep "^sub-${SUBJECT}" "$BIDS_DIR/participants.tsv" 2>/dev/null)
         if [ -n "$SUB_ROW" ]; then
@@ -784,6 +807,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
             fi
             if [ "$(echo "$SUB_ROW" | awk '{print tolower($5)}')" == "true" ]; then
                 simnibs_args+=("--noneck")
+                NO_NECK_DECLARED=true
             fi
             # col6 mp2rage: T1 is an MP2RAGE UNI -> MPRAGEise it (FastSurfer/charm can't
             # consume the raw UNI's high-intensity background). Handled by ingest below.
@@ -921,7 +945,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         mkdir -p "$OUTPUT_DIR/$NAME"
 
         step_start=$(date +%s)
-        # HippUnfold (:latest) writes its derivatives to <out>/hippunfold/sub-XXX and
+        # HippUnfold 1.5.3 writes its derivatives to <out>/hippunfold/sub-XXX and
         # also litters <out> with work/, .snakemake/, config/. Pointing it straight at
         # $OUTPUT_DIR/hippunfold would double-nest (hippunfold/hippunfold/sub-XXX) and
         # leave scratch behind. So run it into a throwaway temp dir, then lift just the
@@ -940,6 +964,8 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         mkdir -p "$HIPPUNFOLD_CACHE"
         CE_BINDS=( "$BIDS_DIR:/bids:ro" "$HIPPUNFOLD_TMP:/output" "$HIPPUNFOLD_CACHE:/hippunfold_cache" )
         CE_ENVS=( "HIPPUNFOLD_CACHE_DIR=/hippunfold_cache" )
+        # docker sets HOME=/ for an unregistered --user uid; snakemake's source cache needs it writable.
+        CE_HOME=1
         container_exec "$IMG_HIPPUNFOLD" \
             /bids /output participant \
             --participant_label "$SUBJECT" \
@@ -1673,6 +1699,29 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
     fi
 
     # ---------------------------------------------------------
+    # SCALP FIDUCIALS
+    # ---------------------------------------------------------
+    # Warps corrected MNI fiducials into the subject (see make_fiducials.py for the
+    # provenance of those coordinates). Must precede `electrodes`, which now requires
+    # scalplandmarks/fiducials.json rather than deriving it from the SimNIBS CSV.
+    # Needs charm (the warp) and surfaces (charm_scalp.ply, for the scalp snap).
+    NAME="fiducials"
+    if want_stage "$NAME" && [ ! -f "$LOG_DIR/${NAME}_log.txt" ]; then
+        log_step "Running $NAME reconstruction..."
+        mkdir -p "$OUTPUT_DIR/scalplandmarks/sub-${SUBJECT}"
+
+        step_start=$(date +%s)
+
+        run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" \
+            "simnibs_python /scripts/make_fiducials.py --subject $SUBJECT --output_dir /derivatives"
+
+        step_end=$(date +%s)
+        echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
+    else
+        echo "$NAME log file detected for subject $SUBJECT. Skipping step..." | tee -a "$LOG_FILE"
+    fi
+
+    # ---------------------------------------------------------
     # PLACE ELECTRODES
     # ---------------------------------------------------------
     NAME="electrodes"
@@ -1915,23 +1964,44 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         #    artifacts/dipoles/sub-<S>/artifactsources.json (counts + neck-coverage flag).
         if [ ! -f "$LOG_DIR/${NAME}-dipoles_log.txt" ]; then
             run_in_docker_FWD "$NAME-dipoles" "$LOG_DIR/${NAME}-dipoles_log.txt" "$IMG_FORWARD_MODEL" \
-                "cd /scripts && python place_artifact_dipoles.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
+                "cd /scripts && python place_artifact_dipoles.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache --min-electrode-distance $ARTIFACT_ELECTRODE_GAP${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
+        fi
+
+        # 2b. Cross-check the measured head extent against the declared no-neck column. The
+        #     pipeline now measures whether the head model reaches the neck (has_neck_fov, from the
+        #     charm scalp floor); participants.tsv col5 only ever *declared* it. A disagreement
+        #     means either a mis-set column (positional parsing -- easy to shift) or a charm run
+        #     that lost the lower head. Informational: neither value gates the artifact stage.
+        ART_JSON="$OUTPUT_DIR/artifacts/dipoles/sub-${SUBJECT}/artifactsources.json"
+        has_neck=$(python3 -c "import json;m=json.load(open('$ART_JSON')).get('muscle',{});print(m.get('has_neck_fov',''))" 2>/dev/null || echo "")
+        if [ "$has_neck" = "True" ] && [ "$NO_NECK_DECLARED" = true ]; then
+            echo "[WARN] sub-${SUBJECT}: participants.tsv declares no-neck, but the head model reaches the neck (has_neck_fov=true). Check column order in participants.tsv." | tee -a "$LOG_FILE"
+        elif [ "$has_neck" = "False" ] && [ "$NO_NECK_DECLARED" = false ]; then
+            n_below=$(python3 -c "import json;print(json.load(open('$ART_JSON')).get('muscle',{}).get('n_below_fov','?'))" 2>/dev/null || echo "?")
+            echo "[WARN] sub-${SUBJECT}: head model stops above the neck ($n_below muscle sources below the FOV) but participants.tsv does not set no-neck. Muscle sources below the floor take their leadfield from the HArtMuT template block instead of a subject solve." | tee -a "$LOG_FILE"
         fi
 
         # 3. artifact leadfields (solvers image). Eyes + muscle share ONE transfer matrix; muscle
-        #    falls back to HArtMuT's canned leadfield when the warp under-hosted (no neck FOV).
+        #    falls back to HArtMuT's canned leadfield when the subject mesh can't host the sources.
+        # Can the subject's own mesh host enough muscle sources to be worth solving?
+        solve_muscle=$(python3 -c "import json;print(json.load(open('$ART_JSON')).get('muscle',{}).get('solve_muscle',False))" 2>/dev/null || echo False)
+        # Muscle sources below the head model's FOV: not warped, their columns come from the
+        # canned HArtMuT leadfield and are stacked onto the solved block in step 3b.
+        n_template=$(python3 -c "import json;print(json.load(open('$ART_JSON')).get('muscle',{}).get('n_template',0))" 2>/dev/null || echo 0)
+
         if [ ! -f "$LOG_DIR/${NAME}-leadfields_log.txt" ]; then
-            # Did enough muscle sources survive the warp to solve on the subject's own mesh?
-            neck_ok=$(python3 -c "import json;print(json.load(open('$OUTPUT_DIR/artifacts/dipoles/sub-${SUBJECT}/artifactsources.json')).get('muscle',{}).get('neck_coverage',False))" 2>/dev/null || echo False)
+            # The solve REWRITES the muscle leadfield with solved columns only, so any template
+            # block previously stacked onto it is gone -- drop 3b's marker to force a restack.
+            rm -f "$LOG_DIR/${NAME}-muscle-template_log.txt"
 
             # Group spec written to a file to avoid shell-quoting tissue names (spaces/parens).
             SOLVE_GROUPS="$OUTPUT_DIR/artifacts/dipoles/sub-${SUBJECT}/solve_groups.json"
-            SUBJECT="$SUBJECT" ART_EYE_TISSUE="$ART_EYE_TISSUE" NECK_OK="$neck_ok" python3 - "$SOLVE_GROUPS" <<'PY'
+            SUBJECT="$SUBJECT" ART_EYE_TISSUE="$ART_EYE_TISSUE" SOLVE_MUSCLE="$solve_muscle" python3 - "$SOLVE_GROUPS" <<'PY'
 import json, os, sys
-subj = os.environ['SUBJECT']; eye = os.environ['ART_EYE_TISSUE']; neck = os.environ['NECK_OK'] == 'True'
+subj = os.environ['SUBJECT']; eye = os.environ['ART_EYE_TISSUE']; solve = os.environ['SOLVE_MUSCLE'] == 'True'
 groups = [{"name": "eyes", "dipoles_dir": f"artifacts/dipoles/sub-{subj}/eyes",
            "valid_tissues": [eye], "out_tag": "_artifact-eyes-CGAL"}]
-if neck:  # muscle solved on the subject mesh only when the warp hosted enough sources
+if solve:  # muscle solved on the subject mesh only when it can host the sources
     groups.append({"name": "muscle", "dipoles_dir": f"artifacts/dipoles/sub-{subj}/muscle",
                    "valid_tissues": ["Muscle", "Skin"], "out_tag": "_artifact-muscle-CGAL"})
 json.dump(groups, open(sys.argv[1], "w"), indent=2)
@@ -1940,11 +2010,23 @@ PY
                 "python3 /scripts/make_leadfield_artifacts.py --subject $SUBJECT --output_dir /derivatives --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --groups_json_file /derivatives/artifacts/dipoles/sub-${SUBJECT}/solve_groups.json"
 
             # Muscle fallback: interpolate HArtMuT's canned muscle leadfield onto the subject montage.
-            if [ "$neck_ok" != "True" ]; then
-                echo "Muscle warp under-hosted (neck_coverage=false); using HArtMuT canned muscle leadfield fallback for sub-${SUBJECT}." | tee -a "$LOG_FILE"
+            if [ "$solve_muscle" != "True" ]; then
+                echo "Subject mesh could not host the muscle sources (solve_muscle=false); using HArtMuT canned muscle leadfield fallback for sub-${SUBJECT}." | tee -a "$LOG_FILE"
                 run_in_docker_SOLVER "$NAME-leadfields" "$LOG_DIR/${NAME}-leadfields_log.txt" "$IMG_FORWARD_SOLVERS" \
-                    "python3 /scripts/make_leadfield_hartmut_muscle.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache"
+                    "python3 /scripts/make_leadfield_hartmut_muscle.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache --mode fallback"
             fi
+        fi
+
+        # 3b. Muscle template block: the sources below the head model's FOV (chin/jaw/neck, and on a
+        #     short FOV the perioral group) have no subject anatomy to be solved on, so their columns
+        #     are taken from HArtMuT's canned full-head leadfield, rescaled onto the solved block's
+        #     units, and stacked onto it -- the muscle leadfield stays a single array. A subject whose
+        #     head model reaches the neck has n_template=0 and skips this entirely.
+        if [ "$solve_muscle" = "True" ] && [ "${n_template:-0}" -gt 0 ] \
+           && [ ! -f "$LOG_DIR/${NAME}-muscle-template_log.txt" ]; then
+            echo "Stacking $n_template below-FOV muscle source(s) from the HArtMuT template onto the solved leadfield for sub-${SUBJECT}." | tee -a "$LOG_FILE"
+            run_in_docker_SOLVER "$NAME-muscle-template" "$LOG_DIR/${NAME}-muscle-template_log.txt" "$IMG_FORWARD_SOLVERS" \
+                "python3 /scripts/make_leadfield_hartmut_muscle.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache --mode template-block"
         fi
 
         step_end=$(date +%s)
@@ -1964,6 +2046,14 @@ PY
     # NON-FATAL -- informational, must never block the pipeline. Quick
     # (~2-3 min/subject) relative to the heavy stages.
     # ---------------------------------------------------------------------
+    # A successful retry clears only a failure belonging to a stage selected in this run.
+    # A QC-only invocation must never erase evidence of a reconstruction failure.
+    if [ -f "$LOG_DIR/pipeline_failure.txt" ]; then
+        read -r failed_stage < "$LOG_DIR/pipeline_failure.txt"
+        if want_stage "$failed_stage" || { [ "$failed_stage" = "initialization" ] && want_stage ingest; }; then
+            rm -f "$LOG_DIR/pipeline_failure.txt"
+        fi
+    fi
     NAME="qc"
     if want_stage "$NAME"; then
         log_step "Running final $NAME for subject $SUBJECT..."

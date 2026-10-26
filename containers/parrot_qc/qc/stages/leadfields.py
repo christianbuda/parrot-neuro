@@ -12,7 +12,7 @@ import re
 
 import numpy as np
 
-from ..checks import StageResult, PASS, WARN, FAIL, fmt_range
+from ..checks import StageResult, PASS, WARN, FAIL, SKIP, fmt_range
 from .. import render2d, render3d
 from .electrodes import _scalp_mesh
 
@@ -47,9 +47,21 @@ def _per_dipole_sensitivity(L, ndip):
 def run(ctx) -> StageResult:
     r = StageResult(NAME, TITLE)
     d = ctx.stage_dir("leadfields")
-    lfs = sorted(d.glob("processed_*-leadfield.npy")) if d.exists() else []
+    lfs = sorted(p for p in d.glob("processed_*-leadfield.npy")
+                 if p.name.startswith(("processed_duneuroCGAL-", "processed_duneurosimnibs-",
+                                       "processed_duneuroCGAL_anisotropic-", "processed_openmeeg-")))
+    openmeeg = [p for p in lfs if "openmeeg" in p.name.lower()]
+    r.add(PASS if openmeeg else SKIP, "OpenMEEG availability",
+          "Optional BEM leadfield present" if openmeeg else
+          "Optional BEM leadfield unavailable; FEM outputs unaffected. "
+          "If attempted, see logs/sub-*/FAILED_*forwardsolvers-openmeeg_log.txt.")
+    for label in ("simnibs", "CGAL", "CGAL_anisotropic"):
+        available = any(p.name.startswith(f"processed_duneuro{label}-") for p in lfs)
+        r.add(PASS if available else SKIP, f"DUNEuro {label} availability",
+              "present" if available else "not produced; consult pipeline execution status")
     if not lfs:
-        return r.skip("no processed_*-leadfield.npy")
+        r.notes.append("No processed leadfields found.")
+        return r
 
     pick = None  # (L, tag, positions) for the sensitivity figure
     for lf in lfs:

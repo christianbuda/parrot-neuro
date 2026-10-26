@@ -16,6 +16,11 @@
 #   --no-cache       Build without using Docker's layer cache.
 #   -h, --help       Show this help and exit.
 #
+# Every image is built with containers/_shared as the BuildKit named context "shared",
+# which is how the images share code despite having separate build contexts. Editing
+# anything under containers/_shared means rebuilding every image (plain ./bin/build.sh);
+# nothing detects that dependency for you. Needs BuildKit (Docker >= 23 with buildx).
+#
 # Arguments:
 #   FILTER        Optional substring(s); only images whose tag contains a filter
 #                 are built (e.g. "solvers" builds parrot_forward_solvers only).
@@ -26,6 +31,9 @@ set -euo pipefail
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 REPO_ROOT="$( cd "$SCRIPT_DIR/.." &> /dev/null && pwd )"
 source "$SCRIPT_DIR/images.sh"
+
+# Extra build context every image gets, for code shared between images.
+SHARED_CONTEXT="containers/_shared"
 
 usage() {
     cat <<'EOF'
@@ -94,6 +102,10 @@ for entry in "${PARROT_IMAGES[@]}"; do
 
     build_args=()
     for t in "${tags[@]}"; do build_args+=(-t "$t"); done
+
+    # Code shared by more than one image lives outside every build context, so it is passed as a
+    # BuildKit named context the Dockerfiles COPY from (see containers/_shared/parrot_common).
+    build_args+=(--build-context "shared=$REPO_ROOT/$SHARED_CONTEXT")
 
     echo "====================================================================="
     echo "Building ${tags[*]}"

@@ -1,0 +1,18 @@
+<section class="guide">
+  <h2>How to read this report</h2>
+  <p><b>PASS</b>: automated checks passed; inspect the figures before using the outputs.
+     <b>WARN</b>: review a limitation, not automatic rejection.
+     <b>FAIL</b>: a quality check failed for the named output.
+     <b>SKIP</b>: not produced or not applicable; this alone does not prove successful completion.
+     <b>CRITICAL FAILURE</b>: the pipeline stopped before completing its requested stages.</p>
+  <p><b>Optional OpenMEEG/BEM:</b> intersecting head surfaces can prevent this solver from running.
+     Missing OpenMEEG does not invalidate the DUNEuro FEM leadfields. OpenMEEG is a solver name,
+     not an indication that MEG recordings are missing. BEM geometry warnings describe the original
+     surfaces; solver repair may succeed. Check leadfield availability for the actual outcome.</p>
+  <p><b>Artifact sources:</b> limited neck coverage is expected in head MRI. Sources below the image
+     can use a calibrated template contribution rather than a subject-specific solve.
+     Calibration problems, unusually strong source gains, and close electrode distances remain
+     separate checks. Warnings about missing structures or electrode placement need individual review.</p>
+  <p>Execution failures are recorded separately from output quality. A hard kill or node loss may
+     prevent failure recording; an old report is not proof that the latest job completed.</p>
+</section>

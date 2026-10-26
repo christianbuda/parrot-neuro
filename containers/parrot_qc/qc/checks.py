@@ -16,7 +16,7 @@ import numpy as np
 # Status vocabulary. SKIP = "not produced / not applicable"; it never worsens an
 # aggregate (a skipped optional stage must not turn a subject red).
 PASS, WARN, FAIL, SKIP = "pass", "warn", "fail", "skip"
-_SEVERITY = {SKIP: -1, PASS: 0, WARN: 1, FAIL: 2}
+_SEVERITY = {SKIP: -1, PASS: 0, WARN: 1, FAIL: 2, "critical": 3}
 
 
 def worst(statuses) -> str:
