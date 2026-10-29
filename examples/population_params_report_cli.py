@@ -86,6 +86,8 @@ import pyvista as pv
 import statsmodels.api as sm
 from matplotlib.colors import LinearSegmentedColormap
 from scipy import stats
+from joblib import Parallel, delayed
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.impute import SimpleImputer
@@ -403,9 +405,10 @@ def _best_kmeans(X: np.ndarray, ks: range, seed: int) -> tuple[int, np.ndarray, 
     return best, labels[best], sil
 
 
-def age_classifier(X: np.ndarray, y: np.ndarray, n_perm: int, C: float, seed: int) -> dict:
-    pipe = make_pipeline(SimpleImputer(strategy="median"), StandardScaler(),
-                         LogisticRegression(C=C, class_weight="balanced", max_iter=5000))
+def age_classifier(X: np.ndarray, y: np.ndarray, n_perm: int, C: float, seed: int, pipe=None) -> dict:
+    pipe = pipe if pipe is not None else make_pipeline(
+        SimpleImputer(strategy="median"), StandardScaler(),
+        LogisticRegression(C=C, class_weight="balanced", max_iter=5000))
     aucs = cross_val_score(pipe, X, y, scoring="roc_auc", n_jobs=-1,
                            cv=RepeatedStratifiedKFold(n_splits=5, n_repeats=10, random_state=seed))
     score, null, p = permutation_test_score(
@@ -414,6 +417,94 @@ def age_classifier(X: np.ndarray, y: np.ndarray, n_perm: int, C: float, seed: in
     return {"auc_mean": float(aucs.mean()), "auc_sd": float(aucs.std()),
             "auc_perm_cv": float(score), "p_perm": float(p), "null": null.tolist(),
             "pipeline": pipe}
+
+
+class Residualize(BaseEstimator, TransformerMixin):
+    """The last ``k`` columns are nuisance covariates: regress them out of
+    the other columns (fit on the training fold only) and drop them."""
+
+    def __init__(self, k: int = 0):
+        self.k = k
+
+    def _split(self, X):
+        X = np.asarray(X, float)
+        return X[:, :-self.k], np.column_stack([np.ones(len(X)), X[:, -self.k:]])
+
+    def fit(self, X, y=None):
+        F, D = self._split(X)
+        self.B_ = np.linalg.lstsq(D, F, rcond=None)[0]
+        return self
+
+    def transform(self, X):
+        F, D = self._split(X)
+        return F - D @ self.B_
+
+
+def _resid_pipe(k: int, C: float):
+    return make_pipeline(SimpleImputer(strategy="median"), Residualize(k), StandardScaler(),
+                         LogisticRegression(C=C, class_weight="balanced", max_iter=5000))
+
+
+def _haufe_pattern(pipe, X: np.ndarray) -> np.ndarray:
+    """Activation pattern of a fitted linear classifier (Haufe et al. 2014):
+    covariance of every (residualized, z-scored) feature with the decision
+    score, scaled to a correlation. Unlike the weights it says how the
+    feature differs with age, not how the model uses it to cancel noise."""
+    Z = pipe[:-1].transform(X)
+    s = Z @ pipe[-1].coef_[0]
+    s = (s - s.mean()) / s.std()
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return (Z * s[:, None]).mean(0) / Z.std(0)
+
+
+def _boot_pattern(X: np.ndarray, y: np.ndarray, k: int, C: float, seed: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    b = np.concatenate([rng.choice(np.where(y == c)[0], int((y == c).sum())) for c in (0, 1)])
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        return _haufe_pattern(_resid_pipe(k, C).fit(X[b], y[b]), X[b])
+
+
+def age_pattern(X: np.ndarray, Z_nuis: np.ndarray, y: np.ndarray, feat_meta: list[tuple], regions: list[dict],
+                args: argparse.Namespace) -> dict:
+    """Where the age information of the params classifier sits. Fit quality
+    (``NUISANCE``) is regressed out of every feature inside each fold, so the
+    patterns are age information beyond how well a subject was fit; the
+    classifier is re-scored that way, the Haufe pattern is computed on all
+    subjects, and its stability by a class-stratified bootstrap (bootstrap
+    ratio = pattern / bootstrap SD)."""
+    k = Z_nuis.shape[1]
+    XX = np.column_stack([X, Z_nuis])
+    print(f"    classifier [params, fit quality regressed out] ({X.shape[1]} features, {args.n_perm} permutations) ...")
+    clf = age_classifier(XX, y, args.n_perm, args.clf_c, args.seed, pipe=_resid_pipe(k, args.clf_c))
+    clf.pop("pipeline")
+    full = _resid_pipe(k, args.clf_c).fit(XX, y)
+    pattern, weight = _haufe_pattern(full, XX), full[-1].coef_[0]
+    print(f"    age pattern bootstrap ({args.n_boot} resamples) ...")
+    seeds = np.random.SeedSequence(args.seed).generate_state(args.n_boot)
+    boots = np.array(Parallel(n_jobs=-1)(delayed(_boot_pattern)(XX, y, k, args.clf_c, int(sd)) for sd in seeds))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        sd = np.nanstd(boots, axis=0)
+        bsr = pattern / sd
+    rows = []
+    for j, (p, r) in enumerate(feat_meta):
+        reg = regions[r] if r is not None else {"name": "global", "group": "global coupling", "hemi": "M"}
+        rows.append({"param": p, "region": reg["name"], "region_idx": -1 if r is None else r,
+                     "group": reg["group"], "hemi": reg["hemi"], "weight": weight[j], "pattern": pattern[j],
+                     "boot_sd": sd[j], "bsr": bsr[j],
+                     "sign_consistency": float(np.mean(np.sign(boots[:, j]) == np.sign(pattern[j])))})
+    pat = pd.DataFrame(rows)
+    pat["stable"] = pat.bsr.abs() >= args.bsr_thr
+    net = (pat.assign(stable_pos=pat.stable & (pat.pattern > 0), stable_neg=pat.stable & (pat.pattern < 0))
+           .groupby(["param", "group"], sort=False)
+           .agg(n_regions=("pattern", "size"), mean_pattern=("pattern", "mean"),
+                n_stable_older=("stable_pos", "sum"), n_stable_younger=("stable_neg", "sum")).reset_index())
+    mass = pat.pattern.abs().where(pat.stable, 0)
+    by_param = (pat.assign(mass=mass).groupby("param", sort=False)
+                .agg(n_regions=("pattern", "size"), n_stable=("stable", "sum"),
+                     mean_abs_pattern=("pattern", lambda v: v.abs().mean()), stable_mass=("mass", "sum")).reset_index())
+    by_param["share_of_stable"] = by_param.stable_mass / max(by_param.stable_mass.sum(), 1e-12)
+    return {"clf": clf, "table": pat, "network": net, "by_param": by_param.drop(columns="stable_mass")}
 
 
 # ---------------------------------------------------------------------------
@@ -578,13 +669,15 @@ def analyse_cohort(pop: dict, mask: np.ndarray, params: list[str], frozen_cells:
                    ("params+fit_quality", np.column_stack([X_params, X_nuis]))]:
         print(f"    classifier [{key}] ({X.shape[1]} features, {args.n_perm} permutations) ...")
         clf[key] = age_classifier(X, y, args.n_perm, args.clf_c, args.seed)
-    pipe = clf["params"].pop("pipeline").fit(X_params, y)
-    coefs = pipe[-1].coef_[0]
-    names_p = feat_names + ["G"]
-    top = np.argsort(-np.abs(coefs))[:15]
-    top_coefs = [(names_p[i], float(coefs[i])) for i in top]
     for v in clf.values():
         v.pop("pipeline", None)
+    feat_meta = [(p, r) for p in params for r in cols[p]] + [("G", None)]
+    apat = age_pattern(X_params, sub[NUISANCE].to_numpy(float), y, feat_meta, regions, args)
+    clf["params, fit quality out"] = apat.pop("clf")
+    names_p = feat_names + ["G"]
+    t = apat["table"]
+    top_coefs = [{"feature": names_p[i], "pattern": float(t.pattern[i]), "bsr": float(t.bsr[i]),
+                  "weight": float(t.weight[i])} for i in t.bsr.abs().fillna(0).to_numpy().argsort()[::-1][:15]]
 
     sub = sub.assign(**{f"PC{c + 1}": scores[:, c] for c in range(min(5, scores.shape[1]))},
                      cluster=clusters + 1)
@@ -603,7 +696,7 @@ def analyse_cohort(pop: dict, mask: np.ndarray, params: list[str], frozen_cells:
         "region_clusters": region_clusters,
         "region_cluster_info": {"best_k": r_best_k, "silhouette": r_sil, "ari_group": r_ari},
         "age_region": age_region, "age_group": age_group,
-        "classifier": clf, "top_coefs": top_coefs,
+        "classifier": clf, "top_coefs": top_coefs, "age_pattern": apat,
     }
 
 
@@ -1451,6 +1544,42 @@ def fig_classifier(res: dict, out: Path) -> None:
     _savefig(fig, out)
 
 
+def fig_age_pattern(res: dict, thr: float, out: Path) -> None:
+    ap = res["age_pattern"]
+    t, net = ap["table"], ap["network"]
+    params = list(dict.fromkeys(t.param))
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4.6), gridspec_kw={"width_ratios": [1, 2.2]})
+    ax = axes[0]
+    pos = [int((t[(t.param == p)].stable & (t[t.param == p].pattern > 0)).sum()) for p in params]
+    neg = [int((t[(t.param == p)].stable & (t[t.param == p].pattern < 0)).sum()) for p in params]
+    x = np.arange(len(params))
+    ax.bar(x, pos, color=OLD_C, label="higher in old")
+    ax.bar(x, [-n for n in neg], color=YOUNG_C, label="higher in young")
+    ax.axhline(0, color="#44534c", lw=0.8)
+    ax.set_xticks(x, params)
+    ax.set_ylabel(f"# stable regions (|BSR| >= {thr:g})")
+    ax.yaxis.set_major_locator(matplotlib.ticker.MaxNLocator(integer=True))
+    ax.legend(frameon=False, fontsize=8)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_title("Stable age-pattern features per parameter", fontsize=10)
+    groups = [g for g in GROUP_ORDER if g in set(net.group)]
+    M = net[net.param != "G"].pivot(index="param", columns="group", values="mean_pattern").reindex(
+        index=[p for p in params if p != "G"], columns=groups)
+    Ns = net[net.param != "G"].assign(n=lambda d: d.n_stable_older + d.n_stable_younger) \
+        .pivot(index="param", columns="group", values="n").reindex_like(M)
+    lim = max(0.05, float(np.nanmax(np.abs(M.to_numpy()))))
+    im = axes[1].imshow(M.to_numpy(), cmap=DIV_CMAP, vmin=-lim, vmax=lim, aspect="auto")
+    for (i, j), n in np.ndenumerate(Ns.to_numpy()):
+        if np.isfinite(n) and n > 0:
+            axes[1].text(j, i, int(n), ha="center", va="center", fontsize=8)
+    axes[1].set_xticks(range(len(groups)), groups, rotation=40, ha="right", fontsize=8)
+    axes[1].set_yticks(range(len(M)), M.index)
+    fig.colorbar(im, ax=axes[1], shrink=0.8, label="mean pattern (> 0 = higher in old)")
+    axes[1].set_title("Mean age pattern per network (numbers: stable regions)", fontsize=10)
+    fig.tight_layout()
+    _savefig(fig, out)
+
+
 def fig_condition_stability(cond: dict, params: list[str], out: Path) -> None:
     A, B = cond["labels"]
     st = cond["stability"].set_index("param")
@@ -1839,7 +1968,7 @@ SIG_TEST_LABEL = {"mw": "rank test", "ols": "adjusted OLS", "either": "rank test
 
 
 def write_brains(pop: dict, results: dict, params: list[str], ref_sid: str, bids_dir: Path,
-                 fig_dir: Path, sig_q: float = 0.05, sig_test: str = "either") -> dict:
+                 fig_dir: Path, sig_q: float = 0.05, sig_test: str = "either", bsr_thr: float = 3.0) -> dict:
     subj = Subject(str(bids_dir), ref_sid)
     positions = subj.load.dipoles(pop["spacing"]).positions
     node = subj.load.dipole_node_labels(pop["atlas"], pop["spacing"], task=pop["fmri_task"])
@@ -1894,6 +2023,27 @@ def write_brains(pop: dict, results: dict, params: list[str], ref_sid: str, bids
                          f"{p} -- {B} vs {A}, {c}: {int(keep.sum())} regions q < {sig_q:g} "
                          f"({SIG_TEST_LABEL[sig_test]})", path)
             written[f"condsig|{p}|{c}"] = path
+    # stable age-pattern features (|BSR| >= threshold), coloured by the pattern
+    for c, res in results.items():
+        t = res["age_pattern"]["table"]
+        t = t[(t.param != "G") & t.param.isin(params)]
+        lim = max(0.05, float(t.pattern.abs().max()))
+        for p in params:
+            sp = t[(t.param == p) & t.stable]
+            vals = np.full(M, np.nan)
+            vals[sp.region_idx.to_numpy()] = sp.pattern.to_numpy()
+            path = fig_dir / f"brain_pattern_{p}_{c}.png"
+            render_brain(positions, point_region, vals, DIV_CMAP, (-lim, lim), "age pattern",
+                         f"{p} -- age pattern, {c}: {len(sp)} stable regions (|BSR| >= {bsr_thr:g})", path)
+            written[f"pat|{p}|{c}"] = path
+        counts = t[t.stable].groupby("region_idx").size()
+        vals = np.full(M, np.nan)
+        vals[counts.index.to_numpy()] = counts.to_numpy()
+        top = max(1, int(counts.max()) if len(counts) else 1)
+        path = fig_dir / f"brain_patternany_{c}.png"
+        render_brain(positions, point_region, vals, SEQ_CMAP, (0.5, top + 0.5 if top > 1 else 1.5), "# params",
+                     f"age pattern, {c}: {len(counts)} regions with a stable feature (|BSR| >= {bsr_thr:g})", path)
+        written[f"patany|{c}"] = path
     # overview: in how many parameters is each region significant?
     for c, res in results.items():
         for kind, df, q_cols, what in [
@@ -2160,8 +2310,22 @@ def write_markdown(pop: dict, results: dict, params: list[str], frozen: list[str
         for k, v in clf.items():
             L.append(f"| {k} | {v['auc_mean']:.3f} +/- {v['auc_sd']:.3f} | {v['p_perm']:.3g} |")
         L += ["", "Read `params` against `fit_quality`: if fit quality alone predicts age as well, the parameter "
-              "differences may just reflect how well old vs young subjects are fit.", "",
+              "differences may just reflect how well old vs young subjects are fit. `params, fit quality out` "
+              "regresses sex and log EEG / BOLD loss out of every feature inside each fold.", "",
               f"![classifier](figures/age_classifier_{c}.png)", ""]
+        ap = res["age_pattern"]
+        t = ap["table"]
+        L += [f"**Where the age information sits** (`params, fit quality out` classifier): Haufe activation pattern "
+              f"(> 0 = higher in old), stability by {args.n_boot} class-stratified bootstrap resamples; "
+              f"{int(t.stable.sum())} of {len(t)} features have |bootstrap ratio| >= {args.bsr_thr:g}.", "",
+              "| param | regions | stable | mean abs pattern | share of stable pattern |", "|---|---|---|---|---|"]
+        for r in ap["by_param"].itertuples():
+            L.append(f"| {r.param} | {r.n_regions} | {r.n_stable} | {r.mean_abs_pattern:.3f} | {r.share_of_stable:.0%} |")
+        L += ["", "| param | region | network | pattern | BSR | sign consistency | weight |", "|---|---|---|---|---|---|---|"]
+        for r in t.reindex(t.bsr.abs().sort_values(ascending=False).index).head(15).itertuples():
+            L.append(f"| {r.param} | {r.region} | {r.group} | {r.pattern:+.3f} | {r.bsr:+.2f} | "
+                     f"{r.sign_consistency:.0%} | {r.weight:+.4f} |")
+        L += ["", f"![age pattern](figures/age_pattern_{c}.png)", ""]
         a = res["age_region"]
         L += [f"Region-level: {len(a)} tests, {(a.q_mw < 0.05).sum()} with BH q < 0.05 (Mann-Whitney), "
               f"{(a.q_ols < 0.05).sum()} with q < 0.05 for the covariate-adjusted OLS.", "",
@@ -2294,6 +2458,7 @@ def build_html_data(pop: dict, results: dict, params: list[str], frozen: list[st
                                                      "table": rep["snr"]["table"].to_dict("records")}},
         "n_perm": args.n_perm, "clf_c": args.clf_c,
         "sig_q": args.sig_q, "sig_test_label": SIG_TEST_LABEL[args.sig_test],
+        "bsr_thr": args.bsr_thr, "n_boot": args.n_boot,
         "config": {k: pop["config"].get(k) for k in ("leadfield_label", "bold_model", "schedule", "num_epochs", "fs")},
     })
 
@@ -2386,7 +2551,7 @@ details summary{cursor:pointer; color:var(--accent); font-size:13px; margin:8px 
     <div class="card pad">
       <div class="controls" style="margin-bottom:8px">
         <h4 style="margin:0">Glass brain</h4>
-        <div class="seg" id="brain-seg"><button data-k="median" class="active">population median</button><button data-k="delta">age effect (Cliff's &delta;)</button><button data-k="sig">significant regions</button><button data-k="sigany">significant, any param</button></div>
+        <div class="seg" id="brain-seg"><button data-k="median" class="active">population median</button><button data-k="delta">age effect (Cliff's &delta;)</button><button data-k="sig">significant regions</button><button data-k="sigany">significant, any param</button><button data-k="pat">age pattern (stable)</button><button data-k="patany">age pattern, any param</button></div>
         <span class="note" id="brain-note" style="margin:0"></span>
       </div>
       <img id="brain-img" class="brain-img" alt="glass brain map">
@@ -2427,7 +2592,9 @@ details summary{cursor:pointer; color:var(--accent); font-size:13px; margin:8px 
     <p class="section-lede" id="age-lede"></p>
     <div class="stat-grid" id="clf-stats"></div>
     <div class="card pad" style="margin-bottom:18px"><h4>Permutation nulls</h4><div class="note">Gray bars show the cross-validated AUC under shuffled age labels; the line is the real AUC. Compare <b>params</b> with <b>fit_quality</b>: if fit quality alone predicts age just as well, the parameter differences may only reflect how well each group was fit.</div><svg id="null-svg" viewBox="0 0 960 200" width="100%"></svg>
-      <details><summary>Most predictive features (params model, standardized coefficients)</summary><table class="t" id="coef-table"></table></details></div>
+      </div>
+    <div class="card pad" style="margin-bottom:18px"><h4>Where the age information sits</h4><div class="note" id="agepat-note"></div><img id="agepat-img" class="brain-img" alt="age pattern summary">
+      <details><summary>Most stable features (Haufe pattern of the fit-quality-adjusted classifier)</summary><table class="t" id="coef-table"></table></details></div>
     <div class="grid2">
       <div class="card pad">
         <div class="controls"><h4 style="margin:0">Per-region effects</h4>
@@ -2655,13 +2822,15 @@ function renderDetail(){
     ${t?`<tr><td>Cliff's &delta; (old&minus;young)</td><td class="num">${f(t.cliffs_delta,2)}</td></tr><tr><td>p / q (MW)</td><td class="num">${pf(t.p_mw)} / ${pf(t.q_mw)}</td></tr><tr><td>&beta; old (OLS, z)</td><td class="num">${f(t.beta_old,2)}</td></tr><tr><td>p / q (OLS)</td><td class="num">${pf(t.p_ols)} / ${pf(t.q_ols)}</td></tr>`:''}</table>`;
 }
 function renderBrain(){
-  const img=document.getElementById('brain-img'), key = brainKind==='median' ? `median|${param}` : brainKind==='sigany' ? `sigany|${cohort}` : `${brainKind}|${param}|${cohort}`;
+  const img=document.getElementById('brain-img'), key = brainKind==='median' ? `median|${param}` : brainKind==='sigany' ? `sigany|${cohort}` : brainKind==='patany' ? `patany|${cohort}` : `${brainKind}|${param}|${cohort}`;
   const src=D.brains[key]; img.style.display=src?'block':'none'; if(src) img.src=src;
   const sigTxt = `BH q &lt; ${D.sig_q} (${D.sig_test_label})`;
   document.getElementById('brain-note').innerHTML = !Object.keys(D.brains).length ? 'Brain maps were not rendered (--no-brains).' :
     (brainKind==='median' ? `The median across all fits, drawn on sub-${D.ref_subject}'s source cloud. Gray points are regions not analysed for ${param}.`
      : brainKind==='delta' ? `Cliff's &delta; for old vs young: red means higher in old, blue higher in young. This is unthresholded, so check q in the age section.`
      : brainKind==='sig' ? `Only regions where the age effect on ${param} passes ${sigTxt} keep their Cliff's &delta; colour; gray = not significant or not analysed.`
+     : brainKind==='pat' ? `Multivariate age pattern of ${param} (classifier activation pattern, fit quality regressed out): only features with |bootstrap ratio| &ge; ${D.bsr_thr} are coloured; red = higher in old.`
+     : brainKind==='patany' ? `Number of parameters with a stable age-pattern feature (|bootstrap ratio| &ge; ${D.bsr_thr}) in each region; gray = none.`
      : `Number of parameters whose age effect passes ${sigTxt} in each region; gray = none.`);
 }
 
@@ -2750,7 +2919,9 @@ function renderAge(){
     s+=`<line class="axis-line" x1="${x0}" x2="${x0+iw}" y1="${20+ih}" y2="${20+ih}"/>`; [lo,0.5,hi].forEach(t=>{ s+=`<text x="${X(t)}" y="${20+ih+14}" font-size="9.5" text-anchor="middle">${f(t,2)}</text>`; });
     s+=`<text x="${x0+iw/2}" y="${H-4}" font-size="11.5" text-anchor="middle" style="font-weight:600">${k} &middot; p = ${pf(v.p_perm)}</text>`; });
   document.getElementById('null-svg').innerHTML=s;
-  document.getElementById('coef-table').innerHTML = `<tr><th>feature</th><th>coef (&gt;0 = older)</th></tr>` + c.top_coefs.map(([n,v])=>`<tr><td>${n}</td><td class="num">${f(v,3)}</td></tr>`).join('');
+  document.getElementById('coef-table').innerHTML = `<tr><th>feature</th><th>pattern (&gt;0 = older)</th><th>bootstrap ratio</th><th>weight</th></tr>` + c.top_coefs.map(r=>`<tr class="${Math.abs(r.bsr)>=D.bsr_thr?'hl':''}"><td>${r.feature}</td><td class="num">${f(r.pattern,3)}</td><td class="num">${f(r.bsr,2)}</td><td class="num">${f(r.weight,4)}</td></tr>`).join('');
+  const apImg=document.getElementById('agepat-img'), apSrc=D.cond_figs[`agepat|${cohort}`]; apImg.style.display=apSrc?'block':'none'; if(apSrc) apImg.src=apSrc;
+  document.getElementById('agepat-note').innerHTML = `Activation pattern of the classifier with sex and fit quality regressed out of every feature: how each parameter/region differs with age as the classifier sees it (Haufe et al. 2014). Raw weights are not shown as importance: with correlated features they partly cancel noise. Stable = |bootstrap ratio| &ge; ${D.bsr_thr} over ${D.n_boot} resamples. Glass brains of the stable features: see the &ldquo;age pattern&rdquo; buttons in section 02.`;
   document.getElementById('net-table').innerHTML = `<tr><th>param</th><th>network</th><th>&delta;</th><th>q MW</th><th>&beta;</th><th>q OLS</th></tr>` +
     c.age_group.slice().sort((a,b)=>a.p_mw-b.p_mw).map(r=>`<tr class="${r.q_mw<0.05||r.q_ols<0.05?'hl':''}"><td>${r.param}</td><td>${r.group}</td><td class="num" style="color:${r.cliffs_delta>0?'var(--div-pos)':'var(--div-neg)'}">${f(r.cliffs_delta,2)}</td><td class="num">${pf(r.q_mw)}</td><td class="num">${f(r.beta_old,2)}</td><td class="num">${pf(r.q_ols)}</td></tr>`).join('');
   document.getElementById('hits-table').innerHTML = `<tr><th>param</th><th>region</th><th>network</th><th>median young</th><th>median old</th><th>&delta;</th><th>p MW</th><th>q MW</th><th>&beta; OLS</th><th>q OLS</th></tr>` +
@@ -3059,6 +3230,23 @@ for c in COHORTS:
         if significant(a[a.param == p], "q_mw").any():
             show(f"brain_sig_{p}_{c}")
 """),
+        md(f"""
+### Multivariate age pattern
+Activation pattern of the age classifier with sex and fit quality regressed out (> 0 = higher in old);
+stable = |bootstrap ratio| >= {args.bsr_thr:g} over {args.n_boot} resamples. Raw weights are not importance.
+"""),
+        code("""
+for c in COHORTS:
+    display(Markdown(f"**cohort `{c}`**"))
+    display(table(f"age_pattern_params_{c}").set_index("param"))
+    t = table(f"age_pattern_{c}")
+    display(t[t.stable][["param", "region", "group", "pattern", "bsr", "sign_consistency", "weight"]].head(30))
+    show(f"age_pattern_{c}")
+    show(f"brain_patternany_{c}")
+    for p in PARAMS:
+        if (t[t.param == p].stable).any():
+            show(f"brain_pattern_{p}_{c}")
+"""),
     ]
     if args.compare_root:
         cells += [
@@ -3115,6 +3303,9 @@ def main() -> None:
     ap.add_argument("--min-coverage", type=float, default=0.8, help="min fraction of subjects covering a region")
     ap.add_argument("--n-perm", type=int, default=500, help="label permutations for the age classifier")
     ap.add_argument("--clf-c", type=float, default=0.05, help="inverse L2 strength of the age classifier")
+    ap.add_argument("--n-boot", type=int, default=500, help="bootstrap resamples of the age-classifier pattern")
+    ap.add_argument("--bsr-thr", type=float, default=3.0,
+                    help="|bootstrap ratio| above which an age-pattern feature counts as stable (default 3)")
     ap.add_argument("--ref-subject", default=None, help="subject whose dipole cloud carries the glass brains")
     ap.add_argument("--no-brains", action="store_true", help="skip the pyvista glass-brain renders")
     ap.add_argument("--sig-q", type=float, default=0.05,
@@ -3240,6 +3431,10 @@ def main() -> None:
         res["age_region"].sort_values("p_mw").to_csv(tab_dir / f"age_tests_region_{c}.csv", index=False)
         res["age_group"].sort_values("p_mw").to_csv(tab_dir / f"age_tests_network_{c}.csv", index=False)
         res["region_clusters"].to_csv(tab_dir / f"region_clusters_{c}.csv", index=False)
+        ap = res["age_pattern"]
+        ap["table"].sort_values("bsr", key=abs, ascending=False).to_csv(tab_dir / f"age_pattern_{c}.csv", index=False)
+        ap["network"].to_csv(tab_dir / f"age_pattern_network_{c}.csv", index=False)
+        ap["by_param"].to_csv(tab_dir / f"age_pattern_params_{c}.csv", index=False)
         res["sub"][["participant_id", "age", "sex", "old", "cluster", *[f"PC{i}" for i in range(1, 6)]]] \
             .to_csv(tab_dir / f"subject_pca_clusters_{c}.csv", index=False)
         cond = res["condition"]
@@ -3275,6 +3470,8 @@ def main() -> None:
         fig_param_corr(res, fig_dir / f"param_corr_{c}.png")
         fig_volcano(res, fig_dir / f"age_volcano_{c}.png")
         fig_classifier(res, fig_dir / f"age_classifier_{c}.png")
+        fig_age_pattern(res, args.bsr_thr, fig_dir / f"age_pattern_{c}.png")
+        cond_figs[f"agepat|{c}"] = fig_dir / f"age_pattern_{c}.png"
         cond = res["condition"]
         if cond is not None:
             cp = list(cond["cols"])
@@ -3306,7 +3503,8 @@ def main() -> None:
     if not args.no_brains:
         ref_sid = args.ref_subject or meta.subject[base].iloc[0]
         print(f"  glass brains on sub-{ref_sid} ...")
-        brains = write_brains(pop, results, params, ref_sid, args.bids_dir, fig_dir, args.sig_q, args.sig_test)
+        brains = write_brains(pop, results, params, ref_sid, args.bids_dir, fig_dir, args.sig_q, args.sig_test,
+                              args.bsr_thr)
 
     write_markdown(pop, results, params, frozen, excluded, args, out / "summary.md", rep)
     html_path = out / "population_report.html"
