@@ -82,16 +82,18 @@ SURFACE_GROUPS = {
 
 # which node type each per-node param's dynamics actually depend on (see
 # optimization/model.py: HeterogeneousModel.dynamics -- A/B/a/b/mu only enter
-# d_jr [surface/JR nodes], P/c_ee only enter d_wc [volumetric/WC nodes]).
+# d_jr [surface/JR nodes], P/c_ee/c_ei only enter d_wc [volumetric/WC nodes]).
 LIVE_ON = {
     "A": "surface", "B": "surface", "a": "surface", "b": "surface", "mu": "surface",
-    "P": "volumetric", "c_ee": "volumetric",
+    "P": "volumetric", "c_ee": "volumetric", "c_ei": "volumetric",
 }
 PARAM_UNITS = {
     "A": "mV", "B": "mV", "a": "1/ms", "b": "1/ms", "mu": "firing rate (1/ms)",
-    "P": "external input (a.u.)", "c_ee": "coupling strength (a.u.)",
+    "P": "external input (a.u.)", "c_ee": "coupling strength (a.u.)", "c_ei": "coupling strength (a.u.)",
 }
-PER_NODE_PARAMS = ["P", "c_ee", "A", "B", "a", "b", "mu"]
+PER_NODE_PARAMS = ["P", "c_ee", "c_ei", "A", "B", "a", "b", "mu"]
+# learnable only in newer fits; a run without them just leaves them out
+OPTIONAL_PARAMS = {"c_ei"}
 
 GROUP_ORDER = ["VisCent", "VisPeri", "SomMot", "DorsAttn", "SalVentAttn", "Limbic",
                "Cont", "Default", "TempPar", "Cerebellum", "Hippocampus",
@@ -168,7 +170,8 @@ def load_run(results_dir: Path, bids_dir: Path | None = None) -> tuple[dict, Sub
     labels = subject.load.connectivity_labels(atlas, fmri_aligned=True)
 
     npz = np.load(results_dir / "optimized_params.npz")
-    missing = [p for p in PER_NODE_PARAMS if p not in npz.files]
+    missing = [p for p in PER_NODE_PARAMS if p not in npz.files and p not in OPTIONAL_PARAMS]
+    per_node_params = [p for p in PER_NODE_PARAMS if p in npz.files]
     if missing:
         raise KeyError(f"optimized_params.npz is missing {missing} -- not a per-node-param fit?")
     if npz[PER_NODE_PARAMS[0]].shape != (len(labels),):
@@ -184,7 +187,7 @@ def load_run(results_dir: Path, bids_dir: Path | None = None) -> tuple[dict, Sub
     nodes = []
     for i, name in enumerate(labels):
         entry = {"idx": i, "name": name, **classify(name)}
-        for p in PER_NODE_PARAMS:
+        for p in per_node_params:
             entry[p] = float(npz[p][i])
         nodes.append(entry)
 
@@ -198,7 +201,7 @@ def load_run(results_dir: Path, bids_dir: Path | None = None) -> tuple[dict, Sub
         "fmri_task": config["fmri_task"],
         "config": config,
         "nodes": nodes,
-        "per_node_params": PER_NODE_PARAMS,
+        "per_node_params": per_node_params,
         "init_by_param": init_by_param,
         "bounds_by_param": bounds_by_param,
         "live_on": LIVE_ON,

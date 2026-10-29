@@ -42,7 +42,10 @@ where it is live (see ``params_report_cli.LIVE_ON``); parameters that never move
 (e.g. ``P``) are reported and dropped.
 
 Fit quality covariates: ``eeg_psd_loss`` (mean of the last 10 epochs of the
-training EEG loss, i.e. the normalized-PSD MSE, log10) and ``fc_corr``.
+training EEG loss, i.e. the normalized-PSD MSE, log10) and ``bold_loss`` (same
+for the training BOLD loss: ``bold_fc_weight * FC MSE + bold_dfc_weight * dFC
+Wasserstein`` [+ ``bold_psd_weight * BOLD-PSD MSE``], log10). ``fc_corr`` only
+defines the "bold_ok" subset.
 
 Writes into ``--out`` (default ``<results-root>/population_report``):
   - ``population_report.html`` -- self-contained interactive report
@@ -107,8 +110,8 @@ COHORTS = {
 }
 JR_PARAMS = [p for p in PER_NODE_PARAMS if LIVE_ON[p] == "surface"]
 COND_SHORT = {"eyesclosed": "EC", "eyesopen": "EO"}
-NUISANCE = ["sex_M", "log_eeg_psd_loss", "fc_corr"]
-FIT_QUALITY_FEATURES = ["sex_M", "log_eeg_psd_loss", "eeg_loss_ratio", "fc_corr", "bold_loss_ratio"]
+NUISANCE = ["sex_M", "log_eeg_psd_loss", "log_bold_loss"]
+FIT_QUALITY_FEATURES = ["sex_M", "log_eeg_psd_loss", "eeg_loss_ratio", "log_bold_loss", "bold_loss_ratio"]
 
 # reference palette (dataviz skill, references/palette.md) -- categorical slots
 # 1/2 (validated all-pairs, so safe for scatters), the blue sequential ramp and
@@ -202,6 +205,7 @@ def load_population(results_root: Path, bids_dir: Path, participants_tsv: Path) 
 
     rows, per_subject, per_subject_init, spectra = [], [], [], []
     names, ref_cfg, ref_subj = None, None, None
+    present = set()     # per-node params found in at least one run (c_ei only in newer fits)
     for d in run_dirs:
         cfg = json.loads((d / "config.json").read_text())
         sid = cfg["subject"]["subject"]
@@ -221,7 +225,9 @@ def load_population(results_root: Path, bids_dir: Path, participants_tsv: Path) 
         vals = {}
         for p in PER_NODE_PARAMS:
             v = np.full(len(names), np.nan)
-            v[to_conn] = npz[p]
+            if p in npz.files:
+                v[to_conn] = npz[p]
+                present.add(p)
             vals[p] = v
         per_subject.append(vals)
         init_vals = {p: np.full(len(names), np.nan) for p in PER_NODE_PARAMS}
@@ -237,12 +243,15 @@ def load_population(results_root: Path, bids_dir: Path, participants_tsv: Path) 
         diag_path = d / "diagnostics_metrics.json"
         diag = json.loads(diag_path.read_text()) if diag_path.exists() else {}
         loss_eeg = npz["loss_eeg"] if "loss_eeg" in npz.files else np.array([])
+        loss_bold = npz["loss_bold"] if "loss_bold" in npz.files else np.array([])
+        loss_bold = loss_bold[np.isfinite(loss_bold) & (loss_bold > 0)]     # epochs without a BOLD step
         rows.append({
             "participant_id": f"sub-{sid}", "subject": sid, "run": d.name,
             "gamma_weight": float(cfg.get("gamma_weight", 0.0)),
             "n_nodes": int(len(to_conn)),
             "G": float(npz["G"][0]),
             "eeg_psd_loss": float(np.mean(loss_eeg[-10:])) if len(loss_eeg) else np.nan,
+            "bold_loss": float(np.mean(loss_bold[-10:])) if len(loss_bold) else np.nan,
             "eeg_loss_ratio": float(npz["eeg_loss_ratio"]) if "eeg_loss_ratio" in npz.files else np.nan,
             "bold_loss_ratio": float(npz["bold_loss_ratio"]) if "bold_loss_ratio" in npz.files else np.nan,
             "fc_corr": float(diag.get("fc_corr", np.nan)),
@@ -259,6 +268,7 @@ def load_population(results_root: Path, bids_dir: Path, participants_tsv: Path) 
     part = pd.read_csv(participants_tsv, sep="\t")[["participant_id", "age", "sex"]]
     meta = meta.merge(part, on="participant_id", how="left")
     meta["log_eeg_psd_loss"] = np.log10(meta.eeg_psd_loss)
+    meta["log_bold_loss"] = np.log10(meta.bold_loss)
     meta["sex_M"] = (meta.sex == "M").astype(float)
 
     regions = [{"idx": i, "name": n, "short": short_name(n), **classify(n)}
@@ -270,6 +280,7 @@ def load_population(results_root: Path, bids_dir: Path, participants_tsv: Path) 
 
     return {
         "meta": meta,
+        "params": [p for p in PER_NODE_PARAMS if p in present],
         "V": {p: np.stack([s[p] for s in per_subject]) for p in PER_NODE_PARAMS},
         "V_init": {p: np.stack([s[p] for s in per_subject_init]) for p in PER_NODE_PARAMS},
         "regions": regions,
@@ -288,7 +299,7 @@ def find_frozen(pop: dict) -> tuple[list[str], dict[str, list[int]]]:
     per-param live regions whose median movement is ~0 (no gradient reached
     them -- dropped from that param's analysis)."""
     frozen_params, frozen_cells = [], {}
-    for p in PER_NODE_PARAMS:
+    for p in pop["params"]:
         lo, hi = pop["bounds"][p]
         live = [r["idx"] for r in pop["regions"] if r["is_surface"] == (LIVE_ON[p] == "surface")]
         dev = np.abs(pop["V"][p][:, live] - pop["init"][p]) / (hi - lo)
@@ -466,7 +477,7 @@ def analyse_cohort(pop: dict, mask: np.ndarray, params: list[str], frozen_cells:
     subj_feats["G"] = sub.G.to_numpy()
     subj_feats["age"] = sub.age.to_numpy()
     subj_feats["log EEG-PSD loss"] = sub.log_eeg_psd_loss.to_numpy()
-    subj_feats["fc_corr"] = sub.fc_corr.to_numpy()
+    subj_feats["log BOLD loss"] = sub.log_bold_loss.to_numpy()
     sf = pd.DataFrame(subj_feats)
     subj_corr = sf.corr(method="spearman")
 
@@ -498,7 +509,7 @@ def analyse_cohort(pop: dict, mask: np.ndarray, params: list[str], frozen_cells:
             "auc_old": float(auc_age), "p_old": float(stats.mannwhitneyu(s[old], s[~old])[1]),
             "auc_male": float(auc_sex),
             "rho_eeg_psd_loss": _nan_spearman(s, sub.log_eeg_psd_loss.to_numpy()),
-            "rho_fc_corr": _nan_spearman(s, sub.fc_corr.to_numpy()),
+            "rho_bold_loss": _nan_spearman(s, sub.log_bold_loss.to_numpy()),
             "rho_G": _nan_spearman(s, sub.G.to_numpy()),
         })
     loadings = {}
@@ -724,7 +735,7 @@ def analyse_condition(pop: dict, popb: dict, ia: np.ndarray, ib: np.ndarray, par
     if all(np.array_equal(VA[p], VB[p], equal_nan=True) for p in params):
         raise SystemExit("--results-root and --compare-root hold identical fitted parameters for the paired "
                          "subjects -- are they the same runs?")
-    dq = pd.DataFrame({k: mb[k].to_numpy() - ma[k].to_numpy() for k in ("log_eeg_psd_loss", "fc_corr")})
+    dq = pd.DataFrame({k: mb[k].to_numpy() - ma[k].to_numpy() for k in ("log_eeg_psd_loss", "log_bold_loss")})
     usable = [k for k in dq.columns if np.isfinite(dq[k]).mean() >= 0.5 and np.nanstd(dq[k]) > 0]
     if len(usable) < len(dq.columns):
         print(f"    fit-quality adjustment drops {sorted(set(dq.columns) - set(usable))} (missing or constant)")
@@ -739,9 +750,9 @@ def analyse_condition(pop: dict, popb: dict, ia: np.ndarray, ib: np.ndarray, par
     variables = {f"mean {p}": (gmean(VA, p), gmean(VB, p)) for p in params}
     variables["G"] = (ma.G.to_numpy(), mb.G.to_numpy())
     for k, lab in [("log_eeg_psd_loss", "log EEG-PSD loss"), ("eeg_loss_ratio", "EEG loss ratio"),
-                   ("fc_corr", "fc_corr"), ("bold_loss_ratio", "BOLD loss ratio")]:
+                   ("log_bold_loss", "log BOLD loss"), ("bold_loss_ratio", "BOLD loss ratio")]:
         variables[lab] = (ma[k].to_numpy(float), mb[k].to_numpy(float))
-    fit_vars = ["log EEG-PSD loss", "EEG loss ratio", "fc_corr", "BOLD loss ratio"]
+    fit_vars = ["log EEG-PSD loss", "EEG loss ratio", "log BOLD loss", "BOLD loss ratio"]
     var_stats = {}
     for v, (a, b) in variables.items():
         icc_c, icc_a = icc_pair(a, b)
@@ -843,8 +854,8 @@ def analyse_condition(pop: dict, popb: dict, ia: np.ndarray, ib: np.ndarray, par
     clf = {}
     for key, XA, XB in [
             ("params", np.column_stack([FA, ma.G]), np.column_stack([FB, mb.G])),
-            ("fit_quality", ma[["log_eeg_psd_loss", "eeg_loss_ratio", "fc_corr", "bold_loss_ratio"]].to_numpy(float),
-             mb[["log_eeg_psd_loss", "eeg_loss_ratio", "fc_corr", "bold_loss_ratio"]].to_numpy(float))]:
+            ("fit_quality", ma[["log_eeg_psd_loss", "eeg_loss_ratio", "log_bold_loss", "bold_loss_ratio"]].to_numpy(float),
+             mb[["log_eeg_psd_loss", "eeg_loss_ratio", "log_bold_loss", "bold_loss_ratio"]].to_numpy(float))]:
         print(f"    condition classifier [{key}] ({XA.shape[1]} features, {args.n_perm} permutations) ...")
         clf[key] = condition_classifier(XA, XB, args.n_perm, args.clf_c, args.seed)
 
@@ -1474,7 +1485,7 @@ def fig_condition_stability(cond: dict, params: list[str], out: Path) -> None:
 def fig_condition_scatter(cond: dict, params: list[str], out: Path) -> None:
     A, B = cond["labels"]
     old = cond["subjects"].old.to_numpy(bool)
-    vs = [f"mean {p}" for p in params] + ["G", "log EEG-PSD loss", "fc_corr"]
+    vs = [f"mean {p}" for p in params] + ["G", "log EEG-PSD loss", "log BOLD loss"]
     nc = 4
     nr = int(np.ceil(len(vs) / nc))
     fig, axes = plt.subplots(nr, nc, figsize=(3.6 * nc, 3.4 * nr))
@@ -1793,6 +1804,13 @@ def render_brain(positions: np.ndarray, point_region: np.ndarray, region_values:
         if rest.any():
             pl.add_points(positions[rest], color="#b8c2bb", opacity=0.3,
                           render_points_as_spheres=True, point_size=3, lighting=False)
+        if not shown.any():
+            pl.set_background("white")
+            offset, viewup = DIPOLE_CAMERAS[view]
+            pl.view_vector(offset, viewup=viewup)
+            pl.reset_camera()
+            pl.add_text(view, font_size=12, color="black", position="lower_left")
+            continue
         pl.add_points(positions[shown], scalars=scalars, cmap=cmap, clim=clim,
                       render_points_as_spheres=True, point_size=6, lighting=True,
                       show_scalar_bar=(i == n - 1),
@@ -1810,8 +1828,18 @@ def render_brain(positions: np.ndarray, point_region: np.ndarray, region_values:
     pl.close()
 
 
+def significant(df: pd.DataFrame, q_cols: tuple[str, str], q: float, test: str) -> np.ndarray:
+    """Rows passing BH q < ``q`` on the rank test (``q_cols[0]``), the
+    fit-quality-adjusted OLS (``q_cols[1]``), or ``either``."""
+    rank, ols = (df[c].fillna(1.0).to_numpy() < q for c in q_cols)
+    return {"mw": rank, "ols": ols, "either": rank | ols}[test]
+
+
+SIG_TEST_LABEL = {"mw": "rank test", "ols": "adjusted OLS", "either": "rank test or adjusted OLS"}
+
+
 def write_brains(pop: dict, results: dict, params: list[str], ref_sid: str, bids_dir: Path,
-                 fig_dir: Path) -> dict:
+                 fig_dir: Path, sig_q: float = 0.05, sig_test: str = "either") -> dict:
     subj = Subject(str(bids_dir), ref_sid)
     positions = subj.load.dipoles(pop["spacing"]).positions
     node = subj.load.dipole_node_labels(pop["atlas"], pop["spacing"], task=pop["fmri_task"])
@@ -1837,6 +1865,15 @@ def write_brains(pop: dict, results: dict, params: list[str], ref_sid: str, bids
             render_brain(positions, point_region, vals, DIV_CMAP, (-lim, lim),
                          "Cliff's delta", f"{p} -- old vs young, {c} (on sub-{ref_sid})", path)
             written[f"delta|{p}|{c}"] = path
+            # same map, thresholded: only regions passing FDR keep their colour
+            keep = significant(a, ("q_mw", "q_ols"), sig_q, sig_test)
+            vals = np.full(M, np.nan)
+            vals[a.region_idx.to_numpy()[keep]] = a.cliffs_delta.to_numpy()[keep]
+            path = fig_dir / f"brain_sig_{p}_{c}.png"
+            render_brain(positions, point_region, vals, DIV_CMAP, (-lim, lim), "Cliff's delta",
+                         f"{p} -- old vs young, {c}: {int(keep.sum())} regions q < {sig_q:g} "
+                         f"({SIG_TEST_LABEL[sig_test]})", path)
+            written[f"sig|{p}|{c}"] = path
             cond = res.get("condition")
             if cond is None:
                 continue
@@ -1849,6 +1886,33 @@ def write_brains(pop: dict, results: dict, params: list[str], ref_sid: str, bids
             render_brain(positions, point_region, vals, DIV_CMAP, (-lim, lim),
                          "rank-biserial", f"{p} -- {B} vs {A}, {c} (on sub-{ref_sid})", path)
             written[f"cond|{p}|{c}"] = path
+            keep = significant(d, ("q_w", "q_ols"), sig_q, sig_test)
+            vals = np.full(M, np.nan)
+            vals[d.region_idx.to_numpy()[keep]] = d.rank_biserial.to_numpy()[keep]
+            path = fig_dir / f"brain_condsig_{p}_{c}.png"
+            render_brain(positions, point_region, vals, DIV_CMAP, (-lim, lim), "rank-biserial",
+                         f"{p} -- {B} vs {A}, {c}: {int(keep.sum())} regions q < {sig_q:g} "
+                         f"({SIG_TEST_LABEL[sig_test]})", path)
+            written[f"condsig|{p}|{c}"] = path
+    # overview: in how many parameters is each region significant?
+    for c, res in results.items():
+        for kind, df, q_cols, what in [
+                ("sigany", res["age_region"], ("q_mw", "q_ols"), "old vs young"),
+                ("condsigany", None if res.get("condition") is None else res["condition"]["diff_region"],
+                 ("q_w", "q_ols"), "condition shift")]:
+            if df is None:
+                continue
+            df = df[df.param.isin(params)]
+            hits = df[significant(df, q_cols, sig_q, sig_test)]
+            vals = np.full(M, np.nan)
+            counts = hits.groupby("region_idx").size()
+            vals[counts.index.to_numpy()] = counts.to_numpy()
+            top = max(1, int(counts.max()) if len(counts) else 1)
+            path = fig_dir / f"brain_{kind}_{c}.png"
+            render_brain(positions, point_region, vals, SEQ_CMAP, (0.5, top + 0.5 if top > 1 else 1.5),
+                         "# params", f"{what}, {c}: {len(counts)} regions with any param q < {sig_q:g} "
+                         f"({SIG_TEST_LABEL[sig_test]})", path)
+            written[f"{kind}|{c}"] = path
     return written
 
 
@@ -1898,7 +1962,7 @@ def _condition_markdown(cond: dict, c: str, params: list[str]) -> list[str]:
           f"![condition scatter](figures/condition_scatter_{c}.png)", "",
           f"![condition identification](figures/condition_ident_{c}.png)", "",
           f"**Shift {B} - {A}.** Wilcoxon signed-rank with matched-pairs rank-biserial r_rb (> 0 = higher in "
-          f"{B}); `dz_adj` is the shift after regressing out the change in fit quality (EEG-PSD loss, fc_corr).", "",
+          f"{B}); `dz_adj` is the shift after regressing out the change in fit quality (EEG-PSD loss, BOLD loss).", "",
           "| variable | median " + A + " | median " + B + " | median diff | r_rb | p |", "|---|---|---|---|---|---|"]
     for _, r in cond["fit_diff"].iterrows():
         L.append(f"| {r.variable} | {r.median_a:.4g} | {r.median_b:.4g} | {r.median_diff:+.3g} | "
@@ -2043,7 +2107,7 @@ def write_markdown(pop: dict, results: dict, params: list[str], frozen: list[str
         f"Parameters analysed: {', '.join(params)} (each on its live node type only)."
         + (f" Dropped as never moving from init: {', '.join(frozen)}." if frozen else ""),
         f" Regions need >= {args.min_coverage:.0%} subject coverage. Fit-quality covariates: sex, "
-        "log10 EEG-PSD loss (mean of last 10 epochs), fc_corr.",
+        "log10 EEG-PSD loss and log10 BOLD loss (FC MSE + dFC Wasserstein; mean of last 10 epochs).",
         "",
         "![fit quality](figures/fit_quality.png)",
         "",
@@ -2079,11 +2143,11 @@ def write_markdown(pop: dict, results: dict, params: list[str], frozen: list[str
               f"spectrum means no dominant axes). Best k-means k = {pca['best_k']} with silhouette "
               f"{pca['silhouette'][pca['best_k']]:.2f} -> **{_sil_verdict(pca['silhouette'][pca['best_k']])}**. "
               f"Cluster vs age group: chi2 p = {pca['chi2_p']:.3g}, ARI = {pca['ari_age']:.3f}.", "",
-              "| PC | var | AUC old>young | p | AUC male | rho EEG-PSD loss | rho fc_corr | rho G |",
+              "| PC | var | AUC old>young | p | AUC male | rho EEG-PSD loss | rho BOLD loss | rho G |",
               "|---|---|---|---|---|---|---|---|"]
         for a in pca["assoc"]:
             L.append(f"| PC{a['pc']} | {a['var_explained']:.1%} | {a['auc_old']:.2f} | {a['p_old']:.2g} | "
-                     f"{a['auc_male']:.2f} | {a['rho_eeg_psd_loss']:.2f} | {a['rho_fc_corr']:.2f} | {a['rho_G']:.2f} |")
+                     f"{a['auc_male']:.2f} | {a['rho_eeg_psd_loss']:.2f} | {a['rho_bold_loss']:.2f} | {a['rho_G']:.2f} |")
         L += ["", "Top PC1 loadings: " + ", ".join(f"`{n}` ({v:+.2f})" for n, v in pca["loadings"]["PC1"][:6]), "",
               f"![pca](figures/pca_{c}.png)", "",
               f"Regions (median {', '.join(res['node_corr']['labels'])} per region): best k = {rci['best_k']}, "
@@ -2229,6 +2293,7 @@ def build_html_data(pop: dict, results: dict, params: list[str], frozen: list[st
             "snr": None if rep["snr"] is None else {"labels": rep["snr"]["labels"],
                                                      "table": rep["snr"]["table"].to_dict("records")}},
         "n_perm": args.n_perm, "clf_c": args.clf_c,
+        "sig_q": args.sig_q, "sig_test_label": SIG_TEST_LABEL[args.sig_test],
         "config": {k: pop["config"].get(k) for k in ("leadfield_label", "bold_model", "schedule", "num_epochs", "fs")},
     })
 
@@ -2321,7 +2386,7 @@ details summary{cursor:pointer; color:var(--accent); font-size:13px; margin:8px 
     <div class="card pad">
       <div class="controls" style="margin-bottom:8px">
         <h4 style="margin:0">Glass brain</h4>
-        <div class="seg" id="brain-seg"><button data-k="median" class="active">population median</button><button data-k="delta">age effect (Cliff's &delta;)</button></div>
+        <div class="seg" id="brain-seg"><button data-k="median" class="active">population median</button><button data-k="delta">age effect (Cliff's &delta;)</button><button data-k="sig">significant regions</button><button data-k="sigany">significant, any param</button></div>
         <span class="note" id="brain-note" style="margin:0"></span>
       </div>
       <img id="brain-img" class="brain-img" alt="glass brain map">
@@ -2395,7 +2460,7 @@ details summary{cursor:pointer; color:var(--accent); font-size:13px; margin:8px 
     </div>
     <div class="card pad" style="margin-bottom:18px"><h4>Per-region shift</h4><div class="note" id="cond-diff-note"></div><img id="cond-diff-img" class="brain-img" alt="per-region shift"></div>
     <div class="card pad" style="margin-bottom:18px">
-      <div class="controls" style="margin-bottom:8px"><h4 style="margin:0">Glass brain: shift</h4><label>param <select id="cond-brain-param"></select></label><span class="note" id="cond-brain-note" style="margin:0"></span></div>
+      <div class="controls" style="margin-bottom:8px"><h4 style="margin:0">Glass brain: shift</h4><div class="seg" id="cond-brain-seg"><button data-k="cond" class="active">shift</button><button data-k="condsig">significant regions</button><button data-k="condsigany">significant, any param</button></div><label>param <select id="cond-brain-param"></select></label><span class="note" id="cond-brain-note" style="margin:0"></span></div>
       <img id="cond-brain-img" class="brain-img" alt="glass brain shift map"></div>
     <div class="grid2">
       <div class="card pad"><h4>Fit quality and condition classifier</h4><div class="note" id="cond-clf-note"></div><table class="t" id="cond-fit"></table><table class="t" id="cond-clf" style="margin-top:12px"></table></div>
@@ -2590,10 +2655,14 @@ function renderDetail(){
     ${t?`<tr><td>Cliff's &delta; (old&minus;young)</td><td class="num">${f(t.cliffs_delta,2)}</td></tr><tr><td>p / q (MW)</td><td class="num">${pf(t.p_mw)} / ${pf(t.q_mw)}</td></tr><tr><td>&beta; old (OLS, z)</td><td class="num">${f(t.beta_old,2)}</td></tr><tr><td>p / q (OLS)</td><td class="num">${pf(t.p_ols)} / ${pf(t.q_ols)}</td></tr>`:''}</table>`;
 }
 function renderBrain(){
-  const img=document.getElementById('brain-img'), key = brainKind==='median' ? `median|${param}` : `delta|${param}|${cohort}`;
+  const img=document.getElementById('brain-img'), key = brainKind==='median' ? `median|${param}` : brainKind==='sigany' ? `sigany|${cohort}` : `${brainKind}|${param}|${cohort}`;
   const src=D.brains[key]; img.style.display=src?'block':'none'; if(src) img.src=src;
+  const sigTxt = `BH q &lt; ${D.sig_q} (${D.sig_test_label})`;
   document.getElementById('brain-note').innerHTML = !Object.keys(D.brains).length ? 'Brain maps were not rendered (--no-brains).' :
-    (brainKind==='median' ? `The median across all fits, drawn on sub-${D.ref_subject}'s source cloud. Gray points are regions not analysed for ${param}.` : `Cliff's &delta; for old vs young: red means higher in old, blue higher in young. This is unthresholded, so check q in the age section.`);
+    (brainKind==='median' ? `The median across all fits, drawn on sub-${D.ref_subject}'s source cloud. Gray points are regions not analysed for ${param}.`
+     : brainKind==='delta' ? `Cliff's &delta; for old vs young: red means higher in old, blue higher in young. This is unthresholded, so check q in the age section.`
+     : brainKind==='sig' ? `Only regions where the age effect on ${param} passes ${sigTxt} keep their Cliff's &delta; colour; gray = not significant or not analysed.`
+     : `Number of parameters whose age effect passes ${sigTxt} in each region; gray = none.`);
 }
 
 // ---------- 03 clustering ----------
@@ -2605,8 +2674,8 @@ function renderClusters(){
     ['best k (regions)', ri.best_k, `silhouette ${f(ri.silhouette[ri.best_k],2)}, ARI vs networks ${f(ri.ari_group,2)}`]]);
   drawPCA(); drawBars('scree-svg', p.evr.map((v,i)=>[`${i+1}`, v*100, i<p.n_pc]), '% var');
   drawBars('sil-svg', Object.entries(p.silhouette).map(([k,v])=>[k, v, +k===p.best_k]), 'silhouette', 0.25);
-  document.getElementById('pc-assoc').innerHTML = `<tr><th>PC</th><th>var</th><th>AUC old</th><th>p</th><th>AUC male</th><th>&rho; EEG loss</th><th>&rho; fc_corr</th><th>&rho; G</th></tr>` +
-    p.assoc.map(a=>`<tr><td>PC${a.pc}</td><td class="num">${f(a.var_explained*100,1)}%</td><td class="num">${f(a.auc_old,2)}</td><td class="num">${pf(a.p_old)}</td><td class="num">${f(a.auc_male,2)}</td><td class="num">${f(a.rho_eeg_psd_loss,2)}</td><td class="num">${f(a.rho_fc_corr,2)}</td><td class="num">${f(a.rho_G,2)}</td></tr>`).join('');
+  document.getElementById('pc-assoc').innerHTML = `<tr><th>PC</th><th>var</th><th>AUC old</th><th>p</th><th>AUC male</th><th>&rho; EEG loss</th><th>&rho; BOLD loss</th><th>&rho; G</th></tr>` +
+    p.assoc.map(a=>`<tr><td>PC${a.pc}</td><td class="num">${f(a.var_explained*100,1)}%</td><td class="num">${f(a.auc_old,2)}</td><td class="num">${pf(a.p_old)}</td><td class="num">${f(a.auc_male,2)}</td><td class="num">${f(a.rho_eeg_psd_loss,2)}</td><td class="num">${f(a.rho_bold_loss,2)}</td><td class="num">${f(a.rho_G,2)}</td></tr>`).join('');
   document.getElementById('loadings').innerHTML = Object.entries(p.loadings).map(([k,l])=>`<table class="t"><tr><th>${k}</th><th>loading</th></tr>${l.map(([n,v])=>`<tr><td>${n}</td><td class="num">${f(v,3)}</td></tr>`).join('')}</table>`).join('');
   drawCorr();
   const rc=C().region_clusters, ks=[...new Set(rc.map(r=>r.cluster))].sort(), gs=D.group_order.filter(g=>rc.some(r=>r.group===g));
@@ -2670,7 +2739,7 @@ function drawCorr(){
 // ---------- 04 age ----------
 function renderAge(){
   const c=C(), clf=c.classifier;
-  document.getElementById('age-lede').innerHTML = `Young (age &lt; ${D.age_split}, n=${c.n_young}) vs old (n=${c.n_old}). Per region and per network, a Mann&ndash;Whitney test gives Cliff's &delta;, and an OLS model of the z-scored parameter adds sex, log EEG-PSD loss and fc_corr as covariates. Both use Benjamini&ndash;Hochberg FDR. The multivariate test is an L2 logistic regression (C=${D.clf_c}) scored by 5&times;10 cross-validated AUC, with ${D.n_perm} label permutations for p.`;
+  document.getElementById('age-lede').innerHTML = `Young (age &lt; ${D.age_split}, n=${c.n_young}) vs old (n=${c.n_old}). Per region and per network, a Mann&ndash;Whitney test gives Cliff's &delta;, and an OLS model of the z-scored parameter adds sex, log EEG-PSD loss and log BOLD loss (FC MSE + dFC Wasserstein) as covariates. Both use Benjamini&ndash;Hochberg FDR. The multivariate test is an L2 logistic regression (C=${D.clf_c}) scored by 5&times;10 cross-validated AUC, with ${D.n_perm} label permutations for p.`;
   statTiles('clf-stats', Object.entries(clf).map(([k,v])=>[`AUC &middot; ${k}`, f(v.auc_mean,3), `&plusmn;${f(v.auc_sd,3)} &middot; perm p ${pf(v.p_perm)}`])
     .concat([[`region tests q&lt;0.05`, `${c.age_region.filter(r=>r.q_mw<0.05).length} / ${c.age_region.length}`, `MW; OLS: ${c.age_region.filter(r=>r.q_ols<0.05).length}`]]));
   const keys=Object.keys(clf), W=960,H=200, pw=W/keys.length; let s='';
@@ -2703,7 +2772,7 @@ function drawVolcano(){
 }
 
 // ---------- 05 condition ----------
-let condVar=null, condBrainParam=PARAMS.includes('B')?'B':PARAMS[0];
+let condVar=null, condBrainParam=PARAMS.includes('B')?'B':PARAMS[0], condBrainKind='cond';
 (function(){
   if(!D.cond_labels) return;
   const [A,B]=D.cond_labels, first=Object.values(D.cohorts).find(c=>c.condition).condition;
@@ -2716,6 +2785,7 @@ let condVar=null, condBrainParam=PARAMS.includes('B')?'B':PARAMS[0];
   document.getElementById('cond-var').addEventListener('change', e=>{ condVar=e.target.value; drawCondScatter(); });
   document.getElementById('cond-brain-param').innerHTML=PARAMS.map(p=>`<option${p===condBrainParam?' selected':''}>${p}</option>`).join('');
   document.getElementById('cond-brain-param').addEventListener('change', e=>{ condBrainParam=e.target.value; renderCondBrain(); });
+  seg('cond-brain-seg', k=>{ condBrainKind=k; renderCondBrain(); });
 })();
 function renderCondition(){
   if(!D.cond_labels) return;
@@ -2740,7 +2810,7 @@ function renderCondition(){
   document.getElementById('cond-clf-note').innerHTML=`Paired Wilcoxon on the fit-quality metrics, then an L2 logistic regression that predicts the condition from within-subject-centred features (each subject's mean over both conditions removed). CV folds and label permutations are grouped by subject. If <b>fit_quality</b> separates the conditions as well as <b>params</b>, the parameter shift may only reflect a difference in fit.`;
   document.getElementById('cond-fit').innerHTML=`<tr><th>fit metric</th><th>${A}</th><th>${B}</th><th>r<sub>rb</sub></th><th>p</th></tr>`+cd.fit_diff.map(r=>`<tr><td>${r.variable}</td><td class="num">${g3(r.median_a)}</td><td class="num">${g3(r.median_b)}</td><td class="num">${f(r.rank_biserial,2)}</td><td class="num">${pf(r.p_w)}</td></tr>`).join('');
   document.getElementById('cond-clf').innerHTML=`<tr><th>classifier</th><th>CV AUC (5&times;10)</th><th>perm p</th></tr>`+Object.entries(clf).map(([k,v])=>`<tr><td>${k}</td><td class="num">${f(v.auc_mean,3)} &plusmn; ${f(v.auc_sd,3)}</td><td class="num">${pf(v.p_perm)}</td></tr>`).join('');
-  document.getElementById('cond-net-note').innerHTML=`Parameter averaged over each network's regions per subject. &beta;<sub>adj</sub> is the standardized shift after regressing out the change in EEG-PSD loss and fc_corr. Age &delta; is Cliff's &delta; of the shift, old vs young: does the condition effect depend on age?`;
+  document.getElementById('cond-net-note').innerHTML=`Parameter averaged over each network's regions per subject. &beta;<sub>adj</sub> is the standardized shift after regressing out the change in EEG-PSD loss and BOLD loss. Age &delta; is Cliff's &delta; of the shift, old vs young: does the condition effect depend on age?`;
   const col=v=>`style="color:${v>0?'var(--div-pos)':'var(--div-neg)'}"`;
   document.getElementById('cond-net').innerHTML=`<tr><th>param</th><th>network</th><th>r<sub>rb</sub></th><th>q W</th><th>&beta;<sub>adj</sub></th><th>q OLS</th><th>age &delta;</th><th>p age</th></tr>`+
     cd.diff_group.slice().sort((a,b)=>a.p_w-b.p_w).map(r=>`<tr class="${r.q_w<0.05||r.q_ols<0.05?'hl':''}"><td>${r.param}</td><td>${r.group}</td><td class="num" ${col(r.rank_biserial)}>${f(r.rank_biserial,2)}</td><td class="num">${pf(r.q_w)}</td><td class="num">${f(r.dz_adj,2)}</td><td class="num">${pf(r.q_ols)}</td><td class="num">${f(r.age_delta,2)}</td><td class="num">${pf(r.p_age)}</td></tr>`).join('');
@@ -2779,10 +2849,14 @@ function drawCondScatter(){
   document.getElementById('cond-scatter-note').innerHTML=`Each dot is a subject. Points on the dashed line kept their value; a cloud parallel to it means a shared shift. ICC(C) ${f(s0.icc_c,2)} &middot; ICC(A) ${f(s0.icc_a,2)} &middot; &rho; ${f(s0.rho,2)} &middot; shift r<sub>rb</sub> ${f(s0.rank_biserial,2)} (p ${pf(s0.p_w)}).`;
 }
 function renderCondBrain(){
-  const src=D.brains[`cond|${condBrainParam}|${cohort}`], img=document.getElementById('cond-brain-img');
+  const key = condBrainKind==='condsigany' ? `condsigany|${cohort}` : `${condBrainKind}|${condBrainParam}|${cohort}`;
+  const src=D.brains[key], img=document.getElementById('cond-brain-img');
   img.style.display=src?'block':'none'; if(src) img.src=src;
-  const [A,B]=D.cond_labels;
-  document.getElementById('cond-brain-note').innerHTML = src ? `Rank-biserial r of ${B} &minus; ${A}, drawn on sub-${D.ref_subject}'s source cloud. Red means higher in ${B}. This is unthresholded.` : 'Brain maps were not rendered (--no-brains).';
+  const [A,B]=D.cond_labels, sigTxt=`BH q &lt; ${D.sig_q} (${D.sig_test_label})`;
+  document.getElementById('cond-brain-note').innerHTML = !src ? 'Brain maps were not rendered (--no-brains).'
+    : condBrainKind==='cond' ? `Rank-biserial r of ${B} &minus; ${A}, drawn on sub-${D.ref_subject}'s source cloud. Red means higher in ${B}. This is unthresholded.`
+    : condBrainKind==='condsig' ? `Only regions where the ${B} &minus; ${A} shift in ${condBrainParam} passes ${sigTxt} keep their colour; gray = not significant or not analysed.`
+    : `Number of parameters whose ${B} &minus; ${A} shift passes ${sigTxt} in each region; gray = none.`;
 }
 
 // ---------- refit stability ----------
@@ -2841,6 +2915,191 @@ renderAll();
 
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# companion notebook (summary of the optimizations, reads tables/ + figures/)
+
+def _nb_cell(kind: str, src: str) -> dict:
+    cell = {"cell_type": kind, "metadata": {}, "source": src.strip("\n").splitlines(keepends=True)}
+    if kind == "code":
+        cell.update(execution_count=None, outputs=[])
+    return cell
+
+
+def write_notebook(out: Path, args: argparse.Namespace) -> Path:
+    """A plain-pandas notebook over the report's tables/figures, for poking at
+    the numbers the HTML summarises. Nothing is recomputed: rerun the CLI to
+    refresh it."""
+    md, code = (lambda t: _nb_cell("markdown", t)), (lambda t: _nb_cell("code", t))
+    cells = [
+        md(f"""
+# Population optimization summary
+
+Companion to `population_report.html`. Results root `{args.results_root}`
+{f"(compared with `{args.compare_root}`)" if args.compare_root else ""}, BIDS `{args.bids_dir}`.
+Significance throughout: BH-FDR q < {args.sig_q:g} ({SIG_TEST_LABEL[args.sig_test]}).
+"""),
+        code(f"""
+from pathlib import Path
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from IPython.display import Image, Markdown, display
+
+REPORT = Path({str(out.resolve())!r})
+if not REPORT.exists():          # notebook moved together with its report folder
+    REPORT = Path.cwd()
+TAB, FIG = REPORT / "tables", REPORT / "figures"
+SIG_Q, SIG_TEST = {args.sig_q!r}, {args.sig_test!r}
+pd.set_option("display.max_rows", 60, "display.float_format", "{{:.4g}}".format)
+
+def table(name):
+    path = TAB / f"{{name}}.csv"
+    return pd.read_csv(path) if path.exists() else None
+
+def significant(df, rank_q, ols_q="q_ols"):
+    rank, ols = df[rank_q].fillna(1) < SIG_Q, df[ols_q].fillna(1) < SIG_Q
+    return {{"mw": rank, "ols": ols, "either": rank | ols}}[SIG_TEST]
+
+def show(name, width=900):
+    path = FIG / f"{{name}}.png"
+    if path.exists():
+        display(Image(filename=str(path), width=width))
+    else:
+        print(f"(no figure {{name}}.png -- rerun without --no-brains?)")
+
+COHORTS = [c for c in ("all", "bold_ok") if (TAB / f"region_stats_{{c}}.csv").exists()]
+bounds = table("param_bounds")
+values = pd.read_csv(TAB / "param_values.csv.gz", dtype={{"participant_id": str}})
+PARAMS = list(bounds.param[bounds.param.isin(values.param.unique())])
+print("cohorts:", COHORTS, "| params:", PARAMS)
+"""),
+        md("## 1. Fits\nOne row per finished fit: fit quality, global coupling `G`, age/sex, cohort membership."),
+        code("""
+subj = table("subjects")
+print(f"{len(subj)} fits, {subj.in_all.sum()} in 'all' ({(subj.old & subj.in_all).sum()} old), "
+      f"{subj.in_bold_ok.sum()} in 'bold_ok', {subj.eeg_fit_failed.sum()} flagged as failed EEG fits")
+subj[["age", "G", "log_eeg_psd_loss", "eeg_loss_ratio", "log_bold_loss", "bold_loss_ratio", "fc_corr", "dfc_w_dist"]].describe().T
+"""),
+        code("""
+fig, ax = plt.subplots(1, 4, figsize=(17, 3.4))
+for a, col in zip(ax, ["log_eeg_psd_loss", "log_bold_loss", "fc_corr", "G"]):
+    for old, c in [(False, "#2a78d6"), (True, "#eb6834")]:
+        a.hist(subj.loc[subj.in_all & (subj.old == old), col].dropna(), bins=25, alpha=0.6, color=c,
+               label="old" if old else "young")
+    a.set_title(col); a.legend(frameon=False)
+plt.tight_layout()
+"""),
+        md("## 2. Fitted parameter values\nPopulation median per parameter across its live regions, against its init and bounds."),
+        code("""
+rows = []
+for p in PARAMS:
+    v = values[values.param == p].value
+    b = bounds.set_index("param").loc[p]
+    rows.append({"param": p, "live_on": b.live_on, "init": b.init, "low": b.low, "high": b.high,
+                 "regions": values[values.param == p].region.nunique(), "median": v.median(),
+                 "q1": v.quantile(.25), "q3": v.quantile(.75),
+                 "frac_at_bound": ((v - b.low < .01 * (b.high - b.low)) | (b.high - v < .01 * (b.high - b.low))).mean()})
+pd.DataFrame(rows).set_index("param")
+"""),
+        code("""
+fig, axes = plt.subplots(2, (len(PARAMS) + 1) // 2, figsize=(3.2 * ((len(PARAMS) + 1) // 2), 6), squeeze=False)
+for a, p in zip(axes.flat, PARAMS):
+    b = bounds.set_index("param").loc[p]
+    a.hist(values[values.param == p].value, bins=40, color="#3987e5")
+    a.axvline(b.init, color="k", ls="--", lw=1, label="init")
+    a.set_xlim(b.low, b.high); a.set_title(f"{p} ({b.live_on})"); a.set_yticks([])
+for a in axes.flat[len(PARAMS):]:
+    a.axis("off")
+axes.flat[0].legend(frameon=False)
+plt.tight_layout()
+"""),
+        md("## 3. c_ei (Wilson-Cowan E<-I coupling, subcortical nodes)\nPer-region distribution across subjects, and old vs young."),
+        code("""
+if "c_ei" not in PARAMS:
+    display(Markdown("**c_ei is not in these fits** (not learnable when they ran, or frozen at init)."))
+else:
+    rs = table("region_stats_all").query("param == 'c_ei'").sort_values("median")
+    display(rs[["region", "group", "hemi", "n", "median", "q1", "q3", "sd", "median_shift_frac", "frac_at_bound"]]
+            .set_index("region"))
+    ce = values[values.param == "c_ei"]
+    order = rs.region.tolist()
+    fig, ax = plt.subplots(figsize=(max(8, .3 * len(order)), 4))
+    for old, c, dx in [(False, "#2a78d6", -.2), (True, "#eb6834", .2)]:
+        d = ce[ce.old == old]
+        ax.boxplot([d[d.region == r].value for r in order], positions=np.arange(len(order)) + dx, widths=.35,
+                   showfliers=False, patch_artist=True, boxprops=dict(facecolor=c, alpha=.5), medianprops=dict(color=c))
+    ax.axhline(bounds.set_index("param").loc["c_ei", "init"], color="k", ls="--", lw=1)
+    ax.set_xticks(range(len(order)), order, rotation=90, fontsize=7); ax.set_ylabel("c_ei")
+    ax.set_title("c_ei per region (blue young, orange old; dashed = init)")
+    plt.tight_layout(); plt.show()
+    for c in COHORTS:
+        a = table(f"age_tests_region_{c}").query("param == 'c_ei'")
+        display(Markdown(f"**Age tests for c_ei, cohort `{c}`**: {int(significant(a, 'q_mw').sum())} of {len(a)} regions significant"))
+        display(a.sort_values("p_mw")[["region", "group", "median_young", "median_old", "cliffs_delta", "q_mw", "beta_old", "q_ols"]].head(15))
+    show("brain_median_c_ei"); show("brain_sig_c_ei_all")
+"""),
+        md("## 4. Age effects\nRegions and networks whose parameters differ between old and young (significant only)."),
+        code("""
+for c in COHORTS:
+    a, g = table(f"age_tests_region_{c}"), table(f"age_tests_network_{c}")
+    sa, sg = a[significant(a, "q_mw")], g[significant(g, "q_mw")]
+    display(Markdown(f"### cohort `{c}`: {len(sa)} / {len(a)} region tests, {len(sg)} / {len(g)} network tests significant"))
+    display(sa.groupby("param").size().reindex(PARAMS, fill_value=0).rename("significant regions").to_frame().T)
+    display(sa.sort_values("q_ols")[["param", "region", "group", "median_young", "median_old",
+                                     "cliffs_delta", "q_mw", "beta_old", "q_ols"]])
+    display(sg.sort_values("q_ols")[["level", "param", "group", "cliffs_delta", "q_mw", "beta_old", "q_ols"]])
+"""),
+        md("### Significant regions on the glass brain\nColour = Cliff's delta (red higher in old), only where the test passes; gray = not significant or not analysed."),
+        code("""
+for c in COHORTS:
+    display(Markdown(f"**cohort `{c}` -- number of parameters significant per region**"))
+    show(f"brain_sigany_{c}")
+    a = table(f"age_tests_region_{c}")
+    for p in PARAMS:
+        if significant(a[a.param == p], "q_mw").any():
+            show(f"brain_sig_{p}_{c}")
+"""),
+    ]
+    if args.compare_root:
+        cells += [
+            md("## 5. Condition shift\nPaired per-region shifts between the two conditions (significant only)."),
+            code("""
+for c in COHORTS:
+    d = table(f"condition_tests_region_{c}")
+    if d is None:
+        continue
+    s = d[significant(d, "q_w")]
+    display(Markdown(f"### cohort `{c}`: {len(s)} / {len(d)} region shifts significant"))
+    display(table(f"condition_stability_{c}"))
+    display(s.groupby("param").size().reindex(PARAMS, fill_value=0).rename("significant regions").to_frame().T)
+    display(s.sort_values("q_w")[["param", "region", "group", "median_a", "median_b", "median_diff",
+                                  "rank_biserial", "q_w", "dz_adj", "q_ols"]])
+    show(f"brain_condsigany_{c}")
+    for p in PARAMS:
+        if significant(d[d.param == p], "q_w").any():
+            show(f"brain_condsig_{p}_{c}")
+"""),
+        ]
+    if args.replicate_roots:
+        cells += [
+            md("## 6. Refit stability\nHow much of the between-subject variance survives refits with other init / noise seeds."),
+            code("""
+for k in ("convergence", "variance", "ident_summary", "age_summary"):
+    t = table(f"refit_{k}")
+    if t is not None:
+        display(Markdown(f"**{k}**")); display(t)
+for k in ("rep_icc", "rep_ident", "rep_age"):
+    show(k)
+"""),
+        ]
+    nb = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
+                                        "language_info": {"name": "python"}},
+          "nbformat": 4, "nbformat_minor": 5}
+    path = out / "population_summary.ipynb"
+    path.write_text(json.dumps(nb, indent=1))
+    return path
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--results-root", required=True, type=Path,
@@ -2858,6 +3117,11 @@ def main() -> None:
     ap.add_argument("--clf-c", type=float, default=0.05, help="inverse L2 strength of the age classifier")
     ap.add_argument("--ref-subject", default=None, help="subject whose dipole cloud carries the glass brains")
     ap.add_argument("--no-brains", action="store_true", help="skip the pyvista glass-brain renders")
+    ap.add_argument("--sig-q", type=float, default=0.05,
+                    help="BH-FDR q below which a region is drawn on the significance glass brains (default 0.05)")
+    ap.add_argument("--sig-test", choices=("mw", "ols", "either"), default="either",
+                    help="test whose q decides significance on those maps: the rank test (Mann-Whitney for age, "
+                         "Wilcoxon for condition), the fit-quality-adjusted OLS, or either (default)")
     ap.add_argument("--compare-root", type=Path, default=None,
                     help="second results root with the SAME subjects fit under another condition "
                          "(e.g. fit_test_pop_3_eo/atlas-100): adds the condition stability/shift section")
@@ -2891,7 +3155,7 @@ def main() -> None:
     meta["old"] = meta.age >= args.age_split
     meta["eeg_fit_failed"] = meta.eeg_psd_loss > args.eeg_fail_loss
     frozen, frozen_cells = find_frozen(pop)
-    params = [p for p in PER_NODE_PARAMS if p not in frozen]
+    params = [p for p in pop["params"] if p not in frozen]
 
     base = ((meta.gamma_weight == 0) & meta.age.notna()).to_numpy()
     excluded = meta[~base]
@@ -2915,7 +3179,7 @@ def main() -> None:
         mb["old"] = mb.age >= args.age_split
         mb["eeg_fit_failed"] = mb.eeg_psd_loss > args.eeg_fail_loss
         frozen_b, frozen_cells_b = find_frozen(popb)
-        cond_params = [q for q in params if q not in frozen_b]
+        cond_params = [q for q in params if q in popb["params"] and q not in frozen_b]
         cond_frozen = {q: sorted(set(frozen_cells.get(q, [])) | set(frozen_cells_b.get(q, []))) for q in cond_params}
         labels = args.condition_labels or [COND_SHORT.get(x["config"]["eeg_task"], x["config"]["eeg_task"])
                                            for x in (pop, popb)]
@@ -2949,11 +3213,28 @@ def main() -> None:
             print(f"Loading refits under {root} ...")
             reps.append(load_population(root, args.bids_dir, args.participants or args.bids_dir / "participants.tsv"))
         print(f"  refit stability over {1 + len(reps)} refits ...")
-        rep = analyse_replicates(pop, reps, params, frozen_cells, results, popb, args)
+        rep_params = [p for p in params if all(p in x["params"] for x in reps)]
+        rep = analyse_replicates(pop, reps, rep_params, frozen_cells, results, popb, args)
 
     # tables
     cohort_cols = pd.DataFrame({f"in_{c}": m for c, m in masks.items()})
     meta.join(cohort_cols).to_csv(tab_dir / "subjects.csv", index=False)
+    pd.DataFrame([{"param": p, "low": pop["bounds"][p][0], "high": pop["bounds"][p][1], "init": pop["init"][p],
+                   "live_on": LIVE_ON[p], "unit": PARAM_UNITS[p]} for p in params]) \
+        .to_csv(tab_dir / "param_bounds.csv", index=False)
+    # every subject x analysed region x param value (cohort "all"), long format
+    long = []
+    for p in params:
+        cols_p = results["all"]["cols"][p]
+        for i in base.nonzero()[0]:
+            r = meta.iloc[i]
+            long.append(pd.DataFrame({
+                "participant_id": r.participant_id, "age": r.age, "old": r.old, "sex": r.sex,
+                "in_bold_ok": bool(masks["bold_ok"][i]), "param": p,
+                "region": [pop["regions"][j]["name"] for j in cols_p],
+                "group": [pop["regions"][j]["group"] for j in cols_p],
+                "value": pop["V"][p][i, cols_p]}))
+    pd.concat(long).dropna(subset=["value"]).to_csv(tab_dir / "param_values.csv.gz", index=False)
     for c, res in results.items():
         res["region_stats"].to_csv(tab_dir / f"region_stats_{c}.csv", index=False)
         res["age_region"].sort_values("p_mw").to_csv(tab_dir / f"age_tests_region_{c}.csv", index=False)
@@ -3025,12 +3306,13 @@ def main() -> None:
     if not args.no_brains:
         ref_sid = args.ref_subject or meta.subject[base].iloc[0]
         print(f"  glass brains on sub-{ref_sid} ...")
-        brains = write_brains(pop, results, params, ref_sid, args.bids_dir, fig_dir)
+        brains = write_brains(pop, results, params, ref_sid, args.bids_dir, fig_dir, args.sig_q, args.sig_test)
 
     write_markdown(pop, results, params, frozen, excluded, args, out / "summary.md", rep)
     html_path = out / "population_report.html"
     write_html(build_html_data(pop, results, params, frozen, excluded, brains, cond_figs, ref_sid, args, rep), html_path)
-    print(f"  wrote {out / 'summary.md'}, {tab_dir}/*.csv, {fig_dir}/*.png")
+    nb_path = write_notebook(out, args)
+    print(f"  wrote {out / 'summary.md'}, {nb_path.name}, {tab_dir}/*.csv, {fig_dir}/*.png")
     print(f"  wrote {html_path}  ({html_path.stat().st_size / 1e6:.2f} MB)")
 
 
