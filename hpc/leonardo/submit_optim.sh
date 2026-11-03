@@ -329,6 +329,51 @@ case "$CMD" in
         echo "    --replicate-roots ${roots[*]}"
         ;;
 
+    article)
+        # Extra fits of examples/article (gpu_fit.py): written once to
+        # $ARTICLE_OUT/tasks.txt by `gpu_fit.py tasks` on this login node, then
+        # packed G per node (optim_tasks.sbatch). Re-running reuses tasks.txt
+        # (stable task indices -> finished tasks are skipped by their log).
+        shift || true
+        : "${ARTICLE_ROOT:?set ARTICLE_ROOT to the base population (absolute, .../atlas-<n>, <subject>_both_joint folders)}"
+        [ -d "$ARTICLE_ROOT" ] || { echo "ERROR: ARTICLE_ROOT=$ARTICLE_ROOT not found" >&2; exit 1; }
+        ARTICLE_OUT="${ARTICLE_OUT:-$WORKDIR/parrot/article_fits}"
+        case "$ARTICLE_OUT" in /*) ;; *) echo "ERROR: ARTICLE_OUT must be an absolute path, got '$ARTICLE_OUT'" >&2; exit 1 ;; esac
+        kinds=( "$@" ); [ "${#kinds[@]}" -gt 0 ] || kinds=( single heldout )
+        G="${ARTICLE_GPUS_PER_NODE:-$REPLICATE_GPUS_PER_NODE}"
+        CLONE="$(cd "$SCRIPT_DIR/../.." && pwd)"     # tasks are built AND run from this clone
+        TASKS="$ARTICLE_OUT/tasks.txt"
+        LOGS="$ARTICLE_OUT/logs"
+        mkdir -p "$ARTICLE_OUT" "$LOGS"
+        if [ ! -f "$TASKS" ] || [ "${ARTICLE_REGEN:-0}" = 1 ]; then
+            targs=( --root "$ARTICLE_ROOT" --bids "$BIDS" --out "$ARTICLE_OUT" --kinds "${kinds[@]}"
+                    --n-single "${ARTICLE_N_SINGLE:-10}" --n-heldout "${ARTICLE_N_HELDOUT:-20}" --write "$TASKS" )
+            [ -n "${ARTICLE_NUM_EPOCHS:-}" ] && targs+=( --num-epochs "$ARTICLE_NUM_EPOCHS" )
+            PIXI="$(command -v pixi || echo "$HOME/.pixi/bin/pixi")"
+            (cd "$CLONE" && "$PIXI" run --as-is python examples/article/gpu_fit.py tasks "${targs[@]}")
+        else
+            echo "[article] reusing $TASKS (ARTICLE_REGEN=1 to rebuild it; kinds args ignored)"
+        fi
+        NT=$(grep -cv '^\s*\(#\|$\)' "$TASKS" || true)
+        [ "$NT" -gt 0 ] || { echo "ERROR: no tasks in $TASKS" >&2; exit 1; }
+        NN=$(( (NT + G - 1) / G ))
+        CPUS="${REPLICATE_NODE_CPUS:-$(( G * OPTIM_CPUS ))}"
+        MEM="${REPLICATE_NODE_MEM:-$(( G * ${OPTIM_MEM%G} ))G}"
+        TIME="${ARTICLE_TIME:-$OPTIM_TIME}"
+        echo "[article] $NT tasks; $G per node -> $NN node jobs; per node: gpu x$G  ${CPUS}c  mem=$MEM  time=$TIME"
+        echo "[article] base: $ARTICLE_ROOT  out: $ARTICLE_OUT  logs: $LOGS"
+        export WORKDIR REPO="$CLONE" OPTIM_TASKS_FILE="$TASKS" OPTIM_GPUS_PER_NODE="$G" OPTIM_PACK_LOGDIR="$LOGS"
+        cmd=( sbatch --account="$ACCT" --job-name=parrot-optim-art
+              --partition="$BOOST_PART" --qos="$BOOST_QOS" --gres=gpu:$G
+              --cpus-per-task="$CPUS" --time="$TIME" --mem="$MEM"
+              --array="0-$((NN - 1))${ARRAY_THROTTLE}" --export=ALL --parsable
+              --output="$LOGS/parrot-optim-art-%A_%a.out"
+              --error="$LOGS/parrot-optim-art-%A_%a.err"
+              "$SCRIPT_DIR/optim_tasks.sbatch" )
+        if [ "$DRYRUN" = 1 ]; then printf '%q ' "${cmd[@]}"; echo; head -n "$G" "$TASKS" | sed 's/^/    node 0: /'
+        else echo "[article] submitted: $("${cmd[@]}")"; fi
+        ;;
+
     list)
         N=$(build_subjects)
         echo "$N subjects -> --array=0-$((N-1))${ARRAY_THROTTLE}  (file: $SUBJ_FILE)"
@@ -364,7 +409,12 @@ usage: submit_optim.sh <command>
                      (default 4) fits per node, one per GPU; each cell writes to
                      ${REPLICATE_OUTPUT_PREFIX}_init-<i>_noise-<n>. Subjects from
                      the args, else REPLICATE_SUBJECTS_FILE
-  list               print the cohort array + resource matrix; submit nothing
+  article [kind ...] examples/article GPU fits (gpu_fit.py tasks: single,
+                     heldout, weights, recovery, fresh-noise; default
+                     "single heldout") from the base population ARTICLE_ROOT,
+                     into ARTICLE_OUT, packed like `replicates`. Rerun to
+                     resubmit only unfinished tasks
+  list              print the cohort array + resource matrix; submit nothing
 
   PARROT_DRYRUN=1 ...   print the sbatch command instead of submitting
 
