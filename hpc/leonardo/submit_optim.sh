@@ -340,7 +340,9 @@ case "$CMD" in
         ARTICLE_OUT="${ARTICLE_OUT:-$WORKDIR/parrot/article_fits}"
         case "$ARTICLE_OUT" in /*) ;; *) echo "ERROR: ARTICLE_OUT must be an absolute path, got '$ARTICLE_OUT'" >&2; exit 1 ;; esac
         kinds=( "$@" ); [ "${#kinds[@]}" -gt 0 ] || kinds=( single heldout )
-        G="${ARTICLE_GPUS_PER_NODE:-$REPLICATE_GPUS_PER_NODE}"
+        # 1 = one fit per job (gpu:1, OPTIM_CPUS, OPTIM_MEM -- the single-fit
+        # request); >1 packs that many fits per node like `replicates`
+        G="${ARTICLE_GPUS_PER_NODE:-1}"
         CLONE="$(cd "$SCRIPT_DIR/../.." && pwd)"     # tasks are built AND run from this clone
         TASKS="$ARTICLE_OUT/tasks.txt"
         LOGS="$ARTICLE_OUT/logs"
@@ -412,7 +414,8 @@ usage: submit_optim.sh <command>
   article [kind ...] examples/article GPU fits (gpu_fit.py tasks: single,
                      heldout, weights, recovery, fresh-noise; default
                      "single heldout") from the base population ARTICLE_ROOT,
-                     into ARTICLE_OUT, packed like `replicates`. Rerun to
+                     into ARTICLE_OUT, one fit per job (gpu:1; set
+                     ARTICLE_GPUS_PER_NODE=4 to pack a node). Rerun to
                      resubmit only unfinished tasks
   list              print the cohort array + resource matrix; submit nothing
 
