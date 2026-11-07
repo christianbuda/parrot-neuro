@@ -39,6 +39,14 @@ ROOT
 │       │   success marker -- a SIGKILLed step leaves only this, so it re-runs.
 │       └── FAILED_<timestamp>_<stage>_log.txt: preserved log of a failed attempt (debugging
 │           only; never a success marker).
+├── manifests/: output inventory read by parrot_neuro.Subject (`s.outputs`). One JSON file per
+│   │           completed step, written by qc/manifests.py right after the step finishes.
+│   │           Subject resolves every file through it, so an unregistered output cannot be
+│   │           loaded. Deleting a file hides that step's outputs (the files stay on disk).
+│   └── sub-<ID>/<step>.json: {"producer_tag": <Docker image that produced the outputs>,
+│                             "outputs": [{"type", "parameters", "path" (relative to this
+│                             tree)}, ...]}. Steps with a parameter get it in the name, e.g.
+│                             dipoles-2.0mm.json, eeg-eyesclosed.json.
 └── (hidden caches, safe to delete; regenerated on demand)
     ├── .templateflow/: TemplateFlow cache (QSIPrep templates + the MNI152NLin2009cAsym T1w
     │   used by the artifact registration). Persistent across runs.

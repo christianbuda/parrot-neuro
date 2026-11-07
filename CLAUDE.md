@@ -206,12 +206,21 @@ parrot_qc                   (Python 3.12 / nilearn · pyvista offscreen, OSMesa)
 ## Repo Layout Notes
 
 - `src/parrot_neuro/` is the local-dev Python API: `Subject`, a **read-only** facade over one
-  subject's derivatives (`s.path.*` → paths, `s.load.*` → loaded objects). It reads pipeline
-  outputs; it computes nothing. Layer order — `_layout.py` (stage dir names, the single source
-  of truth for them) → `_paths.py` (path composition, stdlib only) → `_loaders.py` (readers) →
-  `subject.py` (the facade). `tests/` covers it; `examples/subject_usage.py` is the tour.
-  The TVB→EEG/BOLD fitting subpackage (`parrot_neuro.optimization`) lives on the
-  `eeg-bold-fit` branch, not on `main`.
+  subject's derivatives (`s.path.*` → paths, `s.load.*` → loaded objects, `s.outputs` → the
+  browseable inventory of registered files). It reads pipeline outputs; it computes nothing.
+  **Files are found through manifests, not built from filenames:** every pipeline/staging step
+  writes `derivatives/manifests/sub-<ID>/<step>.json` (producer image tag + output paths) via
+  `containers/parrot_qc/qc/manifests.py`, called by `register_outputs` in `run_reconstruction.sh`
+  and by `bin/stage.sh`. An unregistered output raises a clear error; datasets produced before
+  manifests existed need a backfill. The writer still owns the producer filenames, so renaming an
+  output means updating its selection in `manifests.py` too. `register_outputs` runs *after* the
+  step's done-marker, so if it fails the step is skipped on rerun without a manifest: rerun the
+  backfill for that step. Layer order — `_layout.py` (stage dir names) → `_outputs.py`
+  (manifest inventory) → `_paths.py` (path resolution) → `_loaders.py` (readers, electrode
+  selection, caching) → `subject.py` (the facade). `tests/` covers it;
+  `examples/subject_usage.py` is the tour. Needs `./bin/build.sh qc` after editing `manifests.py`.
+  The TVB→EEG/BOLD fitting subpackage (`parrot_neuro.optimization`) is also on `main` now; it is
+  slated for a port to the NMM optimization branch and a refactor toward a unified simulation API.
 - `containers/_shared/parrot_common/` is the one place code used by **more than one image** lives
   (shared thresholds, `scalp_residual`, the trimesh `signed_clearance`/`outward_dir`/
   `nesting_margins` primitives). Each image's build context is its own `containers/<image>/`, so

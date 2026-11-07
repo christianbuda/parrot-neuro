@@ -39,7 +39,7 @@ STEP_FOLDER = {
 }
 
 # Top-level entries that are not pipeline stages and so have no layout constant.
-NON_STAGE_FOLDERS = {"logs"}
+NON_STAGE_FOLDERS = {"logs", "manifests"}
 
 
 def _read(path: Path) -> str:
