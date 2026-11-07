@@ -96,6 +96,8 @@ def read_splicefree_segments(set_path: Path, min_seg_sec: float):
 def stage_recording(sub: str, task: str, codes: tuple[str, ...], min_seg_sec: float,
                     force: bool) -> None:
     """Import one subject x condition recording (skips if absent or already done)."""
+    from common import manifest_producer
+    manifest_producer()
     set_path = next((SRC_ROOT / f"{sub}_{c}.set" for c in codes
                      if (SRC_ROOT / f"{sub}_{c}.set").exists()), None)
     if set_path is None:
@@ -144,6 +146,8 @@ def stage_recording(sub: str, task: str, codes: tuple[str, ...], min_seg_sec: fl
         ),
     }
     json_path.write_text(json.dumps(meta, indent=2))
+    from common import register_outputs
+    register_outputs(EEG_DERIV.parent, sub, "eeg", task=task, paths=[npz_path, json_path])
     print(
         f"  {task}: {len(segments)} segments, {meta['total_duration_sec']}s "
         f"-> {npz_path.name}"

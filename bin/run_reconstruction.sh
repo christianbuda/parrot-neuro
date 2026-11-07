@@ -544,6 +544,11 @@ run_in_docker_MRI() {
     fi
 
     check_step "$rc" "$step_name" "$log_file"
+    # These steps finish in this single command, including any output relocation.
+    case "$step_name" in
+        freesurfer|simnibscharm|synthstrip|surfaces|atlas|tissuelabels|fiducials|connectivity-atlas|artifacts-registration)
+            register_outputs "$step_name" "$IMG_MRI_RECONSTRUCTION" ;;
+    esac
 }
 
 run_in_docker_FWD() {
@@ -557,6 +562,10 @@ run_in_docker_FWD() {
     container_exec "$image" -c "$cmd" > "${log_file}.partial" 2>&1
 
     check_step $? "$step_name" "$log_file"
+    case "$step_name" in
+        electrodes|anisotropy|artifacts-dipoles)
+            register_outputs "$step_name" "$image" ;;
+    esac
 }
 
 # Run a leadfield solver (OpenMEEG/DUNEuro) in the forward-solvers image. These scripts read
@@ -609,7 +618,19 @@ cp /pipeline/geometry.geom /pipeline/conductivities.cond /pipeline/neuronal_stre
         return "$rc"
     fi
     mv -f "${log_file}.partial" "$log_file"   # SUCCESS: commit this solver's own marker
+    if [[ "$step_name" == forwardsolvers-* ]]; then
+        register_outputs "$step_name" "$image" --spacing "$spacing"
+    fi
     return 0
+}
+
+# Publish only at the logical completion points below, with the producer's tag.
+register_outputs() {
+    local step=$1 producer=$2; shift 2
+    CE_HOME=1; CE_EXEC=python; CE_PWD=/
+    CE_BINDS=( "$OUTPUT_DIR:/derivatives" )
+    container_exec "$IMG_QC" -m qc.manifests --output-dir /derivatives \
+        --subject "$SUBJECT" --step "$step" --producer-tag "$producer" "$@" || exit 1
 }
 
 # Run the final QC stage in the parrot_qc image. The QC code is baked into the
@@ -878,6 +899,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
         [ "$MP2RAGE_SUBJECT" = true ] && INGEST_CMD="$INGEST_CMD --mp2rage --inv2 $INV2_BIDS_DOCKER"
         [ "$FIX_INPUTS" = true ] && INGEST_CMD="$INGEST_CMD --fix-inputs"
         run_in_docker_MRI "$NAME" "$LOG_DIR/${NAME}_log.txt" "$INGEST_CMD"
+        register_outputs ingest "$IMG_MRI_RECONSTRUCTION"
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
     else
@@ -929,6 +951,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
             fastsurfer_rc=1
         fi
         check_step "$fastsurfer_rc" "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
+        register_outputs fastsurfer "$IMG_FASTSURFER"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -1039,6 +1062,7 @@ for SUBJECT in "${PARTICIPANTS[@]}"; do
              cp -r /home/Schaefer2018_LocalGlobal/Parcellations/project_to_individual /derivatives/$SURF_DIR/sub-${SUBJECT}/Schaefer_LUT" \
             >> "$LOG_FILE" 2>&1 \
             || { echo "[ERROR] failed to install recon LUTs into $SURF_DIR/sub-${SUBJECT}" | tee -a "$LOG_FILE"; exit 1; }
+        register_outputs "recon-lut-$SURF_DIR" "$IMG_MRI_RECONSTRUCTION"
     fi
 
     # ---------------------------------------------------------
@@ -1500,6 +1524,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
                     mv "$SRC/sub-${SUBJECT}" "$OUTPUT_DIR/$NAME/"
                     check_step $? "$NAME relocation" "$LOG_DIR/${NAME}_log.txt"
                     [ -e "$SRC/sub-${SUBJECT}.html" ] && mv "$SRC/sub-${SUBJECT}.html" "$OUTPUT_DIR/$NAME/"
+                    register_outputs qsirecon "$IMG_QSIRECON"
                 fi
             fi
 
@@ -1604,6 +1629,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
             container_exec "$IMG_QSIRECON" \
                 /make_dwitensor.sh "$SUBJECT" "$DWITENSOR_FMT" > "$LOG_DIR/${NAME}_log.txt.partial" 2>&1
             check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt" "$OUTPUT_DIR/$NAME/sub-${SUBJECT}"
+            register_outputs dwitensor "$IMG_QSIRECON" --task "${DWITENSOR_FMT:-qsiprep}"
 
             step_end=$(date +%s)
             echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -1643,6 +1669,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
             container_exec "$IMG_QSIRECON" \
                 /dwi_to_t1.sh "$SUBJECT" "$WORK_DIR_DOCKER" > "$LOG_DIR/${NAME}_log.txt.partial" 2>&1
             check_step $? "$NAME" "$LOG_DIR/${NAME}_log.txt"
+            register_outputs dwi2t1 "$IMG_QSIRECON"
 
             step_end=$(date +%s)
             echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -1671,6 +1698,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
             container_exec "$IMG_QSIRECON" \
                 /make_connectomes.sh "$SUBJECT" > "$LOG_DIR/${NAME}-matrices_log.txt.partial" 2>&1
             check_step $? "$NAME matrices" "$LOG_DIR/${NAME}-matrices_log.txt"
+            register_outputs connectivity "$IMG_QSIRECON"
 
             step_end=$(date +%s)
             echo "$NAME matrices completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -1767,6 +1795,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
 
             step_start=$(date +%s)
             run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}-${spacing}mm_log.txt" "$DOCKER_IMAGE" "python /scripts/place_dipoles.py --subject $SUBJECT --output_dir /derivatives --dipole_spacing $spacing${DIPOLE_SEED:+ --seed $DIPOLE_SEED}"
+            register_outputs dipoles "$DOCKER_IMAGE" --spacing "$spacing"
             step_end=$(date +%s)
 
 
@@ -1823,6 +1852,7 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         cp $OUTPUT_DIR/tissuelabels/sub-${SUBJECT}/electrical/"$VOLUME_TO_MESH"_labels.txt "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/labels.txt"
         cp $OUTPUT_DIR/tissuelabels/sub-${SUBJECT}/electrical/"$VOLUME_TO_MESH"_LUT.txt "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/LUT.txt"
         cp $OUTPUT_DIR/tissuelabels/sub-${SUBJECT}/electrical/"$VOLUME_TO_MESH"_conductivities.txt "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/conductivities.txt"
+        register_outputs tetmesh "$IMG_FORWARD_MODEL"
 
         step_end=$(date +%s)
         echo "$NAME completed in $(( (step_end - step_start) / 60 )) minutes." | tee -a "$LOG_FILE"
@@ -1985,11 +2015,13 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
         #    falls back to HArtMuT's canned leadfield when the subject mesh can't host the sources.
         # Can the subject's own mesh host enough muscle sources to be worth solving?
         solve_muscle=$(python3 -c "import json;print(json.load(open('$ART_JSON')).get('muscle',{}).get('solve_muscle',False))" 2>/dev/null || echo False)
+        artifact_leadfields_changed=false
         # Muscle sources below the head model's FOV: not warped, their columns come from the
         # canned HArtMuT leadfield and are stacked onto the solved block in step 3b.
         n_template=$(python3 -c "import json;print(json.load(open('$ART_JSON')).get('muscle',{}).get('n_template',0))" 2>/dev/null || echo 0)
 
         if [ ! -f "$LOG_DIR/${NAME}-leadfields_log.txt" ]; then
+            artifact_leadfields_changed=true
             # The solve REWRITES the muscle leadfield with solved columns only, so any template
             # block previously stacked onto it is gone -- drop 3b's marker to force a restack.
             rm -f "$LOG_DIR/${NAME}-muscle-template_log.txt"
@@ -2008,6 +2040,11 @@ json.dump(groups, open(sys.argv[1], "w"), indent=2)
 PY
             run_in_docker_SOLVER "$NAME-leadfields" "$LOG_DIR/${NAME}-leadfields_log.txt" "$IMG_FORWARD_SOLVERS" \
                 "python3 /scripts/make_leadfield_artifacts.py --subject $SUBJECT --output_dir /derivatives --threads $N_THREADS --mesh_path /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --tissue_names /derivatives/tetmesh/sub-${SUBJECT}/labels.txt --conductivities_path /derivatives/tetmesh/sub-${SUBJECT}/conductivities.txt --groups_json_file /derivatives/artifacts/dipoles/sub-${SUBJECT}/solve_groups.json"
+            register_outputs artifacts-leadfields "$IMG_FORWARD_SOLVERS" --variant eyes
+            register_outputs artifacts-leadfields "$IMG_FORWARD_SOLVERS" --variant eyes-positions
+            if [ "$solve_muscle" = "True" ]; then
+                register_outputs artifacts-leadfields "$IMG_FORWARD_SOLVERS" --variant muscle-positions
+            fi
 
             # Muscle fallback: interpolate HArtMuT's canned muscle leadfield onto the subject montage.
             if [ "$solve_muscle" != "True" ]; then
@@ -2024,9 +2061,15 @@ PY
         #     head model reaches the neck has n_template=0 and skips this entirely.
         if [ "$solve_muscle" = "True" ] && [ "${n_template:-0}" -gt 0 ] \
            && [ ! -f "$LOG_DIR/${NAME}-muscle-template_log.txt" ]; then
+            artifact_leadfields_changed=true
             echo "Stacking $n_template below-FOV muscle source(s) from the HArtMuT template onto the solved leadfield for sub-${SUBJECT}." | tee -a "$LOG_FILE"
             run_in_docker_SOLVER "$NAME-muscle-template" "$LOG_DIR/${NAME}-muscle-template_log.txt" "$IMG_FORWARD_SOLVERS" \
                 "python3 /scripts/make_leadfield_hartmut_muscle.py --subject $SUBJECT --output_dir /derivatives --hartmut-dir /derivatives/.hartmut_cache --mode template-block"
+        fi
+        if [ "$artifact_leadfields_changed" = true ]; then
+            muscle_variant=muscle
+            [ "$solve_muscle" != "True" ] && muscle_variant=muscle-fallback
+            register_outputs artifacts-leadfields "$IMG_FORWARD_SOLVERS" --variant "$muscle_variant"
         fi
 
         step_end=$(date +%s)

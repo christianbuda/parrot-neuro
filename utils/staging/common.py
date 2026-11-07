@@ -18,6 +18,23 @@ import numpy as np
 import nibabel as nib
 
 
+def manifest_producer():
+    """Validate standalone staging configuration before producing outputs."""
+    import os
+    from qc.manifests import write_manifest
+
+    tag = os.environ.get("PARROT_PRODUCER_TAG")
+    if not tag:
+        raise ValueError("Set PARROT_PRODUCER_TAG to the producing container image reference")
+    return write_manifest, tag
+
+
+def register_outputs(deriv, subject, step, *, task, paths, variant=None):
+    """Register completed outputs; bin/stage.sh supplies the tag and QC import path."""
+    write_manifest, tag = manifest_producer()
+    return write_manifest(deriv, subject, step, tag, task=task, paths=paths, variant=variant)
+
+
 def clean_voxel_size(src_nii: Path, dst_nii: Path) -> None:
     """Copy a NIfTI, snapping float32 voxel-size noise in the header to clean values.
 

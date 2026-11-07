@@ -56,9 +56,12 @@ echo "Staging cohort '$COHORT': $SRC_DIR -> $BIDS_DIR ${SUBJECTS[*]:-(default su
 docker run --rm \
     --user "$(id -u):$(id -g)" \
     -e HOME=/tmp -e XDG_CACHE_HOME=/tmp \
+    -e PARROT_PRODUCER_TAG="$IMG_MRI_RECONSTRUCTION" \
+    -e PYTHONPATH=/manifest_code \
     -v "$SRC_DIR":/src:ro \
     -v "$BIDS_DIR":/dst \
     -v "$PARROT_SCRIPT_DIR/utils/staging":/work:ro \
+    -v "$PARROT_SCRIPT_DIR/containers/parrot_qc/qc":/manifest_code/qc:ro \
     --entrypoint micromamba \
     "$IMG_MRI_RECONSTRUCTION" \
     run -n neuro python "/work/${COHORT}.py" "${SUBJECTS[@]}"

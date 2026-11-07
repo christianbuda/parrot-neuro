@@ -353,6 +353,8 @@ def backfill_optim_nodes(sub: str, min_voxels: int, force: bool) -> None:
     registration, or time-series re-extraction -- a near-instant pass for backfilling the
     already-staged cohort.
     """
+    from common import manifest_producer
+    manifest_producer()
     out_dir = FMRI_DERIV / sub
     conn_path = out_dir / f"{sub}_task-{TASK}_atlas-schaefer_desc-conn_timeseries.npz"
     optim_path = out_dir / f"{sub}_task-{TASK}_atlas-schaefer_desc-optim_nodes.npz"
@@ -369,6 +371,8 @@ def backfill_optim_nodes(sub: str, min_voxels: int, force: bool) -> None:
         return
     arrays = build_optim_nodes(nvox_by_res, min_voxels)
     np.savez_compressed(optim_path, **arrays)
+    from common import register_outputs
+    register_outputs(FMRI_DERIV.parent, sub, "fmri-nodes", task=TASK, paths=[optim_path])
     n = max(nvox_by_res)  # report the finest resolution present
     print(f"  {sub}: wrote {optim_path.name} "
           f"(kept {int(arrays[f'keep_{n}'].sum())}/{nvox_by_res[n].size} @{n})")
@@ -378,6 +382,8 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
                   variants: tuple[str, ...], force: bool, canonical: Path | None = None,
                   transforms_only: bool = False, reuse_transform: bool = False) -> None:
     """Copy the BOLD and write region time series for one subject."""
+    from common import manifest_producer
+    manifest_producer()
     import ants
     import nibabel as nib
 
@@ -411,6 +417,8 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
             return
         out_dir.mkdir(parents=True, exist_ok=True)
         save_native_to_t1w_transform(fwd, xfm_path)
+        from common import register_outputs
+        register_outputs(FMRI_DERIV.parent, sub, "fmri-transform", task=TASK, paths=[xfm_path])
         print(f"  saved {xfm_path.name} (NCC {ncc:.3f}, {n_reg} attempt(s))")
         return
 
@@ -451,6 +459,8 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
             # atlas resampled into the pristine native BOLD below, so the BOLD is never resampled).
             out_dir.mkdir(parents=True, exist_ok=True)
             save_native_to_t1w_transform(fwd, xfm_path)
+            from common import register_outputs
+            register_outputs(FMRI_DERIV.parent, sub, "fmri-transform", task=TASK, paths=[xfm_path])
 
         # Registration OK -> create the folder and stage the verbatim BOLD + confounds record.
         # Both are copied verbatim (never change), so skip the rewrite if already present -- this
@@ -458,6 +468,8 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
         out_dir.mkdir(parents=True, exist_ok=True)
         if not bold_dst.exists():
             shutil.copyfile(bold_src, bold_dst)
+            from common import register_outputs
+            register_outputs(FMRI_DERIV.parent, sub, "fmri-bold", task=TASK, paths=[bold_dst])
             print(f"  BOLD copied -> {bold_dst.name}")
         else:
             print(f"  BOLD present -> kept {bold_dst.name}")
@@ -573,6 +585,13 @@ def stage_subject(sub: str, tr: float, highpass: float, min_voxels: int,
         "source_bold": bold_src.name,
     }
     json_path.write_text(json.dumps(meta, indent=2))
+    from common import register_outputs
+    for variant in meta_variants:
+        register_outputs(FMRI_DERIV.parent, sub, "fmri", task=TASK,
+                         paths=[npz_paths[variant]], variant=variant)
+    if wrote_optim:
+        register_outputs(FMRI_DERIV.parent, sub, "fmri-nodes", task=TASK, paths=[optim_path])
+    register_outputs(FMRI_DERIV.parent, sub, "fmri", task=TASK, paths=[json_path])
     print(f"  wrote {', '.join(p.name for p in npz_paths.values() if p.exists())} + sidecar")
 
 
