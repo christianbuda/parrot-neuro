@@ -1843,16 +1843,26 @@ print('msmt' if len(sh)>=2 else ('ss3t' if (len(sh)==1 and len(sh[0])>=28) else 
 
         step_start=$(date +%s)
 
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python /scripts/nifti_to_inr.py --nifti_path /derivatives/tissuelabels/sub-${SUBJECT}/electrical/$VOLUME_TO_MESH.nii.gz --inr_path /derivatives/tetmesh/sub-${SUBJECT}/label_field.inr"
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "mesher $N_THREADS /derivatives/tetmesh/sub-${SUBJECT}/label_field.inr /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh $ANGLE $DIST $DEF_SURF $DEF_VOL $RATIO $SMOOTH $OPT_TIME ${TISSUE_ARGS[*]}"
-        run_in_docker_FWD "$NAME" "$LOG_DIR/${NAME}_log.txt" "$DOCKER_IMAGE" "python /scripts/mesh_postprocessing.py --reference_nifti /derivatives/tissuelabels/sub-${SUBJECT}/electrical/$VOLUME_TO_MESH.nii.gz --mesh /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --output /derivatives/tetmesh/sub-${SUBJECT}/transformed_tetrahedral_mesh.mesh --export_vtu"
+        # Each sub-step keeps its own log; the tetmesh marker (${NAME}_log.txt) is committed only at the end,
+        # so a failure in any sub-step makes a rerun redo the whole step.
+        run_in_docker_FWD "$NAME-label-field" "$LOG_DIR/${NAME}-label-field_log.txt" "$DOCKER_IMAGE" "python /scripts/nifti_to_inr.py --nifti_path /derivatives/tissuelabels/sub-${SUBJECT}/electrical/$VOLUME_TO_MESH.nii.gz --inr_path /derivatives/tetmesh/sub-${SUBJECT}/label_field.inr"
+        run_in_docker_FWD "$NAME-mesher" "$LOG_DIR/${NAME}-mesher_log.txt" "$DOCKER_IMAGE" "mesher $N_THREADS /derivatives/tetmesh/sub-${SUBJECT}/label_field.inr /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh $ANGLE $DIST $DEF_SURF $DEF_VOL $RATIO $SMOOTH $OPT_TIME ${TISSUE_ARGS[*]}"
+        run_in_docker_FWD "$NAME-postprocessing" "$LOG_DIR/${NAME}-postprocessing_log.txt" "$DOCKER_IMAGE" "python /scripts/mesh_postprocessing.py --reference_nifti /derivatives/tissuelabels/sub-${SUBJECT}/electrical/$VOLUME_TO_MESH.nii.gz --mesh /derivatives/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh --output /derivatives/tetmesh/sub-${SUBJECT}/transformed_tetrahedral_mesh.mesh --export_vtu"
  
-        mv "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/transformed_tetrahedral_mesh.mesh" "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.mesh"
-        mv "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/transformed_tetrahedral_mesh.vtu" "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/tetrahedral_mesh.vtu"
-        cp "$CONFIG_FILE" "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/mesher_parameters.txt"
-        cp $OUTPUT_DIR/tissuelabels/sub-${SUBJECT}/electrical/"$VOLUME_TO_MESH"_labels.txt "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/labels.txt"
-        cp $OUTPUT_DIR/tissuelabels/sub-${SUBJECT}/electrical/"$VOLUME_TO_MESH"_LUT.txt "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/LUT.txt"
-        cp $OUTPUT_DIR/tissuelabels/sub-${SUBJECT}/electrical/"$VOLUME_TO_MESH"_conductivities.txt "$OUTPUT_DIR/tetmesh/sub-${SUBJECT}/conductivities.txt"
+        # Any failure here aborts before the marker is written (the script has no `set -e`).
+        T_DIR="$OUTPUT_DIR/tetmesh/sub-${SUBJECT}"
+        T_SRC="$OUTPUT_DIR/tissuelabels/sub-${SUBJECT}/electrical/${VOLUME_TO_MESH}"
+        {
+            mv "$T_DIR/transformed_tetrahedral_mesh.mesh" "$T_DIR/tetrahedral_mesh.mesh" &&
+            mv "$T_DIR/transformed_tetrahedral_mesh.vtu" "$T_DIR/tetrahedral_mesh.vtu" &&
+            cp "$CONFIG_FILE" "$T_DIR/mesher_parameters.txt" &&
+            cp "${T_SRC}_labels.txt" "$T_DIR/labels.txt" &&
+            cp "${T_SRC}_LUT.txt" "$T_DIR/LUT.txt" &&
+            cp "${T_SRC}_conductivities.txt" "$T_DIR/conductivities.txt" &&
+            cat "$LOG_DIR/${NAME}-label-field_log.txt" "$LOG_DIR/${NAME}-mesher_log.txt" "$LOG_DIR/${NAME}-postprocessing_log.txt" \
+                > "$LOG_DIR/${NAME}_log.txt.partial" &&
+            mv -f "$LOG_DIR/${NAME}_log.txt.partial" "$LOG_DIR/${NAME}_log.txt"   # SUCCESS: commit the step marker
+        } || { echo "[ERROR] $NAME finalisation failed for sub-${SUBJECT}; rerun will redo the step." | tee -a "$LOG_FILE"; exit 1; }
         register_outputs tetmesh "$IMG_FORWARD_MODEL"
 
         step_end=$(date +%s)
