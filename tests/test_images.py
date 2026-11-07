@@ -104,3 +104,46 @@ def test_prepull_uses_shared_pins_and_preserves_cache_on_failure(tmp_path, tools
     assert result.returncode == 1
     assert len(list(cache.glob("*.sif"))) == len(refs)
     assert not list(cache.glob("*.part"))
+
+
+def _release_repo(tmp_path):
+    """A throwaway git repo with the release tooling and a bare remote."""
+    remote = tmp_path / "remote.git"
+    work = tmp_path / "work"
+    (work / "bin").mkdir(parents=True)
+    for name in ("images.sh", "build.sh", "release.sh"):
+        (work / "bin" / name).write_text((REPO / "bin" / name).read_text())
+        (work / "bin" / name).chmod(0o755)
+    git = lambda *a, cwd=work: subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=cwd, check=True, capture_output=True)
+    git("init", "-q", "-b", "main", str(remote), "--bare", cwd=tmp_path)
+    git("init", "-q", "-b", "main")
+    git("remote", "add", "origin", str(remote))
+    git("add", "-A")
+    git("commit", "-q", "-m", "init")
+    return work, remote, git
+
+
+def test_release_bumps_version_builds_tags_and_pushes(tmp_path, tools):
+    executable(tools / "docker", 'printf "%s\\n" "$*" >> "$CALL_LOG"\n')
+    work, remote, git = _release_repo(tmp_path)
+    subprocess.run(["bash", "bin/release.sh", "9.9.9"], cwd=work, check=True, capture_output=True,
+                   env={**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"})
+    assert 'PARROT_VERSION="9.9.9"' in (work / "bin" / "images.sh").read_text()
+    calls = (tmp_path / "calls").read_text()
+    for image in ("mri_reconstruction", "forward_model", "forward_solvers", "qc"):
+        assert f"push christianbuda/parrot_{image}:9.9.9" in calls
+    assert "v9.9.9" in git("tag", "-l").stdout.decode()
+    pushed = subprocess.check_output(["git", "-C", str(remote), "tag", "-l"], text=True)
+    assert "v9.9.9" in pushed
+
+
+def test_release_restores_images_sh_when_the_build_fails(tmp_path, tools):
+    executable(tools / "docker", "exit 1\n")
+    work, _, git = _release_repo(tmp_path)
+    before = (work / "bin" / "images.sh").read_text()
+    result = subprocess.run(["bash", "bin/release.sh", "9.9.9"], cwd=work, capture_output=True)
+    assert result.returncode != 0
+    assert (work / "bin" / "images.sh").read_text() == before
+    assert git("tag", "-l").stdout.decode().strip() == ""
