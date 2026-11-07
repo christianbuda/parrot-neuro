@@ -242,7 +242,7 @@ class SubjectLoaders:
             if original.ndim != 2 or original.shape[0] != len(full):
                 raise ValueError(f"Leadfield rows disagree with full CSV montage: {path}")
             rows = [full.index(name) for name in self._s.electrode_names]
-            result = original[rows].astype(np.result_type(original.dtype, np.float32), copy=True)
+            result = original[rows].astype(np.result_type(original.dtype, np.float32), copy=False)
             result -= result.mean(axis=0, keepdims=True)
             return result
         return self._read(self._s.path.leadfield(key), selected, key=("leadfield", key))

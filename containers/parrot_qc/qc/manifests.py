@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 
 from .context import Context
@@ -118,7 +119,10 @@ def write_manifest(deriv, subject, step, producer_tag, *, spacing=None, task=Non
         raise ValueError(f"Unknown manifest step: {step}")
     destination = root / "manifests" / ctx.subj / f"{step}.json"
     destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps({"producer_tag": producer_tag, "outputs": outputs}, indent=2) + "\n")
+    # Write-then-rename so a killed process never leaves a truncated manifest behind.
+    tmp = destination.with_name(destination.name + ".tmp")
+    tmp.write_text(json.dumps({"producer_tag": producer_tag, "outputs": outputs}, indent=2) + "\n")
+    os.replace(tmp, destination)
     return destination
 
 

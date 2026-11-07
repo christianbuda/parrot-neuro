@@ -625,6 +625,7 @@ cp /pipeline/geometry.geom /pipeline/conductivities.cond /pipeline/neuronal_stre
 }
 
 # Publish only at the logical completion points below, with the producer's tag.
+# If this fails, the step is already marked done but unregistered: rerun the backfill for it.
 register_outputs() {
     local step=$1 producer=$2; shift 2
     CE_HOME=1; CE_EXEC=python; CE_PWD=/
