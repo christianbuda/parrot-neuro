@@ -80,8 +80,7 @@ def _read_lines(path: Path) -> list[str]:
 
 def _read_label_table(path: Path) -> dict[int, str]:
     """Parse an ``id name ...`` LUT/labels table into ``{id: name}``. Skips comment
-    and non-numeric-leading lines (mirrors the FreeSurfer-LUT parsing used in the
-    QC package and the old Subject class)."""
+    and non-numeric-leading lines."""
     out: dict[int, str] = {}
     with open(path) as f:
         for line in f:

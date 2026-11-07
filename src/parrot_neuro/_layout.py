@@ -29,7 +29,6 @@ ANISOTROPY = "anisotropy"
 CONNECTIVITY = "connectivity"
 ARTIFACTS = "artifacts"
 QSIPREP = "qsiprep"
-QSIRECON = "qsirecon"
 EEG = "EEG"
 FMRI = "fMRI"
 QC = "qc"
@@ -37,7 +36,7 @@ QC = "qc"
 # --- dir stage -> QC stage name ---------------------------------------------
 # qc_report.json["stages"] is a list of {name, status, ...}. The QC module names
 # mostly match the dir names, with a few exceptions (notably raw -> "ingest").
-# Loaders pass a *dir* stage constant; this maps it to the QC entry to check.
+# ``Subject.qc_status`` accepts a dir stage constant and maps it to the QC entry.
 QC_STAGE = {
     RAW: "ingest",
     FASTSURFER: "fastsurfer",

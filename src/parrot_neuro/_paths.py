@@ -43,30 +43,10 @@ class SubjectPaths:
     def final_tissues(self) -> Path:
         return self.sfile(L.SIMNIBS, "final_tissues.nii.gz")
 
-    def head_mesh(self) -> Path:
-        """The SimNIBS charm volumetric head mesh (Gmsh ``.msh``)."""
-        return self.sfile(L.SIMNIBS, "subject.msh")
-
     def tissue_labels(self, kind: str = "electrical", source: str = "simnibs") -> Path:
         """Tissue label volume. ``kind`` in {electrical, acoustic}; ``source`` in
         {simnibs, simnibs_itis, sim4life}."""
         return self.sfile(L.TISSUE, kind, f"{source}.nii.gz")
-
-    def tissue_property(self, prop: str, kind: str = "electrical", source: str = "simnibs") -> Path:
-        """A per-label property table (e.g. ``conductivities``, ``labels``, ``LUT``,
-        or an acoustic property like ``density``)."""
-        return self.sfile(L.TISSUE, kind, f"{source}_{prop}.txt")
-
-    # --- recon backend dir (fastsurfer | freesurfer) ------------------------
-    def recon_dir(self) -> Path:
-        """The active surface-recon folder, resolved from ``surface_backend``."""
-        if self._s.surface_backend is None:
-            raise FileNotFoundError(f"No surface reconstruction for {self._s.subj}")
-        return self.stage_dir(self._s.surface_backend)
-
-    def color_lut(self) -> Path:
-        self.recon_dir()
-        return self.sfile(self._s.surface_backend, "FreeSurferColorLUT.txt")
 
     # --- atlas --------------------------------------------------------------
     def atlas(self, res: int) -> Path:
@@ -99,8 +79,7 @@ class SubjectPaths:
         return self.surface("charm_scalp")
 
     def vertex_attr(self, name: str) -> Path:
-        """A per-vertex attribute array sitting next to a surface, e.g.
-        ``freesurfer_lh_middle_thickness`` or ``freesurfer_lh_middle_original_labels_400``."""
+        """A per-vertex attribute array sitting next to a surface (``<surface>_<attr>.npy``)."""
         return self.sfile(L.SURFACES, f"{name}.npy")
 
     # --- forward model: dipoles / electrodes / mesh -------------------------
@@ -109,9 +88,8 @@ class SubjectPaths:
         return self.stage_dir(L.DIPOLES) / f"spacing{float(spacing)}mm"
 
     def dipole_file(self, name: str, spacing: float) -> Path:
-        """A dipole array, e.g. ``dipole_positions``, ``dipole_directions``,
-        ``dipole_volume``, ``dipole_neural_density``, ``orient_type``,
-        ``aggregated_dipole_labels``, or ``400Parcels_dipole_labels``."""
+        """A dipole array by stem, e.g. ``dipole_positions``. Browse the choices
+        with ``s.outputs.find("dipoles", spacing=...)``."""
         return self.sfile(L.DIPOLES, f"spacing{float(spacing)}mm", f"{name}.npy")
 
     def dipole_block(self, spacing: float, block: str, name: str) -> Path:
@@ -132,9 +110,7 @@ class SubjectPaths:
 
     # --- leadfields ---------------------------------------------------------
     def leadfield(self, key: str) -> Path:
-        """A processed leadfield by key, e.g. ``duneuroCGAL-2.0mm``,
-        ``openmeeg-4.0mm``, ``duneuroCGAL_anisotropic-2.0mm``,
-        ``duneuro_artifact-eyes-CGAL``. Discover keys with
+        """A processed leadfield by key, e.g. ``openmeeg-4.0mm``. Discover keys with
         :meth:`Subject.available_leadfields`."""
         return self._s.outputs.path("leadfield", key=key)
 
@@ -148,17 +124,6 @@ class SubjectPaths:
             L.DWITENSOR, f"{self._s.subj}_space-{space}_model-dti_param-{param}.nii.gz"
         )
 
-    def dwi_brain_mask(self) -> Path:
-        return self.sfile(L.DWITENSOR, f"{self._s.subj}_space-T1_desc-brain_mask.nii.gz")
-
-    def acpc_to_t1(self) -> Path:
-        return self.sfile(L.DWITENSOR, f"{self._s.subj}_from-ACPC_to-T1_ras.txt")
-
-    def tractogram(self, space: str = "T1") -> Path:
-        return self.sfile(
-            L.QSIRECON, "dwi", f"{self._s.subj}_space-{space}_model-ifod2_streamlines.tck.gz"
-        )
-
     # --- connectivity -------------------------------------------------------
     def weights(self, n: int, normalized: bool = False) -> Path:
         """``normalized=True`` selects inverse-node-volume weights, not max scaling."""
@@ -168,9 +133,6 @@ class SubjectPaths:
     def distances(self, n: int) -> Path:
         return self.sfile(L.CONNECTIVITY, f"distances_{n}.txt")
 
-    def connectivity_atlas(self, n: int) -> Path:
-        return self.sfile(L.CONNECTIVITY, f"atlas{n}_connectivity.nii.gz")
-
     def connectivity_labels(self, n: int) -> Path:
         """Connectome node names, one per line; line 0 == Unknown (dropped from the matrix)."""
         return self.sfile(L.CONNECTIVITY, f"labels_{n}.txt")
@@ -178,10 +140,6 @@ class SubjectPaths:
     def full_to_reduced(self, n: int) -> Path:
         """``reduced_id = full_to_reduced[full_atlas_id]`` (-1 if dropped from connectivity)."""
         return self.sfile(L.CONNECTIVITY, f"full_to_reduced_{n}.npy")
-
-    def reduced_to_full(self, n: int) -> Path:
-        """``full_atlas_id = reduced_to_full[reduced_id]`` (index 0 == Unknown)."""
-        return self.sfile(L.CONNECTIVITY, f"reduced_to_full_{n}.npy")
 
     # --- anisotropy (optional) ----------------------------------------------
     def conductivity_tensors(self) -> Path:
@@ -191,9 +149,6 @@ class SubjectPaths:
         return self.sfile(L.ANISOTROPY, "wm_element_indices.npy")
 
     # --- artifacts (optional; split registration/ + dipoles/ subtrees) ------
-    def artifact_registration_dir(self) -> Path:
-        return self._s.deriv / L.ARTIFACTS / "registration" / self._s.subj
-
     def artifact_dipoles_dir(self) -> Path:
         return self._s.deriv / L.ARTIFACTS / "dipoles" / self._s.subj
 
@@ -205,8 +160,7 @@ class SubjectPaths:
         return self._s.outputs.path("artifacts", name=f"dipoles/{self._s.subj}/artifactsources.json")
 
     def artifact_dipole_file(self, name: str, kind: str = "eyes") -> Path:
-        """``kind`` in {eyes, muscle}; ``name`` e.g. ``dipole_positions``,
-        ``dipole_preferential_direction``, ``dipole_labels``, ``orient_type``."""
+        """``kind`` in {eyes, muscle}; ``name`` is the array stem, e.g. ``dipole_positions``."""
         return self._s.outputs.path("artifacts", name=f"dipoles/{self._s.subj}/{kind}/{name}.npy")
 
     # --- staged inputs: EEG / fMRI (optional) -------------------------------
