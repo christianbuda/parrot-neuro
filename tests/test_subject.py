@@ -18,8 +18,8 @@ BIDS = Path(os.environ.get("PARROT_TEST_BIDS", "/srv/nfs-data/sisko/christian/pa
 SUBJECT = os.environ.get("PARROT_TEST_SUBJECT", "010002")
 
 pytestmark = pytest.mark.skipif(
-    not (BIDS / "derivatives").is_dir(),
-    reason=f"no reference derivatives at {BIDS}/derivatives (set PARROT_TEST_BIDS)",
+    not (BIDS / "derivatives/manifests" / f"sub-{SUBJECT}").is_dir(),
+    reason="reference dataset requires manifests (set PARROT_TEST_BIDS to a registered dataset)",
 )
 
 
@@ -102,12 +102,12 @@ def test_loaders_return_expected_types(s: Subject):
 
 
 def test_cache_returns_same_object():
-    s = Subject(BIDS, SUBJECT, cache=True)
+    s = Subject(BIDS, SUBJECT)
     key = s.available_leadfields()[0]
     assert s.load.leadfield(key) is s.load.leadfield(key)
-    # without caching, a fresh read each time
-    s2 = Subject(BIDS, SUBJECT)
-    assert s2.load.leadfield(key) is not s2.load.leadfield(key)
+    previous = s.load.leadfield(key)
+    s.clear_cache()
+    assert s.load.leadfield(key) is not previous
 
 
 def test_missing_optional_stage_raises_clearly(s: Subject):
@@ -116,13 +116,12 @@ def test_missing_optional_stage_raises_clearly(s: Subject):
         s.load.npy("anisotropy", "does_not_exist.npy")
 
 
-def test_qc_warning_fires_on_degraded_stage(s: Subject):
-    # inject a degraded status and confirm a loader warns once
+def test_qc_warning_is_not_repeated_during_loading(s: Subject):
     s._qc_status_map["leadfields"] = "fail"
     with warnings.catch_warnings(record=True) as w:
         warnings.simplefilter("always")
         s.load.leadfield(s.available_leadfields()[0])
-    assert any("leadfields" in str(x.message) for x in w)
+    assert not w
 
 
 def test_qc_warning_silenced_when_disabled():

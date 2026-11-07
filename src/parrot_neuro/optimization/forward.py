@@ -37,7 +37,7 @@ def set_directions(leadfield, dipoles, key):
     random unit orientation. ``dipoles`` is a ``parrot_neuro`` ``DipoleSet``
     (``subject.load.dipoles(spacing)``). Returns (N_elec, N_dip).
     """
-    # Copy: dipoles.directions may be a cached array on the Subject (cache=True)
+    # Copy: dipoles.directions is shared with the Subject cache
     # and we mutate it in place below.
     dipole_directions = np.array(dipoles.directions, copy=True)
     orient_type = dipoles.orient_type
@@ -70,10 +70,9 @@ def get_electric_signals(
     building a second dense (N_dip, N_dip) distance matrix — pass it when
     you don't need ``representative_dipole`` (most callers don't).
 
-    ``subject`` is a ``parrot_neuro.Subject``. The per-block ``surfaces/<block>/``
-    and ``volumetric/`` distance/volume files have no curated Subject accessor
-    (only the aggregated top-level arrays do), so those are still read via raw
-    path composition off ``subject.path.dipole_dir(spacing)``.
+    ``subject`` is a ``parrot_neuro.Subject``. Block arrays are resolved through
+    its registered inventory; distances are loaded without caching because the
+    smoothing calculation below modifies them in place.
 
     Returns:
         leadfield: (N_elec, N_dip) orientation-collapsed leadfield.
@@ -96,10 +95,10 @@ def get_electric_signals(
     # subjects. Each block's ``dipole_traceback.npy`` is its boolean mask within
     # the aggregated array, so the first True is the block's offset; sorting on it
     # recovers the true order.
-    all_blocks = [item for item in (dipoles_path / "surfaces").iterdir() if item.is_dir()]
-    all_blocks.append(dipoles_path / "volumetric")
+    all_blocks = subject.dipole_blocks(float(spacing))
     block_offsets = {
-        b: int(np.flatnonzero(np.load(b / "dipole_traceback.npy"))[0]) for b in all_blocks
+        b: int(np.flatnonzero(subject.load.dipole_block(float(spacing), b, "dipole_traceback"))[0])
+        for b in all_blocks
     }
     all_blocks.sort(key=block_offsets.get)
 
@@ -123,7 +122,8 @@ def get_electric_signals(
     dipole_volume = dipoles.volume
 
     sigma = float(spacing) * 1.5
-    weights_matrices = [np.load(block / 'distance_matrix.npy') for block in all_blocks]
+    weights_matrices = [subject.load.dipole_block(float(spacing), block, "distance_matrix")
+                        for block in all_blocks]
     # The blocks must tile [0, N_dip) back to back in this order, else the
     # block-diagonal operator is misaligned with the leadfield and the projection
     # is silently wrong. Cheap to check, so check it rather than trust it.

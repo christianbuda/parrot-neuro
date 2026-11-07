@@ -1,16 +1,8 @@
-"""Single source of truth for the Parrot derivatives layout.
+"""Stage names used by Subject's explicit accessors and physical presence probes.
 
-Every on-disk stage directory name and the mapping to QC stage names lives here,
-and nowhere else in this package -- ``_paths.py`` composes filenames on top of
-these constants, and ``_loaders.py`` composes readers on top of ``_paths.py``.
-
-The names below are the *real* on-disk directory names, which are underscore-free
-and differ in places from ``bin/legend_of_files.txt`` (e.g. ``simnibscharm``, not
-``simnibs_charm``). They mirror the QC package's own layout knowledge in
-``containers/parrot_qc/qc/context.py`` and ``qc/stages/__init__.py`` -- that
-package is baked into the frozen ``parrot_qc`` Docker image and cannot be imported
-here, so this is a deliberate (documented) duplication. **If the pipeline renames a
-stage folder, update this module and keep it in sync with ``qc/stages/``.**
+The QC manifest writer owns producer filename discovery; accessors request its
+registered logical names. Keep these names aligned with qc/manifests.py and
+qc/context.py when changing producer layouts. The legend is documentation only.
 """
 from __future__ import annotations
 

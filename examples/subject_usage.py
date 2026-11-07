@@ -7,12 +7,12 @@ Run it against any Parrot BIDS dataset root:
 Subject is a facade over one subject's derivatives tree. It has two mirrored
 namespaces sharing the same vocabulary:
 
-    s.path.<thing>(...)   -> pathlib.Path   (cheap, stdlib-only, file may not exist)
+    s.path.<thing>(...)   -> pathlib.Path   (registered, existing original file)
     s.load.<thing>(...)   -> loaded object  (nibabel image / trimesh mesh / ndarray / dict)
 
 For anything without a curated accessor, use the generic escape hatch:
 
-    s.path.sfile(stage, *parts)              # any file under <stage>/sub-<id>/
+    s.path.sfile(stage, *parts)              # registered stage/file output
     s.load.{npy,volume,mesh,json,table}(stage, *parts)
 """
 from __future__ import annotations
@@ -23,9 +23,8 @@ from parrot_neuro import Subject
 
 
 def main(bids_root: str, subject_id: str) -> None:
-    # cache=True memoizes loaded objects (handy for big leadfields/meshes in a notebook).
-    # warn_on_qc=True (default) warns if you load an output whose stage QC'd as warn/fail.
-    s = Subject(bids_root, subject_id, cache=True)
+    # QC warnings appear once here. Existing datasets need manifests populated separately.
+    s = Subject(bids_root, subject_id)
     print(s)  # Subject('010002', deriv=..., backend=fastsurfer)
 
     # --- subject metadata ---------------------------------------------------
@@ -33,7 +32,9 @@ def main(bids_root: str, subject_id: str) -> None:
     print("overall QC:", (s.qc or {}).get("overall_status"))
     print("leadfields QC status:", s.qc_status("leadfields"))
 
-    # --- discover the variable outputs (globbed, not hardcoded) -------------
+    # --- discover registered outputs ---------------------------------------
+    print(s.outputs)
+    print("surface inventory:", s.outputs.find("surfaces")[:3])
     print("leadfields:", s.available_leadfields())
     print("atlas resolutions:", s.atlas_resolutions())
     print("dipole spacings:", s.dipole_spacings())
@@ -42,7 +43,7 @@ def main(bids_root: str, subject_id: str) -> None:
         {k: getattr(s, f"has_{k}") for k in ("dwi", "anisotropy", "artifacts", "eeg", "fmri")},
     )
 
-    # --- paths (no I/O) -----------------------------------------------------
+    # --- original paths ----------------------------------------------------
     print("T1 path:", s.path.t1())
     print("lh cortex path:", s.path.cortex("lh"))
 
@@ -53,6 +54,11 @@ def main(bids_root: str, subject_id: str) -> None:
     key = s.available_leadfields()[0]
     lf = s.load.leadfield(key)  # (n_electrodes, 3*n_sources) ndarray
     print(f"leadfield {key!r}:", lf.shape)
+    names = s.electrode_names
+    s.set_electrodes(names[:3][::-1])
+    selected = s.load.leadfield(key)  # selected row order, zero mean across electrodes
+    print("selected model montage:", s.electrode_names, selected.shape)
+    s.set_electrodes(None)  # lf and selected above remain unchanged
 
     cortex = s.load.cortex("lh")  # trimesh.Trimesh
     print("lh cortex mesh:", cortex.vertices.shape, cortex.faces.shape)
@@ -63,16 +69,25 @@ def main(bids_root: str, subject_id: str) -> None:
     electrodes = s.load.electrodes()  # {name: array([x, y, z])}
     print("electrodes:", len(electrodes), "e.g.", next(iter(electrodes.items())))
 
-    # optional stages degrade gracefully -- guard with the has_* flags
-    if s.has_dwi:
-        print("DTI FA (T1 space):", s.load.dwi_param("fa").shape)
-    if s.has_eeg:
-        eeg = s.load.eeg("eyesclosed")  # NpzFile of splice-free segments
+    # Inventory means registered; has_* only means physical presence, not QC/completeness.
+    if s.outputs.find("EEG"):
+        eeg = s.load.eeg("eyesclosed")  # Dict of splice-free segment arrays
         print("EEG segments:", list(eeg.keys())[:3], "...")
 
     # escape hatch for anything without a curated accessor
     agg = s.load.json("atlas", "atlas_to_aggregated.json")
     print("atlas_to_aggregated entries:", len(agg))
+
+    if s.outputs.find("fMRI") and s.outputs.find("connectivity"):
+        task = "rest"
+        weights = s.load.weights(100, fmri_aligned=True, task=task)
+        bold = s.load.fmri_timeseries("conn", task)["ts_100"]
+        print("aligned SC/BOLD:", weights.shape, bold[s.load.fmri_keep(100, task)].shape)
+
+    # Cached objects are shared and mutable. Copy before changing cached data.
+    independent_positions = dip.positions.copy()
+    uncached_volume = s.load.t1(use_cache=False)  # bypass lookup AND insertion
+    s.clear_cache()
 
 
 if __name__ == "__main__":

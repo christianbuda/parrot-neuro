@@ -5,7 +5,6 @@ TVB fit). Channel QC never needs gradients, so it reads the same splice-free
 """
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,11 +26,9 @@ class TaskEEG:
 
 def discover_tasks(subject) -> list[str]:
     """EEG task names this subject has derivatives for (e.g. ``['eyesclosed', 'eyesopen']``)."""
-    eeg_dir = subject.deriv / "EEG" / subject.subj
-    if not eeg_dir.is_dir():
-        return []
     tasks = set()
-    for f in eeg_dir.glob(f"{subject.subj}_task-*_eeg.json"):
+    for entry in subject.outputs.find("EEG"):
+        f = Path(entry["path"])
         m = re.search(r"_task-([^_]+)_eeg\.json$", f.name)
         if m:
             tasks.add(m.group(1))
@@ -41,10 +38,9 @@ def discover_tasks(subject) -> list[str]:
 def load_task_eeg(subject, task: str) -> TaskEEG:
     """Read one task's splice-free segments + sidecar metadata + electrode montage."""
     npz = subject.load.eeg(task)
-    segments = [np.asarray(npz[k], dtype=np.float64) for k in sorted(npz.files)]
+    segments = [np.asarray(npz[k], dtype=np.float64) for k in sorted(npz)]
 
-    sidecar = subject.path.eeg(task).with_suffix(".json")
-    meta = json.loads(Path(sidecar).read_text())
+    meta = subject.load.eeg_metadata(task)
 
     return TaskEEG(
         subject=subject.subj,
@@ -52,5 +48,5 @@ def load_task_eeg(subject, task: str) -> TaskEEG:
         sfreq=float(meta["sampling_frequency"]),
         channel_names=list(meta["channel_names"]),
         segments=segments,
-        positions=subject.load.electrodes(),
+        positions=subject.load.electrode_montage(),
     )

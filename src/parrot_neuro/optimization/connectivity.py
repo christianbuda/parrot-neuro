@@ -50,13 +50,20 @@ def load_structural_connectivity(
     bring other per-node quantities (e.g. the cortical mask) onto this same set.
     """
     print(f"Loading fMRI-aligned SC weights/delays for atlas {atlas}...")
-    W = subject.load.weights(atlas, normalized=True, fmri_aligned=True)
-    L = subject.load.distances(atlas, fmri_aligned=True)
+    W = subject.load.weights(atlas, normalized=True, fmri_aligned=True, task=fmri_task)
+    L = subject.load.distances(atlas, fmri_aligned=True, task=fmri_task)
     keep = np.asarray(subject.load.fmri_keep(atlas, fmri_task))
     print(f"  SC weights: {W.shape}  delays: {L.shape}  "
           f"(num_nodes = {W.shape[0]} of {keep.size} connectome nodes)")
 
-    ts = subject.load.fmri_timeseries(variant="conn", task=fmri_task)[f"ts_{atlas}"]
+    bold = subject.load.fmri_timeseries(variant="conn", task=fmri_task)
+    names = subject.load.connectivity_labels(atlas)
+    if (not np.array_equal(bold[f"labels_{atlas}"], names)
+            or not np.array_equal(bold[f"ids_{atlas}"], np.arange(1, len(names) + 1))):
+        raise ValueError(f"BOLD/connectome node ordering disagrees for atlas {atlas}, task {fmri_task}")
+    ts = bold[f"ts_{atlas}"]
+    if ts.ndim != 2 or ts.shape[0] != len(keep):
+        raise ValueError("BOLD and fMRI node-mask axes disagree")
     X_emp = ts[keep].T  # (n_conn_nodes, T)[keep] -> (T, n_kept)
 
     if X_emp.shape[1] != W.shape[0]:

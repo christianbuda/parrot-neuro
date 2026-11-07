@@ -1,13 +1,7 @@
-"""The ``s.path`` namespace: every accessor returns a :class:`pathlib.Path`.
+"""Original on-disk paths, resolved through the manifest inventory.
 
-Pure path composition on top of :mod:`._layout` -- stdlib only, no I/O beyond the
-occasional ``.exists()`` probe done by the owning :class:`~parrot_neuro.subject.Subject`.
-The parallel ``s.load`` namespace (:mod:`._loaders`) shares this vocabulary and
-delegates here for the actual paths.
-
-Paths are returned whether or not the file exists; callers that need existence
-guarantees should check, or use the ``s.has_*`` flags on the Subject for the
-optional stages (DWI, artifacts, staged EEG/fMRI).
+File access requires registration and existence. Directory helpers only locate
+containers; they do not establish output availability or scientific QC.
 """
 from __future__ import annotations
 
@@ -24,14 +18,14 @@ class SubjectPaths:
     def __init__(self, subject: "Subject"):
         self._s = subject
 
-    # --- generic core (mirrors qc/context.py) -------------------------------
+    # --- generic core -------------------------------------------------------
     def stage_dir(self, stage: str) -> Path:
         """``<derivatives>/<stage>/sub-<id>`` -- the per-subject folder of a stage."""
         return self._s.deriv / stage / self._s.subj
 
     def sfile(self, stage: str, *parts: str) -> Path:
-        """A file inside a stage's per-subject folder. The escape hatch."""
-        return self.stage_dir(stage).joinpath(*parts)
+        """A file inside a stage's per-subject folder."""
+        return self._s.outputs.path(stage, name=Path(*parts).as_posix())
 
     # --- anatomy / volumes --------------------------------------------------
     def t1(self) -> Path:
@@ -66,10 +60,13 @@ class SubjectPaths:
     # --- recon backend dir (fastsurfer | freesurfer) ------------------------
     def recon_dir(self) -> Path:
         """The active surface-recon folder, resolved from ``surface_backend``."""
+        if self._s.surface_backend is None:
+            raise FileNotFoundError(f"No surface reconstruction for {self._s.subj}")
         return self.stage_dir(self._s.surface_backend)
 
     def color_lut(self) -> Path:
-        return self.recon_dir() / "FreeSurferColorLUT.txt"
+        self.recon_dir()
+        return self.sfile(self._s.surface_backend, "FreeSurferColorLUT.txt")
 
     # --- atlas --------------------------------------------------------------
     def atlas(self, res: int) -> Path:
@@ -108,13 +105,17 @@ class SubjectPaths:
 
     # --- forward model: dipoles / electrodes / mesh -------------------------
     def dipole_dir(self, spacing: float) -> Path:
-        return self.sfile(L.DIPOLES, f"spacing{spacing}mm")
+        # Reconstruction parses spacing as a float before naming its folders.
+        return self.stage_dir(L.DIPOLES) / f"spacing{float(spacing)}mm"
 
     def dipole_file(self, name: str, spacing: float) -> Path:
         """A dipole array, e.g. ``dipole_positions``, ``dipole_directions``,
         ``dipole_volume``, ``dipole_neural_density``, ``orient_type``,
         ``aggregated_dipole_labels``, or ``400Parcels_dipole_labels``."""
-        return self.dipole_dir(spacing) / f"{name}.npy"
+        return self.sfile(L.DIPOLES, f"spacing{float(spacing)}mm", f"{name}.npy")
+
+    def dipole_block(self, spacing: float, block: str, name: str) -> Path:
+        return self.sfile(L.DIPOLES, f"spacing{float(spacing)}mm", block, f"{name}.npy")
 
     def electrodes_csv(self) -> Path:
         return self.sfile(L.ELECTRODES, "landmarks_10-5-full.csv")
@@ -135,7 +136,7 @@ class SubjectPaths:
         ``openmeeg-4.0mm``, ``duneuroCGAL_anisotropic-2.0mm``,
         ``duneuro_artifact-eyes-CGAL``. Discover keys with
         :meth:`Subject.available_leadfields`."""
-        return self.sfile(L.LEADFIELDS, f"processed_{key}-leadfield.npy")
+        return self._s.outputs.path("leadfield", key=key)
 
     # --- DWI tensor (optional) ----------------------------------------------
     def dwi_tensor(self, space: str = "T1") -> Path:
@@ -160,6 +161,7 @@ class SubjectPaths:
 
     # --- connectivity -------------------------------------------------------
     def weights(self, n: int, normalized: bool = False) -> Path:
+        """``normalized=True`` selects inverse-node-volume weights, not max scaling."""
         stem = "weights_invnodevol" if normalized else "weights"
         return self.sfile(L.CONNECTIVITY, f"{stem}_{n}.txt")
 
@@ -197,20 +199,23 @@ class SubjectPaths:
 
     def artifact_affine(self, direction: str = "mni_to_subject") -> Path:
         """``direction`` in {mni_to_subject, subject_to_mni}."""
-        return self.artifact_registration_dir() / f"{direction}_affine.npy"
+        return self._s.outputs.path("artifacts", name=f"registration/{self._s.subj}/{direction}_affine.npy")
 
     def artifact_sources(self) -> Path:
-        return self.artifact_dipoles_dir() / "artifactsources.json"
+        return self._s.outputs.path("artifacts", name=f"dipoles/{self._s.subj}/artifactsources.json")
 
     def artifact_dipole_file(self, name: str, kind: str = "eyes") -> Path:
         """``kind`` in {eyes, muscle}; ``name`` e.g. ``dipole_positions``,
         ``dipole_preferential_direction``, ``dipole_labels``, ``orient_type``."""
-        return self.artifact_dipoles_dir() / kind / f"{name}.npy"
+        return self._s.outputs.path("artifacts", name=f"dipoles/{self._s.subj}/{kind}/{name}.npy")
 
     # --- staged inputs: EEG / fMRI (optional) -------------------------------
     def eeg(self, task: str = "eyesclosed") -> Path:
         """``task`` in {eyesopen, eyesclosed}. Splice-free segments (.npz)."""
         return self.sfile(L.EEG, f"{self._s.subj}_task-{task}_eeg.npz")
+
+    def eeg_metadata(self, task: str = "eyesclosed") -> Path:
+        return self.sfile(L.EEG, f"{self._s.subj}_task-{task}_eeg.json")
 
     def fmri_timeseries(self, variant: str = "full", task: str = "rest") -> Path:
         """Schaefer atlas BOLD time series. ``variant`` in {full, conn}."""

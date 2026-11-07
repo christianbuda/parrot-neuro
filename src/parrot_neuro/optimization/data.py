@@ -5,8 +5,6 @@ in this environment); it collates batches into stacked numpy arrays.
 """
 from __future__ import annotations
 
-import json
-
 import numpy as np
 
 from .signal import resample_signals
@@ -14,13 +12,16 @@ from .signal import resample_signals
 
 def find_indices(values, reference):
     """Index of each ``values`` entry within ``reference`` (order preserved)."""
-    sorter = np.argsort(reference)
-    return sorter[np.searchsorted(reference, values, sorter=sorter)]
+    indices = {name: index for index, name in enumerate(reference)}
+    missing = set(values) - indices.keys()
+    if missing:
+        raise ValueError(f"Recorded channels are absent from the model montage: {sorted(missing)}")
+    return np.array([indices[name] for name in values], dtype=int)
 
 
 def load_electrode_names(subject):
-    """Electrode names (montage) for ``subject``, from the landmarks CSV."""
-    return np.loadtxt(subject.path.electrodes_csv(), delimiter=",", usecols=0, dtype=str)
+    """Current model montage in loaded leadfield row order."""
+    return np.asarray(subject.electrode_names)
 
 
 def load_subject_eeg(subject, task="eyesclosed", chunk_length=None):
@@ -33,10 +34,9 @@ def load_subject_eeg(subject, task="eyesclosed", chunk_length=None):
     (that schema was site-specific; this one is a first-class Parrot output).
     """
     npz = subject.load.eeg(task)
-    recordings = [npz[k] for k in sorted(npz.files)]
+    recordings = [npz[k] for k in sorted(npz)]
 
-    sidecar = subject.path.eeg(task).with_suffix(".json")
-    meta = json.loads(sidecar.read_text())
+    meta = subject.load.eeg_metadata(task)
     sfreq = meta["sampling_frequency"]
     channel_names = meta["channel_names"]
 
