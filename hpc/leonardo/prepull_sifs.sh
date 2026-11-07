@@ -7,7 +7,7 @@
 # `apptainer pull docker://...` only works from the login/data-mover side. Do it
 # once; the GPU pilot/array jobs then reuse the cached .sif files.
 #
-# NOTE: the Parrot images must already be published to Docker Hub as :latest
+# NOTE: the Parrot images must already be published to Docker Hub as the pinned PARROT_VERSION tag
 # (the rootless build). `./bin/build.sh --push` from a machine that has Docker.
 #
 # On LEONARDO, Singularity is a SYSTEM command (/usr/bin/singularity), not a module --

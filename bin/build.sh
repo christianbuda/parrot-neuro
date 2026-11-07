@@ -10,9 +10,9 @@
 #
 # Options:
 #   --push           Push each image to its registry after a successful build.
-#   --version X.Y.Z  Also tag (and, with --push, push) each image as :X.Y.Z in
-#                    addition to :latest. The same version is applied to every
-#                    image built in this run. --tag is an alias.
+#   --version X.Y.Z  Also tag (and, with --push, push) each image as :X.Y.Z. Images are
+#                    always tagged with the PARROT_VERSION pinned in bin/images.sh and
+#                    :latest; use this only for an extra tag. --tag is an alias.
 #   --no-cache       Build without using Docker's layer cache.
 #   -h, --help       Show this help and exit.
 #
@@ -44,9 +44,9 @@ Usage:
 
 Options:
   --push           Push each image to its registry after a successful build.
-  --version X.Y.Z  Also tag (and, with --push, push) each image as :X.Y.Z in
-                   addition to :latest. The same version is applied to every
-                   image built in this run. --tag is an alias.
+  --version X.Y.Z  Also tag (and, with --push, push) each image as :X.Y.Z. Images are
+                   always tagged with the PARROT_VERSION pinned in bin/images.sh and
+                   :latest; use this only for an extra tag. --tag is an alias.
   --no-cache       Build without using Docker's layer cache.
   -h, --help       Show this help and exit.
 
@@ -95,9 +95,9 @@ for entry in "${PARROT_IMAGES[@]}"; do
 
     matches_filter "$tag" || continue
 
-    # When a version is requested, derive the same repo:VERSION ref by replacing
-    # the :latest suffix so the single build gets both tags (same image ID).
-    tags=("$tag")
+    # The pinned tag from images.sh, plus :latest, plus an optional extra --version tag,
+    # all on the same image ID.
+    tags=("$tag" "${tag%:*}:latest")
     [[ -n "$VERSION" ]] && tags+=("${tag%:*}:$VERSION")
 
     build_args=()

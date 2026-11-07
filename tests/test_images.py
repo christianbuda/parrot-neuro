@@ -68,14 +68,17 @@ def test_local_sif_build_remote_fallback_uses_digest(tmp_path, tools):
     assert f"docker://{ref}" in (tmp_path / "calls").read_text()
 
 
-def test_parrot_builds_still_publish_latest_and_version(tmp_path, tools):
+def test_parrot_builds_publish_pinned_version_latest_and_extra_tag(tmp_path, tools):
     executable(tools / "docker", 'printf "%s\\n" "$*" >> "$CALL_LOG"\n')
     subprocess.run(
         ["bash", "bin/build.sh", "--push", "--version", "test", "qc"],
         cwd=REPO, check=True, capture_output=True,
     )
     calls = (tmp_path / "calls").read_text()
-    assert "-t christianbuda/parrot_qc:latest -t christianbuda/parrot_qc:test" in calls
+    pinned = manifest('echo "$PARROT_VERSION"')
+    assert (f"-t christianbuda/parrot_qc:{pinned} -t christianbuda/parrot_qc:latest "
+            "-t christianbuda/parrot_qc:test") in calls
+    assert f"push christianbuda/parrot_qc:{pinned}" in calls
     assert "push christianbuda/parrot_qc:latest" in calls
     assert "push christianbuda/parrot_qc:test" in calls
 

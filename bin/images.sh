@@ -17,11 +17,14 @@ IMG_HIPPUNFOLD="khanlab/hippunfold@sha256:b14d6593839d09de56c21c585df2c02fe78e04
 IMG_QSIPREP="pennlinc/qsiprep@sha256:b578687c4667ae43f4229212b3ae91c2ff842d49a29d42e64c013aaae9600373" # 26.0.0; 26.1 removes CLI flags we use
 IMG_QSIRECON="pennlinc/qsirecon@sha256:5f95877eeea494c5fd82be4b8dca657be63d132f0425f71d82b0448d20ff5d69" # 26.0.1
 
-# Parrot images track the repo and are built/published by bin/build.sh.
-IMG_MRI_RECONSTRUCTION="christianbuda/parrot_mri_reconstruction:latest"
-IMG_FORWARD_MODEL="christianbuda/parrot_forward_model:latest"
-IMG_FORWARD_SOLVERS="christianbuda/parrot_forward_solvers:latest"
-IMG_QC="christianbuda/parrot_qc:latest"
+# Parrot images are pinned to one release version, so the producer tag recorded in every
+# output manifest identifies the release. To release: bump PARROT_VERSION, run
+# `./bin/build.sh --push` (builds and pushes all four images), commit, and tag git vX.Y.Z.
+PARROT_VERSION="1.8.0"
+IMG_MRI_RECONSTRUCTION="christianbuda/parrot_mri_reconstruction:$PARROT_VERSION"
+IMG_FORWARD_MODEL="christianbuda/parrot_forward_model:$PARROT_VERSION"
+IMG_FORWARD_SOLVERS="christianbuda/parrot_forward_solvers:$PARROT_VERSION"
+IMG_QC="christianbuda/parrot_qc:$PARROT_VERSION"
 
 # --- Derived collections -----------------------------------------------------
 # Used to pull (run_reconstruction.sh) and build (build.sh) in bulk.

@@ -17,8 +17,8 @@ Parrot is a modular brain simulation tool that performs MRI reconstruction, elec
 ### Container versions
 
 External dependencies are pinned by digest in `bin/images.sh` so upstream
-`:latest` releases cannot silently break the pipeline. Parrot's own images
-remain on `:latest`. Docker and the LEONARDO SIF helpers share this manifest;
+`:latest` releases cannot silently break the pipeline. Parrot's own images are
+pinned to one release version (`PARROT_VERSION`), which output manifests record. Docker and the LEONARDO SIF helpers share this manifest;
 see [image compatibility and SIF cache migration](hpc/leonardo/README.md#image-versions).
 
 ## Installation

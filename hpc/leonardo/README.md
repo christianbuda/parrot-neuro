@@ -26,7 +26,7 @@ combined with those chunks.
 ## Image versions
 
 `bin/images.sh` is the shared image manifest for Docker, SIF builders, preflight
-and cache prewarming. Parrot images stay on `:latest` to track the repository;
+and cache prewarming. Parrot images are pinned to the release version (`PARROT_VERSION`);
 external images are pinned to immutable registry digests.
 
 Compatibility review (2026-10-09):
