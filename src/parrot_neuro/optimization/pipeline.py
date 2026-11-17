@@ -33,7 +33,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from . import config
-from .connectivity import StructuralConnectivity, load_structural_connectivity
+from .connectivity import StructuralConnectivity, apply_sc_template, load_structural_connectivity
 from .forward import get_electric_signals
 from .network import build_network
 from .train import (
@@ -123,6 +123,9 @@ def build_context(cfg: config.BoldFitConfig, dataset=None) -> ExperimentContext:
         conduction_speed=cfg.conduction_speed,
         fmri_task=cfg.fmri_task,
     )
+    if cfg.sc_template:
+        sc = apply_sc_template(sc, cfg.subject, cfg.sc_template, cfg.atlas, cfg.conduction_speed,
+                               cfg.sc_template_noise, cfg.sc_template_seed)
 
     # dipoles -> optimization-node ids, already indexing sc's (fMRI-aligned) node
     # set; -1 where the dipole's connectome node has no usable BOLD. `valid` drops
@@ -177,7 +180,7 @@ def build_context(cfg: config.BoldFitConfig, dataset=None) -> ExperimentContext:
         mask_cortical, sc.weights, sc.delays, sc.num_nodes,
         learnable_params=cfg.learnable_params, base_sigma=cfg.base_sigma, noise_seed=cfg.noise_seed,
         solver_block_size=cfg.solver_block_size, init_seed=cfg.init_seed, init_spread=cfg.init_spread,
-        init_keep=cfg.init_keep,
+        init_keep=cfg.init_keep, shared_dynamics=cfg.shared_dynamics,
     )
     simulators = build_simulators(
         network, solver, cfg.t0, cfg.dt, cfg.t1_eeg, cfg.t1_bold,

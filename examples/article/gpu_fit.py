@@ -7,15 +7,25 @@ Every subcommand starts from a finished base run (``--base-run``, a
 its ``config.json``, so all hyperparameters match the population fit
 exactly; only what the experiment changes is overridden.
 
-  fit --variant eeg-only | bold-only | weight=<w> | half-A | half-B
+  fit --variant joint | eeg-only | bold-only | shared | template-sc
+        | weight=<w> | half-A | half-B   [--half A|B]
       Section 3 (joint vs single modality; EEG-weight trade-off) and
       section 2 held-out data. Single-modality fits use the alternating
       schedule restricted to one loss (bold-only steps BOLD every epoch);
       ``half-A`` fits EEG on alternating 15-chunk blocks A and BOLD on the
       first half of the run (``half-B`` the complement) and writes
       ``holdout.json`` for ``fit_quality.py --heldout-root``.
+      ``--half A|B`` applies the same split to any variant (output folder
+      ``<subject>_<variant>_half-<A|B>``). ``shared`` fits one value per
+      param per node type (``BoldFitConfig.shared_dynamics``; saved
+      broadcast per node); ``template-sc`` swaps the subject SC for the
+      population mean (``sc-template``) + per-subject log-normal noise.
       Output: ``<out-root>/atlas-<n>/<subject>_<variant>/`` with the same
       files ``eeg_bold_fit_cli.py`` writes.
+
+  sc-template
+      Population-mean connectome (full connectome axis) for template-sc.
+      CPU only.
 
   recovery
       Section 4 parameter recovery: draw "true" per-node parameters (group
@@ -34,7 +44,9 @@ exactly; only what the experiment changes is overridden.
 
   tasks
       Print one command per job (subjects picked young/old balanced among
-      working fits) for ``run_gpu_tasks.sh``. CPU only.
+      working fits) for ``run_gpu_tasks.sh``. CPU only. ``--kinds
+      conditions`` instead takes every base subject x 5 conditions x halves
+      A/B (building the SC template first if needed).
 
     pixi run python examples/article/gpu_fit.py fit \\
         --base-run new_leadfields/1/atlas-100/010004_both_joint --variant eeg-only \\
@@ -91,7 +103,7 @@ def rebuild_with_seed(ctx, noise_seed: int):
         ctx.mask_cortical, ctx.sc.weights, ctx.sc.delays, ctx.sc.num_nodes,
         learnable_params=cfg.learnable_params, base_sigma=cfg.base_sigma, noise_seed=noise_seed,
         solver_block_size=cfg.solver_block_size, init_seed=cfg.init_seed, init_spread=cfg.init_spread,
-        init_keep=cfg.init_keep,
+        init_keep=cfg.init_keep, shared_dynamics=cfg.shared_dynamics,
     )
     sims = build_simulators(
         network, solver, cfg.t0, cfg.dt, cfg.t1_eeg, cfg.t1_bold, cfg.tr_ms, cfg.bold_downsample_ms,
@@ -137,23 +149,35 @@ def simulate(ctx, diff, channel_indices) -> dict:
     return {"eeg_psd": np.asarray(compute_psd(eeg)), "bold": np.asarray(bold)}
 
 
+def learnable_values(ctx, diff) -> dict:
+    """``train.extract_learnable_values`` with shared-dynamics scalars
+    broadcast to one value per node, so a ``shared`` fit's files have the
+    same per-node shapes every report expects."""
+    from parrot_neuro.optimization import train
+    vals = train.extract_learnable_values(diff, ctx.cfg.learnable_params)
+    if ctx.cfg.shared_dynamics:
+        for lp in ctx.cfg.learnable_params:
+            if lp.location == "dynamics":
+                vals[lp.name] = np.broadcast_to(vals[lp.name], (ctx.sc.num_nodes,)).copy()
+    return vals
+
+
 def save_fit(ctx, result, out_dir: Path, dataset=None) -> None:
     """The files ``eeg_bold_fit_cli.py`` writes after a fit (+ diagnostics
     when ``dataset`` is given), so every report reads these runs unchanged."""
     from parrot_neuro.optimization import diagnostics, train
-    lp = ctx.cfg.learnable_params
     eeg_ratio = train.relative_final_loss(result.loss_history_eeg)
     bold_ratio = train.relative_final_loss(result.loss_history_bold)
     np.save(out_dir / "loss_history_eeg.npy", np.array(result.loss_history_eeg))
     np.save(out_dir / "loss_history_bold.npy", np.array(result.loss_history_bold))
-    np.savez(out_dir / "optimized_params.npz", **train.extract_learnable_values(result.diff_params, lp),
+    np.savez(out_dir / "optimized_params.npz", **learnable_values(ctx, result.diff_params),
              loss_eeg=np.array(result.loss_history_eeg), loss_bold=np.array(result.loss_history_bold),
              eeg_loss_ratio=np.nan if eeg_ratio is None else eeg_ratio,
              bold_loss_ratio=np.nan if bold_ratio is None else bold_ratio,
              combined_loss_ratio=(eeg_ratio or 0.0) + (bold_ratio or 0.0))
     best = result.best_diff_params
     if best is not None:
-        np.savez(out_dir / "best_params.npz", **train.extract_learnable_values(best, lp),
+        np.savez(out_dir / "best_params.npz", **learnable_values(ctx, best),
                  loss_eeg=np.array(result.loss_history_eeg), loss_bold=np.array(result.loss_history_bold),
                  best_epoch=result.best_epoch, best_score=result.best_score,
                  best_loss_eeg=np.nan if result.best_loss_eeg is None else result.best_loss_eeg,
@@ -177,21 +201,41 @@ def _out_dir(out_root: Path, cfg, name: str) -> Path:
 # fit
 
 VARIANTS = {
+    "joint": {"optimize": "both", "schedule": "joint"},
     "eeg-only": {"optimize": "eeg", "schedule": "alternating"},
     "bold-only": {"optimize": "bold", "schedule": "alternating", "bold_every": 1},
+    # joint, one value per param per node type (7 dynamics + G = 8 per subject)
+    "shared": {"optimize": "both", "schedule": "joint", "shared_dynamics": True},
+    # joint on the population-mean SC + per-subject noise (needs --sc-template)
+    "template-sc": {"optimize": "both", "schedule": "joint"},
+    # legacy names: the base (joint) config on one half
     "half-A": {}, "half-B": {},
 }
+#: the held-out condition set run by ``tasks --kinds conditions``
+CONDITIONS = ["joint", "eeg-only", "bold-only", "shared", "template-sc"]
 
 
 def cmd_fit(args) -> None:
     _jax()
-    from parrot_neuro.optimization import data, pipeline, train
+    from parrot_neuro.optimization import data, pipeline
     if args.variant.startswith("weight="):
         over, name = {"joint_eeg_weight": float(args.variant.split("=", 1)[1])}, f"both_joint_w{args.variant.split('=', 1)[1]}"
     elif args.variant in VARIANTS:
         over, name = dict(VARIANTS[args.variant]), args.variant
     else:
         raise SystemExit(f"unknown --variant {args.variant!r}")
+    half = args.half
+    if args.variant.startswith("half-"):
+        if half and half != args.variant[-1]:
+            raise SystemExit(f"--variant {args.variant} contradicts --half {half}")
+        half = args.variant[-1]
+    elif half:
+        name = f"{name}_half-{half}"
+    if args.variant == "template-sc":
+        if not args.sc_template:
+            raise SystemExit("--variant template-sc needs --sc-template (gpu_fit.py sc-template ...)")
+        over |= {"sc_template": str(args.sc_template.resolve()), "sc_template_noise": args.sc_noise,
+                 "sc_template_seed": args.sc_seed}
     if args.num_epochs:
         over["num_epochs"] = args.num_epochs
     probe = cfg_from_run(args.base_run, args.bids)
@@ -201,11 +245,12 @@ def cmd_fit(args) -> None:
 
     dataset = data.load_subject_eeg(cfg.subject, cfg.eeg_task, cfg.chunk_length)
     holdout = None
-    if args.variant.startswith("half-"):
-        half = 0 if args.variant == "half-A" else 1
+    if half:
+        h_idx = 0 if half == "A" else 1
         lab = holdout_blocks(len(dataset), args.block_chunks)
-        dataset._chunks = [c for c, h in zip(dataset._chunks, lab) if h == half]
-        holdout = {"eeg_half": half, "block_chunks": args.block_chunks, "n_train_chunks": len(dataset)}
+        dataset._chunks = [c for c, h in zip(dataset._chunks, lab) if h == h_idx]
+        holdout = {"eeg_half": h_idx, "block_chunks": args.block_chunks, "n_train_chunks": len(dataset),
+                   "variant": args.variant}
     ctx = pipeline.build_context(cfg, dataset)
     if holdout is not None:
         T = int(ctx.sc.empirical_bold.shape[0])
@@ -215,10 +260,10 @@ def cmd_fit(args) -> None:
         holdout |= {"bold_train_trs": train_trs, "bold_test_trs": test_trs, "base_run": str(args.base_run)}
         (out_dir / "holdout.json").write_text(json.dumps(holdout, indent=2))
 
-    np.savez(out_dir / "init_params.npz", **train.extract_learnable_values(ctx.diff_params_init, cfg.learnable_params))
+    np.savez(out_dir / "init_params.npz", **learnable_values(ctx, ctx.diff_params_init))
     result = pipeline.fit(ctx)
     save_fit(ctx, result, out_dir, None if args.skip_diagnostics else dataset)
-    print(f"[fit {args.variant}] done -> {out_dir}")
+    print(f"[fit {name}] done -> {out_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +370,7 @@ def _score(sim: dict, z, names, cfg, fc_emp, kmin) -> dict:
     m = eeg_metrics(sim["eeg_psd"], z["eeg_psd_target"], z["eeg_freqs"], names, cfg.fmin, cfg.fmax)
     skip = cfg.bold_skip_trs
     fc_sim, _ = connectivity.fc_matrices(sim["bold"], z["bold_emp"], cfg.tr_ms, skip_t=skip)
-    out = {"spec_r": m["spec_r"], "alpha_topo_r": m["alpha_topo_r"], "apf_sim": m["apf_sim"],
+    out = {"spec_r": m["spec_r"], "pow_topo_r": m["pow_topo_r"],
            "fc_r": fc_r(fc_sim, fc_emp), "finite": bool(np.all(np.isfinite(sim["bold"])))}
     if "fcd_emp" in z.files:
         fcd_sim, _ = connectivity.fcd_matrices(sim["bold"], z["bold_emp"], cfg.tr_ms, cfg.dfc_window_trs,
@@ -374,6 +419,25 @@ def cmd_fresh_noise(args) -> None:
 
 
 # ---------------------------------------------------------------------------
+# template connectome (CPU)
+
+def read_subject_ids(path: Path | None) -> list[str] | None:
+    """One id per line or whitespace-separated ('sub-' optional); None = no file."""
+    if path is None:
+        return None
+    return [t.removeprefix("sub-") for t in path.read_text().split() if t and not t.startswith("#")]
+
+
+def cmd_sc_template(args) -> None:
+    from parrot_neuro.optimization.connectivity import build_sc_template
+    runs = load_runs(args.root, need_sim=False)
+    atlas = args.atlas or int(runs[0].cfg["atlas"])
+    sids = read_subject_ids(args.subjects_file) or sorted({r.sid for r in runs})
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    build_sc_template([Subject(str(args.bids), s) for s in sids], atlas, args.out)
+
+
+# ---------------------------------------------------------------------------
 # tasks
 
 def pick_subjects(root: Path, bids: Path, n: int, seed: int, min_fc: float, max_eeg_loss: float) -> list:
@@ -399,7 +463,32 @@ def cmd_tasks(args) -> None:
         "heldout": (args.n_heldout, ["half-A"]),
     }
     for kind in args.kinds:
-        if kind in plan:
+        if kind == "conditions":
+            # every subject x condition x half; condition-major so each node
+            # (G consecutive lines) runs the same condition on G subjects
+            keep = set(read_subject_ids(args.subjects_file) or [])
+            runs = [r for r in load_runs(args.root, need_sim=False) if not keep or r.sid in keep]
+            if keep - {r.sid for r in runs}:
+                print(f"WARNING: no base run under {args.root} for {sorted(keep - {r.sid for r in runs})}")
+            sc_arg = ""
+            if "template-sc" in args.conditions:
+                tpl = Path(args.out) / f"sc_template_atlas-{runs[0].cfg['atlas']}.npz"
+                if not tpl.exists():
+                    tpl.parent.mkdir(parents=True, exist_ok=True)
+                    from parrot_neuro.optimization.connectivity import build_sc_template
+                    # population mean over ALL base runs (not only the --subjects-file subset)
+                    build_sc_template([Subject(str(args.bids), r.sid) for r in load_runs(args.root, need_sim=False)],
+                                      int(runs[0].cfg["atlas"]), tpl)
+                sc_arg = f" --sc-template {tpl}"
+            for cond in args.conditions:
+                if cond not in CONDITIONS:
+                    raise SystemExit(f"unknown condition {cond!r} (choose from {CONDITIONS})")
+                for half in args.halves:
+                    extra = sc_arg if cond == "template-sc" else ""
+                    for r in runs:
+                        lines.append(f"{py} fit --base-run {r.path} --variant {cond} --half {half} "
+                                     f"--out-root {args.out}/conditions/{cond}_half-{half} {common}{extra}")
+        elif kind in plan:
             n, variants = plan[kind]
             for r in pick_subjects(args.root, args.bids, n, args.seed, args.min_fc, args.max_eeg_loss):
                 for v in variants:
@@ -437,8 +526,15 @@ def main() -> None:
 
     p = sub.add_parser("fit")
     base(p)
-    p.add_argument("--variant", required=True, help="eeg-only | bold-only | weight=<w> | half-A | half-B")
+    p.add_argument("--variant", required=True,
+                   help="joint | eeg-only | bold-only | shared | template-sc | weight=<w> | half-A | half-B")
+    p.add_argument("--half", choices=("A", "B"), default=None,
+                   help="fit on this half only (EEG: alternating --block-chunks blocks; BOLD: first/second "
+                        "half of the run); the other half is held out. Writes holdout.json")
     p.add_argument("--block-chunks", type=int, default=15)
+    p.add_argument("--sc-template", type=Path, default=None, help="template-sc: .npz from `sc-template`")
+    p.add_argument("--sc-noise", type=float, default=0.1, help="template-sc: log-normal weight noise std")
+    p.add_argument("--sc-seed", type=int, default=0, help="template-sc: noise seed (combined with the subject id)")
     p.add_argument("--skip-diagnostics", action="store_true")
     p.set_defaults(fn=cmd_fit)
 
@@ -457,11 +553,24 @@ def main() -> None:
     p.add_argument("--params", choices=("best", "final"), default="best")
     p.set_defaults(fn=cmd_fresh_noise)
 
+    p = sub.add_parser("sc-template", help="population-mean connectome for --variant template-sc (CPU)")
+    p.add_argument("--root", type=Path, default=DEFAULT_ROOT, help="base population (its subjects are averaged)")
+    p.add_argument("--bids", type=Path, default=DEFAULT_BIDS)
+    p.add_argument("--subjects-file", type=Path, default=None, help="average these subjects instead")
+    p.add_argument("--atlas", type=int, default=None, help="default: the base runs' atlas")
+    p.add_argument("--out", type=Path, required=True)
+    p.set_defaults(fn=cmd_sc_template)
+
     p = sub.add_parser("tasks")
     p.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     p.add_argument("--bids", type=Path, default=DEFAULT_BIDS)
     p.add_argument("--out", default="article_fits", help="out-root prefix of the generated commands")
-    p.add_argument("--kinds", nargs="+", default=["single", "weights", "heldout", "recovery", "fresh-noise"])
+    p.add_argument("--kinds", nargs="+", default=["single", "weights", "heldout", "recovery", "fresh-noise"],
+                   help="... | conditions (every base subject x --conditions x --halves)")
+    p.add_argument("--conditions", nargs="+", default=CONDITIONS)
+    p.add_argument("--halves", nargs="+", default=["A", "B"], choices=("A", "B"))
+    p.add_argument("--subjects-file", type=Path, default=None,
+                   help="conditions: only these subjects (default: every base run under --root)")
     p.add_argument("--n-single", type=int, default=10)
     p.add_argument("--n-weights", type=int, default=5)
     p.add_argument("--weights", nargs="+", default=["1e4", "1e6"], help="1e5 = the base run itself")

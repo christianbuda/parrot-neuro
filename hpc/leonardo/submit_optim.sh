@@ -376,6 +376,60 @@ case "$CMD" in
         else echo "[article] submitted: $("${cmd[@]}")"; fi
         ;;
 
+    conditions)
+        # Held-out condition fits (gpu_fit.py tasks --kinds conditions): every
+        # base subject x {joint, eeg-only, bold-only, shared, template-sc} x
+        # halves {A, B}, each fitted on one half (the other is held out for the
+        # local fit_quality.py --heldout-root evaluation). Packed
+        # COND_GPUS_PER_NODE (default 4) fits per node, one per GPU; tasks are
+        # condition-major, so a node runs 4 subjects of the same condition.
+        # tasks.txt (+ the SC template) are written once on the login node;
+        # rerunning resubmits only the tasks whose log has no success line.
+        shift || true
+        : "${ARTICLE_ROOT:?set ARTICLE_ROOT to the base population (absolute, .../atlas-<n>, <subject>_both_joint folders)}"
+        [ -d "$ARTICLE_ROOT" ] || { echo "ERROR: ARTICLE_ROOT=$ARTICLE_ROOT not found" >&2; exit 1; }
+        COND_OUT="${COND_OUT:-$WORKDIR/parrot/heldout_conditions}"
+        case "$COND_OUT" in /*) ;; *) echo "ERROR: COND_OUT must be an absolute path, got '$COND_OUT'" >&2; exit 1 ;; esac
+        conds=( "$@" )
+        G="${COND_GPUS_PER_NODE:-4}"
+        CLONE="$(cd "$SCRIPT_DIR/../.." && pwd)"
+        TASKS="$COND_OUT/tasks.txt"
+        LOGS="$COND_OUT/logs"
+        mkdir -p "$COND_OUT" "$LOGS"
+        if [ ! -f "$TASKS" ] || [ "${COND_REGEN:-0}" = 1 ]; then
+            targs=( --root "$ARTICLE_ROOT" --bids "$BIDS" --out "$COND_OUT" --kinds conditions
+                    --halves ${COND_HALVES:-A B} --write "$TASKS" )
+            [ "${#conds[@]}" -gt 0 ] && targs+=( --conditions "${conds[@]}" )
+            [ -n "${COND_SUBJECTS_FILE:-}" ] && targs+=( --subjects-file "$COND_SUBJECTS_FILE" )
+            [ -n "${COND_NUM_EPOCHS:-}" ] && targs+=( --num-epochs "$COND_NUM_EPOCHS" )
+            PIXI="$(command -v pixi || echo "$HOME/.pixi/bin/pixi")"
+            (cd "$CLONE" && "$PIXI" run --as-is python examples/article/gpu_fit.py tasks "${targs[@]}")
+        else
+            echo "[conditions] reusing $TASKS (COND_REGEN=1 to rebuild it; condition args ignored)"
+        fi
+        NT=$(grep -cv '^\s*\(#\|$\)' "$TASKS" || true)
+        [ "$NT" -gt 0 ] || { echo "ERROR: no tasks in $TASKS" >&2; exit 1; }
+        NN=$(( (NT + G - 1) / G ))
+        [ "$NN" -le "$MAX_SUBMIT" ] || { echo "ERROR: $NN node jobs > MAX_SUBMIT=$MAX_SUBMIT -- pass fewer conditions per submission" >&2; exit 1; }
+        CPUS="${REPLICATE_NODE_CPUS:-$(( G * OPTIM_CPUS ))}"
+        MEM="${REPLICATE_NODE_MEM:-$(( G * ${OPTIM_MEM%G} ))G}"
+        TIME="${COND_TIME:-$OPTIM_TIME}"
+        QOS="${COND_QOS:-$BOOST_QOS}"
+        echo "[conditions] $NT fits; $G per node -> $NN node jobs (array throttle '${ARRAY_THROTTLE}')"
+        echo "[conditions] per node: gpu x$G  ${CPUS}c  mem=$MEM  time=$TIME  qos=$QOS"
+        echo "[conditions] base: $ARTICLE_ROOT  out: $COND_OUT/conditions/<condition>_half-<A|B>  logs: $LOGS"
+        export WORKDIR REPO="$CLONE" OPTIM_TASKS_FILE="$TASKS" OPTIM_GPUS_PER_NODE="$G" OPTIM_PACK_LOGDIR="$LOGS"
+        cmd=( sbatch --account="$ACCT" --job-name=parrot-optim-cond
+              --partition="$BOOST_PART" --qos="$QOS" --gres=gpu:$G
+              --cpus-per-task="$CPUS" --time="$TIME" --mem="$MEM"
+              --array="0-$((NN - 1))${ARRAY_THROTTLE}" --export=ALL --parsable
+              --output="$LOGS/parrot-optim-cond-%A_%a.out"
+              --error="$LOGS/parrot-optim-cond-%A_%a.err"
+              "$SCRIPT_DIR/optim_tasks.sbatch" )
+        if [ "$DRYRUN" = 1 ]; then printf '%q ' "${cmd[@]}"; echo; head -n "$G" "$TASKS" | sed 's/^/    node 0: /'
+        else echo "[conditions] submitted: $("${cmd[@]}")  Watch: squeue --me -n parrot-optim-cond"; fi
+        ;;
+
     list)
         N=$(build_subjects)
         echo "$N subjects -> --array=0-$((N-1))${ARRAY_THROTTLE}  (file: $SUBJ_FILE)"
@@ -417,6 +471,14 @@ usage: submit_optim.sh <command>
                      into ARTICLE_OUT, one fit per job (gpu:1; set
                      ARTICLE_GPUS_PER_NODE=4 to pack a node). Rerun to
                      resubmit only unfinished tasks
+  conditions [cond ...]
+                     held-out fits: every subject of ARTICLE_ROOT x conditions
+                     (joint eeg-only bold-only shared template-sc; default all)
+                     x halves A/B, fitted on one half only, into COND_OUT
+                     (default $WORKDIR/parrot/heldout_conditions), 4 fits per
+                     node (COND_GPUS_PER_NODE). Knobs: COND_SUBJECTS_FILE,
+                     COND_HALVES, COND_NUM_EPOCHS, COND_TIME, COND_QOS,
+                     COND_REGEN=1. Rerun to resubmit only unfinished tasks
   list              print the cohort array + resource matrix; submit nothing
 
   PARROT_DRYRUN=1 ...   print the sbatch command instead of submitting

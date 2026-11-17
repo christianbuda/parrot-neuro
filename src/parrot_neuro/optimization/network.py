@@ -47,6 +47,8 @@ def _make_learnable(brain_model, name: str, low: float, high: float, init, num_n
         )
     if init is None:
         init = HeterogeneousModel.DEFAULT_PARAMS[name]
+    # num_nodes == 1 for shared_dynamics: one scalar (shape (1,)) that the
+    # dynamics broadcast over every node
     init = np.broadcast_to(np.asarray(init, dtype=np.float64), (num_nodes,))
     brain_model.params[name] = SigmoidBoundedParameter(
         jnp.array(init, dtype=jnp.float64), low, high
@@ -65,9 +67,13 @@ def build_network(
     init_seed: int | None = None,
     init_spread: float = 0.5,
     init_keep: Sequence[str] = (),
+    shared_dynamics: bool = False,
 ):
     """Build the JR-cortex/WC-subcortex network, wrapping each parameter
     named in ``learnable_params`` as a ``SigmoidBoundedParameter``.
+    ``shared_dynamics=True`` makes every "dynamics" learnable param a single
+    shape-(1,) scalar broadcast over all nodes (one value per node type,
+    since each param only acts on JR or WC nodes) instead of per-node.
 
     Returns (network, solver, brain_model). Everything not named in
     ``learnable_params`` (masks, connectivity, noise, initial state, and
@@ -116,11 +122,11 @@ def build_network(
     coupling_values = dict(DelayedLinearCoupling.DEFAULT_PARAMS)
 
     for i, lp in enumerate(learnable_params):
-        size = num_nodes if lp.location == "dynamics" else 1
+        size = num_nodes if lp.location == "dynamics" and not shared_dynamics else 1
         randomize = init_seed is not None and lp.name not in init_keep
         start = random_init(lp, i, init_seed, init_spread, size) if randomize else lp.init
         if lp.location == "dynamics":
-            _make_learnable(brain_model, lp.name, lp.low, lp.high, start, num_nodes)
+            _make_learnable(brain_model, lp.name, lp.low, lp.high, start, size)
         elif lp.location == "coupling":
             if lp.name not in _COUPLING_PARAM_NAMES:
                 raise ValueError(

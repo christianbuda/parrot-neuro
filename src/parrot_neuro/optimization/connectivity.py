@@ -79,6 +79,87 @@ def load_structural_connectivity(
     )
 
 
+# --- template connectome (null model for the subject's own SC) -------------
+
+def build_sc_template(subjects, atlas: int, out_path) -> dict:
+    """Population-mean SC on the FULL connectome axis -> ``out_path`` (.npz).
+
+    ``subjects``: ``parrot_neuro.Subject`` objects. Each subject's
+    ``weights_invnodevol`` is divided by its own max before averaging (so no
+    subject dominates by scale); distances are averaged over the subjects
+    where the edge exists (> 0). Subjects whose connectivity cannot be read
+    are skipped and reported. Saved keys: ``weights``, ``distances``
+    (M x M), ``n_subjects``, ``subjects``, ``atlas``.
+    """
+    Ws, Ds, used, skipped = [], [], [], []
+    for s in subjects:
+        try:
+            W = np.asarray(s.load.weights(atlas, normalized=True), dtype=np.float64)
+            D = np.asarray(s.load.distances(atlas), dtype=np.float64)
+        except Exception as e:  # missing / unreadable connectivity derivative
+            skipped.append(f"{s.subject} ({type(e).__name__})")
+            continue
+        if Ws and W.shape != Ws[0].shape:
+            skipped.append(f"{s.subject} (shape {W.shape} != {Ws[0].shape})")
+            continue
+        Ws.append(W / np.max(W))
+        Ds.append(np.where(D > 0, D, np.nan))
+        used.append(s.subject)
+    if not Ws:
+        raise ValueError(f"no readable atlas-{atlas} connectomes among {len(skipped)} subjects")
+    W = np.mean(Ws, axis=0)
+    import warnings
+    with warnings.catch_warnings():  # edges absent in every subject -> nan -> 0
+        warnings.simplefilter("ignore", RuntimeWarning)
+        D = np.nan_to_num(np.nanmean(Ds, axis=0), nan=0.0)
+    W, D = 0.5 * (W + W.T), 0.5 * (D + D.T)
+    np.fill_diagonal(W, 0.0)
+    np.savez(out_path, weights=W, distances=D, n_subjects=len(used), subjects=np.array(used),
+             atlas=atlas)
+    print(f"SC template (atlas {atlas}): mean of {len(used)} subjects -> {out_path}")
+    if skipped:
+        print(f"  skipped {len(skipped)}: {', '.join(skipped)}")
+    return {"n_subjects": len(used), "skipped": skipped}
+
+
+def apply_sc_template(sc: StructuralConnectivity, subject, template_path, atlas: int,
+                      conduction_speed: float, noise: float = 0.1, seed: int = 0) -> StructuralConnectivity:
+    """Replace ``sc``'s weights/delays with the population template
+    (``build_sc_template``) on the subject's own fMRI-usable node set
+    (``sc.keep``), so empirical BOLD / dipole labels / masks stay aligned.
+
+    Weights get symmetric multiplicative log-normal noise ``exp(noise * e)``
+    (``e`` ~ N(0, 1), symmetrized), seeded by ``(seed, subject id)`` so each
+    subject sees its own reproducible perturbation; zero edges stay zero.
+    Then ``/max`` like ``load_structural_connectivity``.
+    """
+    import zlib
+    z = np.load(template_path)
+    if int(z["atlas"]) != int(atlas):
+        raise ValueError(f"SC template {template_path} is atlas {int(z['atlas'])}, fit is atlas {atlas}")
+    keep = np.asarray(sc.keep)
+    if z["weights"].shape[0] != keep.size:
+        raise ValueError(f"SC template has {z['weights'].shape[0]} nodes, subject connectome axis has {keep.size}")
+    W = z["weights"][np.ix_(keep, keep)]
+    D = z["distances"][np.ix_(keep, keep)]
+    sid = str(getattr(subject, "subject", subject))
+    rng = np.random.default_rng([int(seed), zlib.crc32(sid.encode())])
+    e = rng.standard_normal(W.shape)
+    e = (e + e.T) / np.sqrt(2.0)
+    W = W * np.exp(noise * e)
+    np.fill_diagonal(W, 0.0)
+    print(f"Using SC template {template_path} (n={int(z['n_subjects'])} subjects, "
+          f"log-normal noise {noise}, seed ({seed}, {sid})) instead of the subject SC")
+    weights = jnp.array(W, dtype=jnp.float64)
+    return StructuralConnectivity(
+        weights=weights / jnp.max(weights),
+        delays=jnp.array(D, dtype=jnp.float64) / conduction_speed,
+        num_nodes=sc.num_nodes,
+        keep=keep,
+        empirical_bold=sc.empirical_bold,
+    )
+
+
 # --- BOLD feature helpers (used by both the loss and diagnostic plots) -----
 
 def zscore_time(X, eps=1e-8):

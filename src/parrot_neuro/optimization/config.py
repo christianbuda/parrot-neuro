@@ -263,6 +263,23 @@ class BoldFitConfig:
 
     # --- which parameters the optimizer is allowed to touch ---
     learnable_params: tuple[LearnableParam, ...] = DEFAULT_LEARNABLE_PARAMS
+    # True = every "dynamics" learnable param is ONE scalar shared by all
+    # nodes instead of one value per node. Each param only acts on one node
+    # type (JR params in cortex, WC params in subcortex -- see
+    # model.HeterogeneousModel), so this is "one value per node type": with
+    # the defaults, 7 dynamics scalars + G = 8 free parameters per subject.
+    shared_dynamics: bool = False
+
+    # Template connectome (null model for the subject's own SC). None =
+    # the subject's own SC (default). A path = an .npz written by
+    # connectivity.build_sc_template (population-mean weights/distances on
+    # the full connectome axis); the subject's fMRI-usable nodes are taken
+    # from it, its weights get multiplicative log-normal noise of std
+    # ``sc_template_noise`` (symmetric, seeded by sc_template_seed + subject
+    # id), and it is normalized exactly like the subject SC.
+    sc_template: str | None = None
+    sc_template_noise: float = 0.1
+    sc_template_seed: int = 0
 
     # --- optimization ---
     # "adam" (default): the existing Adam(+global-norm-clip) path
