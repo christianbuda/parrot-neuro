@@ -379,7 +379,7 @@ case "$CMD" in
     conditions)
         # Held-out condition fits (gpu_fit.py tasks --kinds conditions): every
         # base subject x {joint, eeg-only, bold-only, shared, template-sc} x
-        # halves {A, B}, each fitted on one half (the other is held out for the
+        # half A (default; COND_HALVES="A B" adds half B), fitted on that half only (the rest is held out for the
         # local fit_quality.py --heldout-root evaluation). Packed
         # COND_GPUS_PER_NODE (default 4) fits per node, one per GPU; tasks are
         # condition-major, so a node runs 4 subjects of the same condition.
@@ -398,7 +398,7 @@ case "$CMD" in
         mkdir -p "$COND_OUT" "$LOGS"
         if [ ! -f "$TASKS" ] || [ "${COND_REGEN:-0}" = 1 ]; then
             targs=( --root "$ARTICLE_ROOT" --bids "$BIDS" --out "$COND_OUT" --kinds conditions
-                    --halves ${COND_HALVES:-A B} --write "$TASKS" )
+                    --halves ${COND_HALVES:-A} --write "$TASKS" )
             [ "${#conds[@]}" -gt 0 ] && targs+=( --conditions "${conds[@]}" )
             [ -n "${COND_SUBJECTS_FILE:-}" ] && targs+=( --subjects-file "$COND_SUBJECTS_FILE" )
             [ -n "${COND_NUM_EPOCHS:-}" ] && targs+=( --num-epochs "$COND_NUM_EPOCHS" )
@@ -474,7 +474,7 @@ usage: submit_optim.sh <command>
   conditions [cond ...]
                      held-out fits: every subject of ARTICLE_ROOT x conditions
                      (joint eeg-only bold-only shared template-sc; default all)
-                     x halves A/B, fitted on one half only, into COND_OUT
+                     x half A (COND_HALVES), fitted on it only, into COND_OUT
                      (default $WORKDIR/parrot/heldout_conditions), 4 fits per
                      node (COND_GPUS_PER_NODE). Knobs: COND_SUBJECTS_FILE,
                      COND_HALVES, COND_NUM_EPOCHS, COND_TIME, COND_QOS,

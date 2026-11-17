@@ -45,8 +45,8 @@ exactly; only what the experiment changes is overridden.
   tasks
       Print one command per job (subjects picked young/old balanced among
       working fits) for ``run_gpu_tasks.sh``. CPU only. ``--kinds
-      conditions`` instead takes every base subject x 5 conditions x halves
-      A/B (building the SC template first if needed).
+      conditions`` instead takes every base subject x 5 conditions x --halves
+      (default A only; building the SC template first if needed).
 
     pixi run python examples/article/gpu_fit.py fit \\
         --base-run new_leadfields/1/atlas-100/010004_both_joint --variant eeg-only \\
@@ -571,7 +571,8 @@ def main() -> None:
     p.add_argument("--kinds", nargs="+", default=["single", "weights", "heldout", "recovery", "fresh-noise"],
                    help="... | conditions (every base subject x --conditions x --halves)")
     p.add_argument("--conditions", nargs="+", default=CONDITIONS)
-    p.add_argument("--halves", nargs="+", default=["A", "B"], choices=("A", "B"))
+    p.add_argument("--halves", nargs="+", default=["A"], choices=("A", "B"),
+                   help="conditions: halves to fit on (default A; B is held out for evaluation)")
     p.add_argument("--subjects-file", type=Path, default=None,
                    help="conditions: only these subjects (default: every base run under --root)")
     p.add_argument("--n-single", type=int, default=10)
