@@ -425,7 +425,10 @@ def read_subject_ids(path: Path | None) -> list[str] | None:
     """One id per line or whitespace-separated ('sub-' optional); None = no file."""
     if path is None:
         return None
-    return [t.removeprefix("sub-") for t in path.read_text().split() if t and not t.startswith("#")]
+    ids = [t.removeprefix("sub-") for t in path.read_text().split() if t and not t.startswith("#")]
+    if not ids:  # never fall back to "all subjects" on an empty/failed list
+        raise SystemExit(f"subjects file {path} is empty")
+    return ids
 
 
 def cmd_sc_template(args) -> None:
