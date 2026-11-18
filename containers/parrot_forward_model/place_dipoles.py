@@ -320,22 +320,6 @@ def sample_spherical(npoints, generator = None):
     vec /= norms
     return vec
 
-def get_structure_size(positions):
-    # returns an estimate of the size of a point cloud using PCA
-    # it computes the span of the point cloud along the principal directions
-    
-    # handle edge cases
-    if len(positions) == 1:
-        return np.inf
-    if len(positions) == 2:
-        return np.linalg.norm(positions[0]-positions[1])
-    
-    def span(x, axis = None):
-        return x.max(axis = axis)-x.min(axis=axis)
-    pca = sklearn.decomposition.PCA().fit(positions)
-
-    return span(pca.transform(positions), axis = 0).max()
-
 def find_influence_area(dipoles, dipole_labels, voxels, voxel_labels):
     # finds closest dipole to each voxel grouping them by label
     # this implies that, if a label has no dipoles inside, the voxel is unassigned
@@ -407,33 +391,24 @@ def get_instruction_files(kind):
         principal_axis_right = ['Right-Pallidum', 'Right-LGN', 'Right-R']
         assert len(principal_axis_left) == len(principal_axis_right)
 
-        # random directions: Thalamus (Main), Hypothalamus (Main), Striatum, Deep Amygdala
-        # the value near the label is the size of a patch of tissue that fires coherently
-        # its an heuristic and its based on the approximate size of the functional units of the structure and the size of the structure itself
-        random_orientations = {'Left_Striatum':[5, ['Left-Caudate', 'Left-Putamen', 'Left-Accumbens-area']],
-                            'Right-Striatum':[5, ['Right-Caudate', 'Right-Putamen', 'Right-Accumbens-area']],
-                            'Left-Amygdala_Deep':[3.5, ['Left-Lateral-nucleus', 'Left-Basolateral-nucleus', 'Left-Basal-nucleus', 'Left-Centromedial-nucleus', 'Left-Central-nucleus', 'Left-Medial-nucleus', 'Left-Accessory-Basal-nucleus', 'Left-Endopiriform-nucleus', 'Left-Paralaminar-nucleus', 'Left-Intercalated-nucleus']],
-                            'Right-Amygdala_Deep':[3.5, ['Right-Lateral-nucleus', 'Right-Basolateral-nucleus', 'Right-Basal-nucleus', 'Right-Centromedial-nucleus', 'Right-Central-nucleus', 'Right-Medial-nucleus', 'Right-Accessory-Basal-nucleus', 'Right-Endopiriform-nucleus', 'Right-Paralaminar-nucleus', 'Right-Intercalated-nucleus']],
-                            'Left-Thalamus':[4, ['Left-AV', 'Left-CL', 'Left-CM', 'Left-CeM', 'Left-L-Sg', 'Left-LD', 'Left-LP', 'Left-MDl', 'Left-MDm', 'Left-MV(Re)', 'Left-PaV', 'Left-Pc', 'Left-Pf', 'Left-Pt', 'Left-PuA', 'Left-PuI', 'Left-PuL', 'Left-PuM', 'Left-PuMl', 'Left-PuMm', 'Left-VA', 'Left-VAmc', 'Left-VLa', 'Left-VLp', 'Left-VM', 'Left-VPL']],
-                            'Right-Thalamus':[4, ['Right-AV', 'Right-CL', 'Right-CM', 'Right-CeM', 'Right-L-Sg', 'Right-LD', 'Right-LP', 'Right-MDl', 'Right-MDm', 'Right-MV(Re)', 'Right-PaV', 'Right-Pc', 'Right-Pf', 'Right-Pt', 'Right-PuA', 'Right-PuI', 'Right-PuL', 'Right-PuM', 'Right-PuMl', 'Right-PuMm', 'Right-VA', 'Right-VAmc', 'Right-VLa', 'Right-VLp', 'Right-VM', 'Right-VPL']],
-                            # NB the L/R keys used to be swapped relative to their label lists.
-                            # Inert (only .values() is iterated, so the keys are never read) and
-                            # fixing it changes no output -- but it was a trap for anyone who
-                            # later keyed off the group name.
-                            'Left-Hypothalamus':[2.5, ['L-Lat-Hypothalamus', 'L-Med-Hypothalamus', 'L-Ant-Hypothalamus', 'L-Post-Hypothalamus']],
-                            'Right-Hypothalamus':[2.5, ['R-Lat-Hypothalamus', 'R-Med-Hypothalamus', 'R-Ant-Hypothalamus', 'R-Post-Hypothalamus',]],
-                            'Tuberal-Region':[2, ['Tuberal-Region']],
-                            # Moved out of principal_axis_* (see the note there): no defined
-                            # principal axis, so an oriented model is not supported by the
-                            # geometry. Radius 2 mm by analogy to Tuberal-Region/hypothalamus,
-                            # the closest structures in size (~100-116 voxels, 11-17 dipoles);
-                            # get_structure_size() shrinks it further anyway for clouds this
-                            # small. Bilateral pairs are separate groups so the two sides get
-                            # independent fields.
-                            'Left-MGN':[2, ['Left-MGN']],
-                            'Right-MGN':[2, ['Right-MGN']],
-                            'L-C.mammilare':[2, ['L-C.mammilare']],
-                            'R-C.mammilare':[2, ['R-C.mammilare']],}
+        # Random orientation, drawn independently per dipole (Attal & Schwartz 2013: "random
+        # orientation" per node). No coherence radius: no source gives a coherence length, and
+        # striatum is closed-field. Includes MGN/C.mammilare (no defined principal axis, see above).
+        random_orientations = [
+            'Left-Caudate', 'Left-Putamen', 'Left-Accumbens-area',
+            'Right-Caudate', 'Right-Putamen', 'Right-Accumbens-area',
+            'Left-Lateral-nucleus', 'Left-Basolateral-nucleus', 'Left-Basal-nucleus', 'Left-Centromedial-nucleus', 'Left-Central-nucleus', 'Left-Medial-nucleus', 'Left-Accessory-Basal-nucleus', 'Left-Endopiriform-nucleus', 'Left-Paralaminar-nucleus', 'Left-Intercalated-nucleus',
+            'Right-Lateral-nucleus', 'Right-Basolateral-nucleus', 'Right-Basal-nucleus', 'Right-Centromedial-nucleus', 'Right-Central-nucleus', 'Right-Medial-nucleus', 'Right-Accessory-Basal-nucleus', 'Right-Endopiriform-nucleus', 'Right-Paralaminar-nucleus', 'Right-Intercalated-nucleus',
+            'Left-AV', 'Left-CL', 'Left-CM', 'Left-CeM', 'Left-L-Sg', 'Left-LD', 'Left-LP', 'Left-MDl', 'Left-MDm', 'Left-MV(Re)', 'Left-PaV', 'Left-Pc', 'Left-Pf', 'Left-Pt', 'Left-PuA', 'Left-PuI', 'Left-PuL', 'Left-PuM', 'Left-PuMl', 'Left-PuMm', 'Left-VA', 'Left-VAmc', 'Left-VLa', 'Left-VLp', 'Left-VM', 'Left-VPL',
+            'Right-AV', 'Right-CL', 'Right-CM', 'Right-CeM', 'Right-L-Sg', 'Right-LD', 'Right-LP', 'Right-MDl', 'Right-MDm', 'Right-MV(Re)', 'Right-PaV', 'Right-Pc', 'Right-Pf', 'Right-Pt', 'Right-PuA', 'Right-PuI', 'Right-PuL', 'Right-PuM', 'Right-PuMl', 'Right-PuMm', 'Right-VA', 'Right-VAmc', 'Right-VLa', 'Right-VLp', 'Right-VM', 'Right-VPL',
+            'L-Lat-Hypothalamus', 'L-Med-Hypothalamus', 'L-Ant-Hypothalamus', 'L-Post-Hypothalamus',
+            'R-Lat-Hypothalamus', 'R-Med-Hypothalamus', 'R-Ant-Hypothalamus', 'R-Post-Hypothalamus',
+            'Tuberal-Region',
+            'Left-MGN',
+            'Right-MGN',
+            'L-C.mammilare',
+            'R-C.mammilare',
+        ]
         
         return labels_to_exclude, gradient_as_normal, principal_axis_left, principal_axis_right, random_orientations
     elif kind == 'surfaces':
@@ -600,66 +575,10 @@ def sample_volumetric(instruction_files, dipole_spacing, generator = None):
                 if np.dot(pca_left, pca_right*np.array([-1,1,1])) < 0:
                     dipole_preferential_direction[dipole_labels == right] *= -1
     
-    ######## DIRECTION FROM SMOOTH RANDOM FIELD
-    for coherence_radius_mm, labels in random_orientations.values():
-        which_dipoles = np.isin(dipole_labels, str_to_label(labels))
-        
-        if np.count_nonzero(which_dipoles) == 0:
-            continue
-        
-        positions = dipole_positions[which_dipoles]
-        
-        # if coherence radius is not small enough to create at least about 3 functional structures
-        # if not we decrease it based on structure size
-        coherence_radius_mm = min([coherence_radius_mm, 0.5*get_structure_size(positions)/3])
-
-        # subsample dipoles
-        anchors = []
-        
-        # Quick KDTree of the full set
-        tree_full = scipy.spatial.KDTree(positions)
-        
-        # We maintain a 'forbidden' mask. 
-        # Once a point is picked, all neighbors within coherence_radius are forbidden.
-        valid_mask = np.ones(len(positions), dtype=bool)
-        
-        # Random shuffle to ensure random seed placement
-        search_order = generator.permutation(len(positions))
-
-        for idx in search_order:
-            if valid_mask[idx]:
-                # Pick this point as an anchor
-                anchors.append(idx)
-                
-                # Find neighbors within radius and mark them as invalid (covered)
-                neighbors = tree_full.query_ball_point(positions[idx], coherence_radius_mm)
-                valid_mask[neighbors] = False
-
-        # Assign Random Orientation to Anchors
-        anchor_vecs = sample_spherical(len(anchors), generator=generator)
-
-        # Interpolate to Full Cloud
-        if len(anchors)==1:
-            final_orientations = np.repeat(anchor_vecs, len(positions), axis = 0)
-        else:
-            tree_anchors = scipy.spatial.KDTree(positions[anchors])
-            dists, indices = tree_anchors.query(positions, k=min([3, len(anchors)]))
-
-            # Inverse Distance Weighting (IDW)
-            # Add epsilon to avoid division by zero (if dipole is exactly on top of anchor)
-            weights = 1.0 / (dists + np.isclose(dists,0)*0.1) 
-            
-            # Calculate weighted average of the anchor vectors
-            # indices shape: (N_dipoles, 3)
-            # anchor_vecs[indices] shape: (N_dipoles, 3, 3)
-            vectors_sum = np.sum(anchor_vecs[indices] * weights[:, :, np.newaxis], axis=1)
-            
-            final_norms = np.linalg.norm(vectors_sum, axis=1, keepdims=True)
-            final_norms[np.isclose(final_norms, 0)] = 1
-            final_orientations = vectors_sum / final_norms
-
-        dipole_preferential_direction[which_dipoles] = final_orientations
-        orient_type[which_dipoles] = 'R'  # Random
+    ######## RANDOM DIRECTION, INDEPENDENT PER DIPOLE
+    which_dipoles = np.isin(dipole_labels, str_to_label(random_orientations))
+    dipole_preferential_direction[which_dipoles] = sample_spherical(np.count_nonzero(which_dipoles), generator=generator)
+    orient_type[which_dipoles] = 'R'  # Random
     ######################################################################
     
     # create the distance matrix
