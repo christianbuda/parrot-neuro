@@ -20,7 +20,7 @@ IMG_QSIRECON="pennlinc/qsirecon@sha256:5f95877eeea494c5fd82be4b8dca657be63d132f0
 # Parrot images are pinned to one release version, so the producer tag recorded in every
 # output manifest identifies the release. Release with `./bin/release.sh X.Y.Z`, which bumps
 # this line, builds and pushes all four images, commits, tags git vX.Y.Z and pushes.
-PARROT_VERSION="1.8.0"
+PARROT_VERSION="1.8.1"
 IMG_MRI_RECONSTRUCTION="christianbuda/parrot_mri_reconstruction:$PARROT_VERSION"
 IMG_FORWARD_MODEL="christianbuda/parrot_forward_model:$PARROT_VERSION"
 IMG_FORWARD_SOLVERS="christianbuda/parrot_forward_solvers:$PARROT_VERSION"
