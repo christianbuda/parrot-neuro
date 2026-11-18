@@ -46,7 +46,7 @@ BOOST_PART="${BOOST_PART:-boost_usr_prod}"
 BOOST_QOS="${BOOST_QOS:-normal}"
 DEBUG_QOS="${DEBUG_QOS:-boost_qos_dbg}"
 PILOT_QOS="${PILOT_QOS:-boost_qos_lprod}"    # 4-day wall: unmeasured, so start generous
-ARRAY_THROTTLE="${ARRAY_THROTTLE:-%40}"
+ARRAY_THROTTLE="${ARRAY_THROTTLE-%40}"   # unset -> %40; set but empty -> no cap
 MAX_SUBMIT="${MAX_SUBMIT:-1000}"
 
 # --- fit hyperparameters -- defaults mirror examples/eeg_bold_fit_new.py ----

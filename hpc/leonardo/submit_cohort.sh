@@ -58,7 +58,7 @@ DCGP_PART="${DCGP_PART:-dcgp_usr_prod}"
 BOOST_QOS="${BOOST_QOS:-normal}"
 DCGP_QOS="${DCGP_QOS:-normal}"
 # Be a good cluster citizen: cap how many array elements run at once.
-ARRAY_THROTTLE="${ARRAY_THROTTLE:-%40}"
+ARRAY_THROTTLE="${ARRAY_THROTTLE-%40}"   # unset -> %40; set but empty -> no cap
 # QOS submit cap (pending+running tasks per user). SLURM counts each ARRAY TASK,
 # not each array, so the full a1..d chain = 5*N tasks. LEONARDO's cap is ~1000
 # (measured: 4*227=908 accepted, the 5th array rejected). We refuse to submit
