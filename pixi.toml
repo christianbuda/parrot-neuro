@@ -54,7 +54,7 @@ networkx = "*"   # trimesh.split connected-components backend (scalp largest-com
 # rides on whatever jax build each platform resolves (below).
 # marimo comes from PyPI, not conda-forge: conda-forge has no linux-aarch64 build
 # past 0.13.6, while the PyPI wheel is py3-none-any and works on all platforms.
-marimo = ">=0.23.13,<0.24"
+marimo = ">=0.25.2, <0.26"
 optax = "*"
 equinox = "*"
 tvboptim = "*"      # your TVB-optim library (PyPI, currently 0.3.1)

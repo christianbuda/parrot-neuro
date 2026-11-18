@@ -283,6 +283,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/04/96/92447566d16df59b2a776c0fb82dbc4d9e07cd95062562af01e408583fc4/itsdangerous-2.2.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/05/6b/32f747947df2da6994e999492ab306a903659555dddc0fbdeb9d71f75e52/nvidia_cuda_nvrtc_cu12-12.8.93-py3-none-manylinux2010_x86_64.manylinux_2_12_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/06/5c/c26a57aefe28fceab762ad104744c1af18a4b62809629897722c866bbd2f/marimo-0.25.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/0d/9b/a997b638fcd068ad6e4d53b8551a7d30fe8b404d6f1804abf1df69838932/nvidia_cuda_runtime_cu12-12.8.90-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/12/b8/4bd346e22b28902df4d651910f5242c28d84e4a5c2435ca5c3f797ed7e2e/anyio-4.15.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/13/bc/8c13eb66537dce1d2bd3a57132902f38d0e7f5bb46fa9f4daed9fe9d76ee/tomlkit-0.15.1-py3-none-any.whl
@@ -295,6 +296,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/32/91/30151a39f7570f448ed84529390628a651d7f27c87d73c9b887f8189695e/docutils-0.23-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/33/a0/ddb3a71359c1df61f3edc408936b5bda7ed402e78ae7e9ef6afd438577c6/jaxlib-0.9.2-cp312-cp312-manylinux_2_27_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/3a/cb/28ce52eb94390dda42599c98ea0204d74799e4d8047a0eb559b6fd648056/ml_dtypes-0.5.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/4a/cc/aa1a47f8c92280d37498a5ea56a2a36606d034383e3e6472d64cbb56cf85/msgspec-0.22.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/4c/4d/5418649397b477ae08839564c97596ede5ef36523147899bb913bbe959d1/plum_dispatch-2.9.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/51/c0/00c9809d8b9346eb238a6bbd5f83e846a4ce4503da94a4c08cb7284c325b/multipledispatch-1.0.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/58/0a/a10b45aab35b175aded078a462dc8d0c698f5b13946e7cb0869097b78bb6/absl_py-2.5.0-py3-none-any.whl
@@ -302,7 +304,6 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/5f/97/2aab507d3d00ca626e8e57c1eac6a79e4e5fbcc63eb99733ff55d1717f65/pydantic_core-2.46.4-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/63/53/6a81a6ebb1739f19c32002139719d4ee021a349d5bdbe066910feed327a1/optimistix-0.1.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/64/69/4a5af2bc115a9a33fefe51709749de8262be3f9ba063d1753a837cdbc49c/markdown-3.10.3-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/69/7a/db0583b21d1f03403fc26800cb4638f59e95a33efd333f7a4d45ac348b82/marimo-0.23.16-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/6c/07/f539e4d5dcf252430af9c4b76a27be756c3dbcb400ebc0e33578fa8552b6/loro-1.16.2-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/6c/48/c42f657f3d6b4d9d9674c9bc48e763d024511ea4cc1d6e0c68c7b4380c43/diffrax-0.7.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/6e/89/f7a07dc961b60645dbbf42e80f2bc85ade7feb9a491b11a1e973aa00071f/nvidia_nccl_cu12-2.27.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
@@ -327,7 +328,6 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/ae/d6/69a76c8ccdef14af687c497040292a46e59fc7a0ab24724b60e50ca61030/equinox-0.13.8-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/b3/da/49924c7df2952dfd82c86c3779c339c0c3d6f6439387c03d97d0470c3658/wandb-0.28.1-py3-none-manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/b5/09/6ea3ea725f82e1e76684f0708bbedd871fc96da89945adeba65c3835a64c/nvidia_nvshmem_cu12-3.4.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
-      - pypi: https://files.pythonhosted.org/packages/b5/d1/d4cd9fe89c7d400d7a18f86ccc94daa3f0927f53558846fcb60791dce5d6/msgspec-0.21.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/ba/51/e123d997aa098c61d029f76663dedbfb9bc8dcf8c60cbd6adbe42f76d049/nvidia_cudnn_cu12-9.10.2.21-py3-none-manylinux_2_27_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/be/57/2eadf93a552568c57e8680b7e58bb5e9770d80942a1bdbaf4f2f63f0d7c8/sqlalchemy-2.0.52-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/c2/f5/e1854cb2f2bcd4280c44736c93550cc300ff4b8c95ebe370d0aa7d2b473d/nvidia_cusparse_cu12-12.5.8.93-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
@@ -616,6 +616,7 @@ environments:
       - pypi: ./
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/04/96/92447566d16df59b2a776c0fb82dbc4d9e07cd95062562af01e408583fc4/itsdangerous-2.2.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/06/5c/c26a57aefe28fceab762ad104744c1af18a4b62809629897722c866bbd2f/marimo-0.25.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/09/f0/2a8ce3849e299d44e2d2c196b6082643a3235565a735cb51db7a6261f614/pydantic_core-2.46.5-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/10/fe/46ff1b577bdb1c3b536c406256a155e5f628b5caee1f99669dd54b1ebcd2/potpourri3d-1.4.0-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/12/b8/4bd346e22b28902df4d651910f5242c28d84e4a5c2435ca5c3f797ed7e2e/anyio-4.15.1-py3-none-any.whl
@@ -633,6 +634,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/51/3b/2c6e9d88efa7b3585572760bca5e7da83fa9e06098a9386c7b29c81c46b2/nvidia_cuda_runtime-13.4.92-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/51/c0/00c9809d8b9346eb238a6bbd5f83e846a4ce4503da94a4c08cb7284c325b/multipledispatch-1.0.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/52/a0/530efd7db8857c0436868bb7df9764f09fde2bd4d1f0bae546eec9fc40d0/nvidia_nccl_cu13-2.31.2-py3-none-manylinux_2_18_aarch64.whl
+      - pypi: https://files.pythonhosted.org/packages/54/a5/65de05f8804492f76ea121b21a125cdf1d97ec461c677bfa0ba354d6fbdd/msgspec-0.22.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/54/cc/4226e8156d80640afd74d1b3053c62adbd307d080a21d2a4256156a3ddc0/loro-1.16.2-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/55/9f/0adfb5a90d65233b764cb1b07244b72ded1db7cfc66955418544d0da2e38/plum_dispatch-2.10.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/58/0a/a10b45aab35b175aded078a462dc8d0c698f5b13946e7cb0869097b78bb6/absl_py-2.5.0-py3-none-any.whl
@@ -642,13 +644,11 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/64/69/4a5af2bc115a9a33fefe51709749de8262be3f9ba063d1753a837cdbc49c/markdown-3.10.3-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/67/81/4add07e5172b7ac40d8ed5ff580409a7801a4fe26d529bdd915401dabfbe/typing_inspection-0.4.4-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/69/72/318270378f5ff554ee921944bd97f59c0d6b35a8397cd35771dfdce1f445/jaxlib-0.11.2-cp312-cp312-manylinux_2_27_aarch64.whl
-      - pypi: https://files.pythonhosted.org/packages/69/7a/db0583b21d1f03403fc26800cb4638f59e95a33efd333f7a4d45ac348b82/marimo-0.23.16-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/6c/48/c42f657f3d6b4d9d9674c9bc48e763d024511ea4cc1d6e0c68c7b4380c43/diffrax-0.7.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/71/cc/18245721fa7747065ab478316c7fea7c74777d07f37ae60db2e84f8172e8/beartype-0.22.9-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/76/18/0eea75741ee812e9f598b687619ce2454f6c3a1c5cd21ea990ec6bd26f45/uvicorn-0.53.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/77/f1/8c8a667c59cb4ea0dd1543ed99c6552d818e2a4bb922d0ee98f0a49de207/nvidia_cusolver-12.3.4.7-py3-none-manylinux_2_27_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/81/11/1767ef120299972822a43aceffbc81ac813aad2089d817e36e4e12aa4c9c/nvidia_nvshmem_cu13-3.7.2-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl
-      - pypi: https://files.pythonhosted.org/packages/8a/37/655101799590bcc5fddb2bd3fe0e6194e816c2d1da7c361725f5eb89a910/msgspec-0.21.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/8a/50/5cbf677b865290fe36819ff00615826e7edc1df38786f770123ff39a933d/websockets-17.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
       - pypi: https://files.pythonhosted.org/packages/8a/69/6a93d8600c339d7687a05857c7907bd4dd8cf88691a5ea106d7a50af90a1/optax-0.2.8-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/8b/38/c66bbdc5047f4776c2bd3e47e5295a350e3fa44d5b8942105e71c2a876a0/jaxtyping-0.3.11-py3-none-any.whl
@@ -906,6 +906,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/04/96/92447566d16df59b2a776c0fb82dbc4d9e07cd95062562af01e408583fc4/itsdangerous-2.2.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/06/21/8df50164d07623cfcefec19bbf9327d9be84b637a827cea1f0c06db005fd/wandb-0.28.1-py3-none-macosx_12_0_arm64.whl
+      - pypi: https://files.pythonhosted.org/packages/06/5c/c26a57aefe28fceab762ad104744c1af18a4b62809629897722c866bbd2f/marimo-0.25.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/08/d3/e90f2c9db0b2420a4501eea1898d10769e82b67787e8a505eca176d73dc4/loro-1.16.2-cp312-cp312-macosx_11_0_arm64.whl
       - pypi: https://files.pythonhosted.org/packages/10/03/8aeeb7458d22546bf64b5250ca1daeb5ff757d900e8e4a7476c6f0db843e/protobuf-7.35.1-cp310-abi3-macosx_10_9_universal2.whl
       - pypi: https://files.pythonhosted.org/packages/12/b8/4bd346e22b28902df4d651910f5242c28d84e4a5c2435ca5c3f797ed7e2e/anyio-4.15.1-py3-none-any.whl
@@ -923,9 +924,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/63/53/6a81a6ebb1739f19c32002139719d4ee021a349d5bdbe066910feed327a1/optimistix-0.1.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/64/69/4a5af2bc115a9a33fefe51709749de8262be3f9ba063d1753a837cdbc49c/markdown-3.10.3-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/64/a7/ee4d01d26032b060d379f44a29124180f756d907e3840d3bc450f8a0d2a7/plum_dispatch-2.9.0-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/69/7a/db0583b21d1f03403fc26800cb4638f59e95a33efd333f7a4d45ac348b82/marimo-0.23.16-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/6c/48/c42f657f3d6b4d9d9674c9bc48e763d024511ea4cc1d6e0c68c7b4380c43/diffrax-0.7.2-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/6d/81/074612945c0666078f7366f40000013de9f6ba687491d450df699bceebc9/msgspec-0.21.1-cp312-cp312-macosx_11_0_arm64.whl
       - pypi: https://files.pythonhosted.org/packages/71/cc/18245721fa7747065ab478316c7fea7c74777d07f37ae60db2e84f8172e8/beartype-0.22.9-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/76/18/0eea75741ee812e9f598b687619ce2454f6c3a1c5cd21ea990ec6bd26f45/uvicorn-0.53.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/80/0c/2ed47112fc1958a0a81c9b015d4e1861953a1ec3a17b081c0180a25ce82c/lineax-0.1.0-py3-none-any.whl
@@ -949,6 +948,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/dc/9b/47798a6c91d8bdb567fe2698fe81e0c6b7cb7ef4d13da4114b41d239f65d/typing_inspection-0.4.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/e0/d5/1b77a026d161f98a08f11af1a5f6c47b98ee7c7e2648af525a1004826c78/sqlalchemy-2.0.52-cp312-cp312-macosx_11_0_arm64.whl
       - pypi: https://files.pythonhosted.org/packages/e1/04/e8135ebd1ad02c56ec633277529b2602ff99ff634be76cdba5744cf554fd/python_multipart-0.0.32-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/fb/02/109165edaafb895668d87177972a32ade9126a54f3736123d8e44be9096d/msgspec-0.22.0-cp312-cp312-macosx_11_0_arm64.whl
       - pypi: https://files.pythonhosted.org/packages/fd/7b/122376b1fd3c62c1ed9dc80c931ace4844b3c55407b6fb2d199377c9736f/pydantic-2.13.4-py3-none-any.whl
 packages:
 - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-20_gnu.conda
@@ -10603,6 +10603,52 @@ packages:
   - sweeps>=0.2.0 ; extra == 'sweeps'
   - wandb-workspaces ; extra == 'workspaces'
   requires_python: '>=3.10'
+- pypi: https://files.pythonhosted.org/packages/06/5c/c26a57aefe28fceab762ad104744c1af18a4b62809629897722c866bbd2f/marimo-0.25.2-py3-none-any.whl
+  name: marimo
+  version: 0.25.2
+  sha256: 7acb7a433755c6d965c03e07725477ab63804f6667ba9e37e4da582f358018c7
+  requires_dist:
+  - click>=8.0,<9 ; sys_platform != 'emscripten'
+  - jedi>=0.18.0,<0.21.0
+  - markdown>=3.6,<4
+  - pymdown-extensions>=10.21.2,<12
+  - pygments>=2.19,<3
+  - tomlkit>=0.12.0
+  - pyyaml>=6.0.1
+  - uvicorn>=0.22.0 ; sys_platform != 'emscripten'
+  - starlette>=0.37.2 ; sys_platform != 'emscripten'
+  - python-multipart>=0.0.18
+  - websockets>=14.2.0 ; sys_platform != 'emscripten'
+  - loro>=1.10.0 ; python_full_version < '3.15' and sys_platform != 'android' and sys_platform != 'emscripten'
+  - typing-extensions>=4.4.0 ; python_full_version < '3.12'
+  - docutils>=0.16.0
+  - psutil>=5.0 ; sys_platform != 'android' and sys_platform != 'emscripten'
+  - itsdangerous>=2.0.0
+  - narwhals>=2.0.0
+  - packaging
+  - msgspec>=0.22.0
+  - pyzmq>=27.1.0 ; sys_platform != 'emscripten'
+  - python-lsp-server>=1.13.0 ; extra == 'lsp'
+  - python-lsp-ruff>=2.0.0 ; extra == 'lsp'
+  - httpx2>=2.5.0,<3 ; extra == 'mcp'
+  - mcp>=2.0.0,<3 ; extra == 'mcp'
+  - opentelemetry-api~=1.28.0 ; extra == 'otel'
+  - opentelemetry-sdk~=1.28.0 ; extra == 'otel'
+  - opentelemetry-exporter-otlp-proto-http~=1.28.0 ; extra == 'otel'
+  - opentelemetry-exporter-otlp-proto-grpc~=1.28.0 ; extra == 'otel'
+  - marimo[sql] ; extra == 'recommended'
+  - marimo[sandbox] ; extra == 'recommended'
+  - marimo-lens>=0.2.3 ; extra == 'recommended'
+  - cryptography>=42.0.0 ; extra == 'recommended'
+  - altair>=5.4.0 ; extra == 'recommended'
+  - pydantic-ai-slim[openai]>=2.34.0,<3.0.0 ; extra == 'recommended'
+  - ruff ; extra == 'recommended'
+  - nbformat>=5.7.0 ; extra == 'recommended'
+  - uv>=0.9.21 ; extra == 'sandbox'
+  - duckdb>=1.0.0 ; extra == 'sql'
+  - polars[pyarrow]>=1.9.0 ; extra == 'sql'
+  - sqlglot[c]>=30.7.0 ; extra == 'sql'
+  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/08/d3/e90f2c9db0b2420a4501eea1898d10769e82b67787e8a505eca176d73dc4/loro-1.16.2-cp312-cp312-macosx_11_0_arm64.whl
   name: loro
   version: 1.16.2
@@ -10802,6 +10848,15 @@ packages:
   requires_dist:
   - nvidia-nvjitlink
   requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/4a/cc/aa1a47f8c92280d37498a5ea56a2a36606d034383e3e6472d64cbb56cf85/msgspec-0.22.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+  name: msgspec
+  version: 0.22.0
+  sha256: 99c401861c5bb3a57f7d6423ea7ed4352cd57aa3f04f4fbe9f3e3e4564a10f08
+  requires_dist:
+  - tomli ; python_full_version < '3.11' and extra == 'toml'
+  - tomli-w ; extra == 'toml'
+  - pyyaml ; extra == 'yaml'
+  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/4c/4d/5418649397b477ae08839564c97596ede5ef36523147899bb913bbe959d1/plum_dispatch-2.9.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
   name: plum-dispatch
   version: 2.9.0
@@ -10840,6 +10895,15 @@ packages:
   version: 2.31.2
   sha256: b5563f8e2534f363d93ace022670ba016d3717e190ac4eba564d05fbbe8495b1
   requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/54/a5/65de05f8804492f76ea121b21a125cdf1d97ec461c677bfa0ba354d6fbdd/msgspec-0.22.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
+  name: msgspec
+  version: 0.22.0
+  sha256: b5a169b5b03f0f2c7a296c002647db1dab75d2cd501bca34e32b71cab0261b56
+  requires_dist:
+  - tomli ; python_full_version < '3.11' and extra == 'toml'
+  - tomli-w ; extra == 'toml'
+  - pyyaml ; extra == 'yaml'
+  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/54/cc/4226e8156d80640afd74d1b3053c62adbd307d080a21d2a4256156a3ddc0/loro-1.16.2-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
   name: loro
   version: 1.16.2
@@ -10949,52 +11013,6 @@ packages:
   - numpy>=2.0
   - ml-dtypes>=0.5.0
   requires_python: '>=3.12'
-- pypi: https://files.pythonhosted.org/packages/69/7a/db0583b21d1f03403fc26800cb4638f59e95a33efd333f7a4d45ac348b82/marimo-0.23.16-py3-none-any.whl
-  name: marimo
-  version: 0.23.16
-  sha256: e0bba0a44b395d402072c65d686fb459bd8955c9ab8b0d6135a22f729c989373
-  requires_dist:
-  - click>=8.0,<9 ; sys_platform != 'emscripten'
-  - jedi>=0.18.0,<0.20.0
-  - markdown>=3.6,<4
-  - pymdown-extensions>=10.21.2,<12
-  - pygments>=2.19,<3
-  - tomlkit>=0.12.0
-  - pyyaml>=6.0.1
-  - uvicorn>=0.22.0 ; sys_platform != 'emscripten'
-  - starlette>=0.37.2 ; sys_platform != 'emscripten'
-  - python-multipart>=0.0.18
-  - websockets>=14.2.0 ; sys_platform != 'emscripten'
-  - loro>=1.10.0 ; sys_platform != 'android' and sys_platform != 'emscripten'
-  - typing-extensions>=4.4.0 ; python_full_version < '3.12'
-  - docutils>=0.16.0
-  - psutil>=5.0 ; sys_platform != 'android' and sys_platform != 'emscripten'
-  - itsdangerous>=2.0.0
-  - narwhals>=2.0.0
-  - packaging
-  - msgspec>=0.20.0
-  - pyzmq>=27.1.0 ; python_full_version < '3.15' and sys_platform != 'emscripten'
-  - python-lsp-server>=1.13.0 ; extra == 'lsp'
-  - python-lsp-ruff>=2.0.0 ; extra == 'lsp'
-  - mcp>=1.0.0,<2 ; extra == 'mcp'
-  - pydantic>2 ; extra == 'mcp'
-  - opentelemetry-api~=1.28.0 ; extra == 'otel'
-  - opentelemetry-sdk~=1.28.0 ; extra == 'otel'
-  - opentelemetry-exporter-otlp-proto-http~=1.28.0 ; extra == 'otel'
-  - opentelemetry-exporter-otlp-proto-grpc~=1.28.0 ; extra == 'otel'
-  - marimo[sql] ; extra == 'recommended'
-  - marimo[sandbox] ; extra == 'recommended'
-  - cryptography>=42.0.0 ; extra == 'recommended'
-  - altair>=5.4.0 ; extra == 'recommended'
-  - pydantic-ai-slim[openai]>=1.107.0,<3.0.0 ; extra == 'recommended'
-  - ruff ; extra == 'recommended'
-  - nbformat>=5.7.0 ; extra == 'recommended'
-  - pyzmq>=27.1.0 ; extra == 'sandbox'
-  - uv>=0.9.21 ; extra == 'sandbox'
-  - duckdb>=1.0.0 ; extra == 'sql'
-  - polars[pyarrow]>=1.9.0 ; extra == 'sql'
-  - sqlglot[c]>=26.8.0 ; extra == 'sql'
-  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/6c/07/f539e4d5dcf252430af9c4b76a27be756c3dbcb400ebc0e33578fa8552b6/loro-1.16.2-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
   name: loro
   version: 1.16.2
@@ -11029,15 +11047,6 @@ packages:
   - scipy ; extra == 'tests'
   - tqdm ; extra == 'tests'
   requires_python: '>=3.11'
-- pypi: https://files.pythonhosted.org/packages/6d/81/074612945c0666078f7366f40000013de9f6ba687491d450df699bceebc9/msgspec-0.21.1-cp312-cp312-macosx_11_0_arm64.whl
-  name: msgspec
-  version: 0.21.1
-  sha256: 5102c7e9b3acff82178449b85006d96310e690291bb1ea0142f1b24bcb8aabcb
-  requires_dist:
-  - tomli ; python_full_version < '3.11' and extra == 'toml'
-  - tomli-w ; extra == 'toml'
-  - pyyaml ; extra == 'yaml'
-  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/6e/89/f7a07dc961b60645dbbf42e80f2bc85ade7feb9a491b11a1e973aa00071f/nvidia_nccl_cu12-2.27.5-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl
   name: nvidia-nccl-cu12
   version: 2.27.5
@@ -11340,15 +11349,6 @@ packages:
   - unleashclient>=6.0.1 ; extra == 'unleash'
   - google-genai>=1.29.0 ; extra == 'google-genai'
   requires_python: '>=3.6'
-- pypi: https://files.pythonhosted.org/packages/8a/37/655101799590bcc5fddb2bd3fe0e6194e816c2d1da7c361725f5eb89a910/msgspec-0.21.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
-  name: msgspec
-  version: 0.21.1
-  sha256: 846758412e9518252b2ac9bffd6f0e54d9ff614f5f9488df7749f81ff5c80920
-  requires_dist:
-  - tomli ; python_full_version < '3.11' and extra == 'toml'
-  - tomli-w ; extra == 'toml'
-  - pyyaml ; extra == 'yaml'
-  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/8a/50/5cbf677b865290fe36819ff00615826e7edc1df38786f770123ff39a933d/websockets-17.1-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
   name: websockets
   version: '17.1'
@@ -11769,15 +11769,6 @@ packages:
   version: 3.4.5
   sha256: 042f2500f24c021db8a06c5eec2539027d57460e1c1a762055a6554f72c369bd
   requires_python: '>=3'
-- pypi: https://files.pythonhosted.org/packages/b5/d1/d4cd9fe89c7d400d7a18f86ccc94daa3f0927f53558846fcb60791dce5d6/msgspec-0.21.1-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
-  name: msgspec
-  version: 0.21.1
-  sha256: 21995e74b5c598c2e004110ad66ec7f1b8c20bf2bcf3b2de8fd9a3094422d3ff
-  requires_dist:
-  - tomli ; python_full_version < '3.11' and extra == 'toml'
-  - tomli-w ; extra == 'toml'
-  - pyyaml ; extra == 'yaml'
-  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/b6/ea/91fdf7c2b8bbd49cde056f00a9df6773532987e1c00fe2830b895af95c7e/protobuf-7.36.2-cp310-abi3-manylinux2014_aarch64.whl
   name: protobuf
   version: 7.36.2
@@ -12107,6 +12098,15 @@ packages:
   version: 12.8.90
   sha256: ea0cb07ebda26bb9b29ba82cda34849e73c166c18162d3913575b0c9db9a6182
   requires_python: '>=3'
+- pypi: https://files.pythonhosted.org/packages/fb/02/109165edaafb895668d87177972a32ade9126a54f3736123d8e44be9096d/msgspec-0.22.0-cp312-cp312-macosx_11_0_arm64.whl
+  name: msgspec
+  version: 0.22.0
+  sha256: b60b43425a47eb9cfe987f6874e354ca7c760e58e295b4e2273ff03574df28a1
+  requires_dist:
+  - tomli ; python_full_version < '3.11' and extra == 'toml'
+  - tomli-w ; extra == 'toml'
+  - pyyaml ; extra == 'yaml'
+  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/fb/05/9f82d090c8d2d861604147ef6dfb938a90b039f9358d5193f1df62558593/websockets-17.1-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl
   name: websockets
   version: '17.1'
